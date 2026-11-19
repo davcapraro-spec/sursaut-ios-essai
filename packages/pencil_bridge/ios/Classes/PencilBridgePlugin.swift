@@ -136,6 +136,8 @@ public class PencilBridgePlugin: NSObject, FlutterPlugin, FlutterStreamHandler, 
     ]
     if #available(iOS 16.1, *) {
       payload["zOffset"] = Double(recognizer.zOffset)
+    }
+    if #available(iOS 16.4, *) {
       payload["altitude"] = Double(recognizer.altitudeAngle)
       payload["azimuth"] = Double(recognizer.azimuthAngle(in: view))
     }
