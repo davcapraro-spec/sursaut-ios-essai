@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../pencil_bench/pencil_bench_page.dart';
+
 /// Écran d'essai : choisir une photo, régler une luminosité d'essai.
 ///
 /// IMPORTANT : ce curseur n'agit PAS sur le moteur Sursaut. C'est un simple
@@ -56,6 +58,14 @@ class _DevelopPageState extends State<DevelopPage> {
       appBar: AppBar(
         title: Text(_name ?? 'Sursaut iPad (essai)'),
         actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (BuildContext context) => const PencilBenchPage(),
+              ),
+            ),
+            child: const Text('Banc Pencil'),
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 12),
             child: FilledButton(

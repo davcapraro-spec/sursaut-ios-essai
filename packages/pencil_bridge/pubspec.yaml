@@ -1,0 +1,18 @@
+name: pencil_bridge
+description: "Pont natif Apple Pencil (roulis, serrage, double appui, survol) pour Sursaut iPad."
+version: 0.0.1
+publish_to: "none"
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      ios:
+        pluginClass: PencilBridgePlugin
