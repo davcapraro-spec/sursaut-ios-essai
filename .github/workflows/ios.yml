@@ -32,6 +32,13 @@ jobs:
           cp -R /tmp/sauvegarde/lib /tmp/sauvegarde/test ./
           cp /tmp/sauvegarde/pubspec.yaml /tmp/sauvegarde/analysis_options.yaml ./
 
+      # Descriptions d'autorisations demandées par iPadOS (appareil photo branché).
+      - name: Autorisations (Info.plist)
+        run: |
+          plutil -insert NSCameraUsageDescription -string "Sursaut lit l'appareil photo branché en USB-C." ios/Runner/Info.plist
+          plutil -insert NSPhotoLibraryUsageDescription -string "Sursaut lit les photos importées de l'appareil." ios/Runner/Info.plist
+          plutil -insert NSPhotoLibraryAddUsageDescription -string "Sursaut enregistre les photos développées." ios/Runner/Info.plist
+
       - run: flutter pub get
 
       - name: Analyse et test

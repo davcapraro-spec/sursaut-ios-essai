@@ -7,6 +7,7 @@ Pod::Spec.new do |s|
   s.license          = { :type => 'Proprietary' }
   s.author           = { 'Sursaut' => 'noreply@example.com' }
   s.source           = { :path => '.' }
+  s.frameworks = 'ImageCaptureCore'
   s.source_files     = 'Classes/**/*'
   s.dependency 'Flutter'
   s.platform         = :ios, '13.0'

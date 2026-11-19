@@ -24,6 +24,7 @@ public class PencilBridgePlugin: NSObject, FlutterPlugin, FlutterStreamHandler, 
       name: "sursaut/pencil/methods",
       binaryMessenger: registrar.messenger())
     registrar.addMethodCallDelegate(instance, channel: methods)
+    CameraBridge.register(with: registrar)
   }
 
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {

@@ -65,3 +65,33 @@ class PencilBridge {
     }
   }
 }
+
+/// Accès au pont natif « appareil photo » (ImageCaptureCore, essai S2).
+class CameraBridge {
+  CameraBridge._();
+
+  static const EventChannel _events = EventChannel('sursaut/camera/events');
+  static const MethodChannel _methods = MethodChannel('sursaut/camera/methods');
+
+  /// Les lignes de compte rendu envoyées par le code natif.
+  static Stream<String> get lines {
+    return _events.receiveBroadcastStream().map((Object? raw) {
+      if (raw is Map) {
+        return raw['line']?.toString() ?? '';
+      }
+      return raw?.toString() ?? '';
+    });
+  }
+
+  /// Demande une action au code natif. Renvoie un message d'erreur, ou null.
+  static Future<String?> call(String method) async {
+    try {
+      await _methods.invokeMethod<void>(method);
+      return null;
+    } on MissingPluginException {
+      return 'pont natif absent (pas un iPad)';
+    } on PlatformException catch (e) {
+      return e.message ?? e.code;
+    }
+  }
+}
