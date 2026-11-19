@@ -1,0 +1,20 @@
+name: sursaut_essai
+description: "Sursaut iPad : application d'essai de l'étape 0 (chaîne de compilation et d'installation)."
+publish_to: "none"
+version: 0.0.1+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  image_picker: ^1.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
