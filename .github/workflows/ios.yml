@@ -1,0 +1,56 @@
+name: ios-essai
+
+# Lancement à la main seulement (onglet Actions > ios-essai > Run workflow).
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Versions utilisées (à noter dans le cahier, test 0.1)
+        run: |
+          flutter --version
+          xcodebuild -version
+
+      # Le dossier ios/ n'est pas dans le dépôt : on le fabrique, puis on
+      # remet nos propres fichiers au cas où « flutter create » les aurait touchés.
+      - name: Fabriquer le dossier ios
+        run: |
+          mkdir -p /tmp/sauvegarde
+          cp -R lib test pubspec.yaml analysis_options.yaml /tmp/sauvegarde/
+          flutter create . --platforms=ios --project-name sursaut_essai --org com.davidcapraro
+          rm -rf lib test pubspec.yaml analysis_options.yaml
+          cp -R /tmp/sauvegarde/lib /tmp/sauvegarde/test ./
+          cp /tmp/sauvegarde/pubspec.yaml /tmp/sauvegarde/analysis_options.yaml ./
+
+      - run: flutter pub get
+
+      - name: Analyse et test
+        run: |
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+          flutter test
+
+      - name: Compiler sans signature
+        run: flutter build ios --release --no-codesign
+
+      - name: Fabriquer l'ipa non signé
+        run: |
+          mkdir -p Payload
+          cp -R build/ios/iphoneos/Runner.app Payload/
+          zip -qr SursautEssai-non-signe.ipa Payload
+          ls -lh SursautEssai-non-signe.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SursautEssai-ipa
+          path: SursautEssai-non-signe.ipa
+          retention-days: 7

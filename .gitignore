@@ -1,0 +1,8 @@
+.dart_tool/
+build/
+ios/
+windows/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.ipa
+Payload/
