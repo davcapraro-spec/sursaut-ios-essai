@@ -7,7 +7,7 @@ import ImageCaptureCore
 /// Cherche un appareil branché en USB-C (ImageCaptureCore), ouvre une
 /// session, lit ce qu'il déclare, interroge le protocole PTP, télécharge
 /// un fichier, et raconte tout ligne par ligne à l'écran de diagnostic.
-public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelegate, ICCameraDeviceDelegate, ICCameraDeviceDownloadDelegate {
+public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelegate, ICCameraDeviceDownloadDelegate {
   private static var shared: CameraBridge?
 
   private var sink: FlutterEventSink?
@@ -107,21 +107,17 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   }
 
   public func deviceBrowser(_ browser: ICDeviceBrowser, didAdd device: ICDevice, moreComing: Bool) {
-    log("APPAREIL TROUVÉ : \(device.name ?? "sans nom") · \(device.productKind ?? "?") · transport \(device.transportType ?? "?") · USB \(hex(Int(device.usbVendorID))):\(hex(Int(device.usbProductID))) · série \(device.serialNumberString ?? "?")")
+    log("APPAREIL TROUVÉ : \(device.name ?? "sans nom") · \(device.productKind ?? "?") · transport \(device.transportType ?? "?") · USB \(hex(Int(device.usbVendorID))):\(hex(Int(device.usbProductID)))")
     log("Capacités déclarées : \(device.capabilities.joined(separator: ", "))")
     if let cam = device as? ICCameraDevice {
       camera = cam
-      cam.delegate = self
+      cam.setValue(self, forKey: "delegate")
     }
   }
 
   public func deviceBrowser(_ browser: ICDeviceBrowser, didRemove device: ICDevice, moreGoing: Bool) {
     log("Appareil retiré : \(device.name ?? "?")")
     if device == camera { camera = nil }
-  }
-
-  public func deviceBrowserDidEnumerateLocalDevices(_ browser: ICDeviceBrowser) {
-    log("Fin de l'énumération des appareils locaux (trouvés : \(browser.devices?.count ?? 0)).")
   }
 
   // MARK: - 2. Ouvrir la session
@@ -131,12 +127,12 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       log("Aucun appareil : faites d'abord « 1. Chercher ».")
       return
     }
-    cam.delegate = self
+    cam.setValue(self, forKey: "delegate")
     log("Ouverture de session demandée…")
     cam.requestOpenSession()
   }
 
-  public func device(_ device: ICDevice, didOpenSessionWithError error: Error?) {
+  @objc(device:didOpenSessionWithError:) public func device(_ device: ICDevice, didOpenSessionWithError error: Error?) {
     if let error = error {
       log("SESSION : ÉCHEC → \((error as NSError).domain) \((error as NSError).code) · \(error.localizedDescription)")
     } else {
@@ -144,38 +140,38 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     }
   }
 
-  public func device(_ device: ICDevice, didCloseSessionWithError error: Error?) {
+  @objc(device:didCloseSessionWithError:) public func device(_ device: ICDevice, didCloseSessionWithError error: Error?) {
     log("Session fermée" + (error.map { " (erreur : \($0.localizedDescription))" } ?? ""))
   }
 
-  public func didRemove(_ device: ICDevice) {
+  @objc(didRemoveDevice:) public func didRemove(_ device: ICDevice) {
     log("Appareil débranché.")
     if device == camera { camera = nil }
   }
 
-  public func deviceDidBecomeReady(_ device: ICDevice) {
+  @objc(deviceDidBecomeReady:) public func deviceDidBecomeReady(_ device: ICDevice) {
     log("Appareil prêt à recevoir des demandes.")
   }
 
-  public func device(_ device: ICDevice, didEncounterError error: Error?) {
+  @objc(device:didEncounterError:) public func device(_ device: ICDevice, didEncounterError error: Error?) {
     log("Erreur de l'appareil : \(error?.localizedDescription ?? "?")")
   }
 
-  public func cameraDeviceDidChangeCapability(_ camera: ICCameraDevice) {
+  @objc(cameraDeviceDidChangeCapability:) public func cameraDeviceDidChangeCapability(_ camera: ICCameraDevice) {
     log("Capacités modifiées : \(camera.capabilities.joined(separator: ", "))")
   }
 
-  public func cameraDeviceDidEnableAccessRestriction(_ device: ICDevice) {
+  @objc(cameraDeviceDidEnableAccessRestriction:) public func cameraDeviceDidEnableAccessRestriction(_ device: ICDevice) {
     log("Accès restreint par l'appareil.")
   }
 
-  public func cameraDeviceDidRemoveAccessRestriction(_ device: ICDevice) {
+  @objc(cameraDeviceDidRemoveAccessRestriction:) public func cameraDeviceDidRemoveAccessRestriction(_ device: ICDevice) {
     log("Accès restreint levé.")
   }
 
   // MARK: - Catalogue des fichiers
 
-  public func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
+  @objc(cameraDevice:didAddItems:) public func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
     batches += 1
     if batches <= 3 {
       let names = items.prefix(3).map { "\($0.name ?? "?") [\($0.uti ?? "?")]" }.joined(separator: " ; ")
@@ -183,13 +179,13 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     }
   }
 
-  public func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {
+  @objc(cameraDevice:didRemoveItems:) public func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {
     log("Fichiers retirés : \(items.count)")
   }
 
-  public func cameraDevice(_ camera: ICCameraDevice, didRenameItems items: [ICCameraItem]) {}
+  @objc(cameraDevice:didRenameItems:) public func cameraDevice(_ camera: ICCameraDevice, didRenameItems items: [ICCameraItem]) {}
 
-  public func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
+  @objc(deviceDidBecomeReadyWithCompleteContentCatalog:) public func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
     summarizeCatalog(device)
   }
 
@@ -334,7 +330,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     log("Formats d'image : " + images.map { hex($0) }.joined(separator: " "))
   }
 
-  public func cameraDevice(_ camera: ICCameraDevice, didReceivePTPEvent eventData: Data) {
+  @objc(cameraDevice:didReceivePTPEvent:) public func cameraDevice(_ camera: ICCameraDevice, didReceivePTPEvent eventData: Data) {
     let r = [UInt8](eventData)
     if r.count >= 8 {
       log("ÉVÉNEMENT PTP reçu : \(hex(Int(r[6]) | Int(r[7]) << 8)) (0x4002 = fichier ajouté)")
