@@ -47,6 +47,26 @@ jobs:
           cp -R /tmp/sauvegarde/lib /tmp/sauvegarde/test ./
           cp /tmp/sauvegarde/pubspec.yaml /tmp/sauvegarde/analysis_options.yaml ./
 
+      # Logo de Sursaut : on remplace l'icône Flutter par assets/app_icon_1024.png (carré, sans transparence,
+      # comme l'exige iOS) en fabriquant toutes les tailles listées par le modèle Flutter.
+      - name: Icône de l'application
+        run: |
+          python3 - <<'PY'
+          import json, subprocess
+          d = "ios/Runner/Assets.xcassets/AppIcon.appiconset"
+          contents = json.load(open(d + "/Contents.json"))
+          done = set()
+          for img in contents["images"]:
+              name = img.get("filename")
+              if not name or name in done:
+                  continue
+              w = float(img["size"].split("x")[0])
+              px = int(round(w * float(img["scale"].replace("x", ""))))
+              subprocess.run(["sips", "-z", str(px), str(px), "assets/app_icon_1024.png", "--out", d + "/" + name], check=True, stdout=subprocess.DEVNULL)
+              done.add(name)
+          print("icônes fabriquées :", len(done))
+          PY
+
       # Descriptions d'autorisations demandées par iPadOS (appareil photo branché).
       - name: Autorisations (Info.plist)
         run: |
