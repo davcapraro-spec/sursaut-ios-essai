@@ -134,6 +134,8 @@ class _CameraBenchPageState extends State<CameraBenchPage> {
                   onPressed: _showPreview,
                   child: const Text('10. Voir la dernière photo'),
                 ),
+                _button('11. Rafale de 5 photos', 'burst'),
+                _button('12. Partager les fichiers', 'shareFiles'),
                 _button('État', 'state'),
                 FilledButton(
                   style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),

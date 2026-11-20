@@ -17,6 +17,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   private var downloadDir: URL?
   private var batches = 0
   private var lastHandle: Int?
+  private var receivedCount = 0
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let instance = CameraBridge()
@@ -47,6 +48,8 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     case "iccShoot": iccShoot()
     case "readObject": readObject()
     case "sonyShoot": sonyShoot()
+    case "burst": burst(5)
+    case "shareFiles": shareFiles()
     case "downloadLatest": downloadLatest()
     case "state": state()
     case "stop": stop()
@@ -337,6 +340,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
         do {
           try body.write(to: dir.appendingPathComponent(name))
           message += " · enregistré : \(name)"
+          self.receivedCount += 1
         } catch {
           message += " · écriture impossible : \(error.localizedDescription)"
         }
@@ -350,7 +354,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   /// Séquence de déclenchement d'après des projets libres (non vérifiée) :
   /// opération 0x9207, propriété 0xD2C1 (mise au point) puis 0xD2C2
   /// (déclenchement) ; valeur 2 = appui, 1 = relâchement.
-  private func sonyShoot() {
+  private func sonyShoot(then: (() -> Void)? = nil) {
     log("DÉCLENCHEMENT SONY (expérimental) : 0x9207 sur 0xD2C1 puis 0xD2C2 (peut prendre une photo)")
     let steps: [(UInt32, UInt16, String)] = [
       (0xD2C1, 2, "mise au point : appui"),
@@ -358,12 +362,13 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       (0xD2C2, 1, "déclencheur : relâché"),
       (0xD2C1, 1, "mise au point : relâchée"),
     ]
-    runControl(steps, 0)
+    runControl(steps, 0, then)
   }
 
-  private func runControl(_ steps: [(UInt32, UInt16, String)], _ index: Int) {
+  private func runControl(_ steps: [(UInt32, UInt16, String)], _ index: Int, _ then: (() -> Void)? = nil) {
     if index >= steps.count {
       log("Séquence de déclenchement terminée. Une photo doit arriver (événement 0xC201).")
+      then?()
       return
     }
     let step = steps[index]
@@ -371,9 +376,81 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       guard let self = self else { return }
       if !ok { self.log("  cette étape n'a pas répondu 0x2001 ; on continue pour relâcher proprement.") }
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-        self?.runControl(steps, index + 1)
+        self?.runControl(steps, index + 1, then)
       }
     })
+  }
+
+  // MARK: - 11. Rafale de 5 photos / 12. Partager les fichiers
+
+  private var burstRunning = false
+
+  /// Déclenche `total` photos l'une après l'autre (2 s entre chaque) et
+  /// compte celles qui arrivent réellement sur l'iPad.
+  private func burst(_ total: Int) {
+    if burstRunning {
+      log("RAFALE déjà en cours.")
+      return
+    }
+    guard camera != nil else {
+      log("Aucun appareil : faites d'abord « 1. Chercher », « 2. Ouvrir la session » et « 6. Poignée de main ».")
+      return
+    }
+    burstRunning = true
+    let before = receivedCount
+    let started = Date()
+    log("RAFALE : \(total) photos, une toutes les 2 s environ (appareil en RAW, objectif dégagé).")
+    nextBurst(1, total, before, started)
+  }
+
+  private func nextBurst(_ i: Int, _ total: Int, _ before: Int, _ started: Date) {
+    if i > total {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+        guard let self = self else { return }
+        let got = self.receivedCount - before
+        let secs = Date().timeIntervalSince(started)
+        self.log("RAFALE TERMINÉE : \(got) photo(s) reçue(s) sur \(total) demandée(s), en \(String(format: "%.0f", secs)) s. " + (got == total ? "TOUT EST ARRIVÉ." : "IL EN MANQUE."))
+        self.burstRunning = false
+      }
+      return
+    }
+    log("RAFALE : photo \(i) sur \(total)")
+    sonyShoot(then: { [weak self] in
+      DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+        self?.nextBurst(i + 1, total, before, started)
+      }
+    })
+  }
+
+  /// Ouvre la feuille de partage d'iPadOS avec tous les fichiers reçus
+  /// (Enregistrer dans Fichiers, AirDrop, etc.).
+  private func shareFiles() {
+    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("banc_appareil", isDirectory: true)
+    let all = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+    let files = all.filter { !$0.lastPathComponent.hasPrefix("apercu_") }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    if files.isEmpty {
+      log("PARTAGE : aucun fichier à partager.")
+      return
+    }
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else { return }
+      var top = UIApplication.shared.connectedScenes
+        .compactMap { ($0 as? UIWindowScene)?.windows.first(where: { $0.isKeyWindow })?.rootViewController }
+        .first
+      while let presented = top?.presentedViewController { top = presented }
+      guard let vc = top else {
+        self.log("PARTAGE : écran introuvable.")
+        return
+      }
+      let sheet = UIActivityViewController(activityItems: files, applicationActivities: nil)
+      sheet.popoverPresentationController?.sourceView = vc.view
+      sheet.popoverPresentationController?.sourceRect = CGRect(x: vc.view.bounds.midX, y: vc.view.bounds.midY, width: 1, height: 1)
+      sheet.popoverPresentationController?.permittedArrowDirections = []
+      vc.present(sheet, animated: true)
+      let total = files.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+      self.log("PARTAGE : \(files.count) fichier(s), \(String(format: "%.1f", Double(total) / 1_000_000)) Mo proposés à la feuille de partage.")
+    }
   }
 
   // MARK: - 10. Aperçu de la dernière photo (JPEG intégré au RAW)
