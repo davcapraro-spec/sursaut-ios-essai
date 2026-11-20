@@ -92,6 +92,8 @@ class _CameraBenchPageState extends State<CameraBenchPage> {
                 _button('3. Infos PTP', 'ptpInfo'),
                 _button('4. Télécharger la dernière', 'downloadLatest'),
                 _button('5. Déclencher (PTP)', 'takePicture'),
+                _button('6. Poignée de main Sony (essai)', 'sonyConnect'),
+                _button('7. Photo par iPadOS', 'iccShoot'),
                 _button('État', 'state'),
                 FilledButton(
                   style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),

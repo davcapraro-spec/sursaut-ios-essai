@@ -38,6 +38,8 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     case "openSession": openSession()
     case "ptpInfo": ptpInfo()
     case "takePicture": takePicture()
+    case "sonyConnect": sonyConnect()
+    case "iccShoot": iccShoot()
     case "downloadLatest": downloadLatest()
     case "state": state()
     case "stop": stop()
@@ -217,6 +219,59 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     sendPTP(opcode: 0x100E, params: [0, 0], label: "InitiateCapture (0x100E)", handler: nil)
   }
 
+
+  // MARK: - 6. Poignée de main Sony (expérimental)
+
+  /// Séquence de connexion propre à Sony, d'après des projets libres
+  /// (non vérifiée sur cet appareil) : SDIOConnect 1, 2, lecture des infos
+  /// étendues, SDIOConnect 3. Sans elle, l'appareil n'annonce peut-être
+  /// pas les nouvelles photos à l'iPad.
+  private func sonyConnect() {
+    log("POIGNÉE DE MAIN SONY (expérimentale) : 0x9201 (1) → 0x9201 (2) → 0x9202 → 0x9201 (3)")
+    let steps: [(UInt16, [UInt32], String)] = [
+      (0x9201, [1, 0, 0], "SDIOConnect phase 1 (0x9201)"),
+      (0x9201, [2, 0, 0], "SDIOConnect phase 2 (0x9201)"),
+      (0x9202, [0xC8], "SDIOGetExtDeviceInfo (0x9202)"),
+      (0x9201, [3, 0, 0], "SDIOConnect phase 3 (0x9201)"),
+    ]
+    runSteps(steps, 0)
+  }
+
+  private func runSteps(_ steps: [(UInt16, [UInt32], String)], _ index: Int) {
+    if index >= steps.count {
+      log("Séquence terminée. Prenez maintenant une photo au déclencheur et guettez « ÉVÉNEMENT PTP ».")
+      return
+    }
+    let step = steps[index]
+    sendPTP(opcode: step.0, params: step.1, label: step.2, handler: { [weak self] data in
+      self?.log("  données reçues : \(data.count) octets")
+    }, done: { [weak self] ok in
+      if ok {
+        self?.runSteps(steps, index + 1)
+      } else {
+        self?.log("Séquence arrêtée à l'étape \(index + 1) (réponse différente de 0x2001).")
+      }
+    })
+  }
+
+  // MARK: - 7. Photo par iPadOS (requestTakePicture)
+
+  private func iccShoot() {
+    guard let cam = camera else {
+      log("Aucun appareil : faites d'abord « 1. Chercher ».")
+      return
+    }
+    for name in ["requestEnableTethering", "requestTakePicture"] {
+      let selector = NSSelectorFromString(name)
+      if cam.responds(to: selector) {
+        log("iPadOS : appel de \(name)…")
+        _ = cam.perform(selector)
+      } else {
+        log("iPadOS : \(name) absent.")
+      }
+    }
+  }
+
   private func le16(_ v: UInt16) -> Data {
     return Data([UInt8(v & 0xFF), UInt8(v >> 8)])
   }
@@ -225,9 +280,10 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     return Data([UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 24) & 0xFF)])
   }
 
-  private func sendPTP(opcode: UInt16, params: [UInt32], label: String, handler: ((Data) -> Void)?) {
+  private func sendPTP(opcode: UInt16, params: [UInt32], label: String, handler: ((Data) -> Void)?, done: ((Bool) -> Void)? = nil) {
     guard let cam = camera else {
       log("Aucun appareil : faites d'abord « 1. Chercher ».")
+      done?(false)
       return
     }
     var command = Data()
@@ -248,6 +304,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
         self.log("PTP ← \(label) : réponse \(code) (0x2001 = OK) · données reçues \(inData.count) octets")
       }
       if !inData.isEmpty { handler?(inData) }
+      done?(error == nil && code == "0x2001")
     }
   }
 
