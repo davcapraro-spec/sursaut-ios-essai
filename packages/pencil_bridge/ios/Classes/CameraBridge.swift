@@ -428,6 +428,11 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       return b[from..<min(n, from + count)].map { String(format: "%02X", $0) }.joined(separator: " ")
     }
     log("RÉGLAGES : \(n) octets reçus, début : \(hexDump(0, 40))")
+    var off = 0
+    while off < n {
+      log("  HEX \(off) : \(hexDump(off, 48))")
+      off += 48
+    }
     var pos = 0
     func rd(_ size: Int) -> UInt64? {
       guard pos + size <= n else { return nil }
@@ -460,13 +465,18 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
         }
       } else if form == 2 {
         var lists: [[UInt64]] = []
-        for _ in 0..<2 {
+        for round in 0..<2 {
+          // Après la 1re liste, un code de propriété (0x5xxx / 0xDxxx) signale la propriété suivante.
+          if round == 1 && pos + 2 <= n {
+            let peek = Int(b[pos]) | Int(b[pos + 1]) << 8
+            if (peek & 0xF000) == 0x5000 || (peek & 0xF000) == 0xD000 { break }
+          }
           guard let k = rd(2), k < 2000 else { break }
           var vals: [UInt64] = []
           for _ in 0..<Int(k) { if let v = rd(size) { vals.append(v) } }
           lists.append(vals)
         }
-        if let l = lists.last, !l.isEmpty {
+        if let l = lists.first, !l.isEmpty {
           let shown = l.prefix(14).map { hex(Int($0)) }.joined(separator: " ")
           choices = " · \(l.count) choix : \(shown)\(l.count > 14 ? " …" : "")"
         }
