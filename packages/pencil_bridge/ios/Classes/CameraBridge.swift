@@ -504,7 +504,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       let startPos = pos
       guard let code = rd(2), let type = rd(2), let getSet = rd(1), let enabled = rd(1) else { break }
       // Propriété de type texte (0xFFFF) : défaut, actuel = chaînes PTP (1 octet = nb de caractères, puis UTF-16), puis forme.
-      if type == 0xFFFF, (code & 0xF000) == 0x5000 || (code & 0xF000) == 0xD000 {
+      if type == 0xFFFF, (code & 0xF000) == 0x5000 || (code & 0xF000) == 0xD000 || (code & 0xF000) == 0xE000 {
         func rdString() -> String? {
           guard let len = rd(1) else { return nil }
           var chars: [UInt16] = []
@@ -517,7 +517,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
         if watch.contains(Int(truncatingIfNeeded: code)) || (!quiet && !curS.isEmpty) { log("  \(hex(Int(truncatingIfNeeded: code))) texte · \(getSet == 1 ? "modifiable" : "lecture seule") · « \(curS) »") }
         continue
       }
-      guard (code & 0xF000) == 0x5000 || (code & 0xF000) == 0xD000, let size = typeSize(Int(type)) else {
+      guard (code & 0xF000) == 0x5000 || (code & 0xF000) == 0xD000 || (code & 0xF000) == 0xE000, let size = typeSize(Int(type)) else {
         log("RÉGLAGES : analyse incertaine à l'octet \(startPos) : \(hexDump(startPos, 32))")
         break
       }
@@ -533,7 +533,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
           // Après la 1re liste, un code de propriété (0x5xxx / 0xDxxx) signale la propriété suivante.
           if round == 1 && pos + 2 <= n {
             let peek = Int(b[pos]) | Int(b[pos + 1]) << 8
-            if (peek & 0xF000) == 0x5000 || (peek & 0xF000) == 0xD000 { break }
+            if (peek & 0xF000) == 0x5000 || (peek & 0xF000) == 0xD000 || (peek & 0xF000) == 0xE000 { break }
           }
           guard let k = rd(2), k < 2000 else { break }
           var vals: [UInt64] = []
