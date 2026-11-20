@@ -272,7 +272,7 @@ class _EnginePageState extends State<EnginePage> {
                         child: Text(
                           _srcRgba == null
                               ? ''
-                              : '$_name · ${_w}×$_h px · rendu moteur (fil séparé) $_renderMs ms · '
+                              : '$_name · $_w×$_h px · rendu moteur (fil séparé) $_renderMs ms · '
                                   'conversion $_imageMs ms',
                           style: const TextStyle(fontSize: 12),
                         ),

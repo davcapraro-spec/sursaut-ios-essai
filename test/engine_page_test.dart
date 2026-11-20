@@ -6,7 +6,13 @@ import 'package:sursaut_essai/features/engine/engine_page.dart';
 void main() {
   testWidgets('l\'écran Moteur s\'affiche même sans bibliothèque Rust',
       (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1600, 1200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(const MaterialApp(home: EnginePage()));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
     expect(find.textContaining('Moteur Rust'), findsWidgets);
     expect(find.text('Image d\'essai'), findsOneWidget);
   });
