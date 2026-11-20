@@ -503,6 +503,20 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     while pos + 6 <= n && (expected < 0 || count < expected) {
       let startPos = pos
       guard let code = rd(2), let type = rd(2), let getSet = rd(1), let enabled = rd(1) else { break }
+      // Propriété de type texte (0xFFFF) : défaut, actuel = chaînes PTP (1 octet = nb de caractères, puis UTF-16), puis forme.
+      if type == 0xFFFF, (code & 0xF000) == 0x5000 || (code & 0xF000) == 0xD000 {
+        func rdString() -> String? {
+          guard let len = rd(1) else { return nil }
+          var chars: [UInt16] = []
+          for _ in 0..<Int(len) { guard let c = rd(2) else { return nil }; chars.append(UInt16(c)) }
+          if let last = chars.last, last == 0 { chars.removeLast() }
+          return String(decoding: chars, as: UTF16.self)
+        }
+        guard let _ = rdString(), let curS = rdString(), let _ = rd(1) else { break }
+        count += 1
+        if watch.contains(Int(code)) || (!quiet && !curS.isEmpty) { log("  \(hex(Int(code))) texte · \(getSet == 1 ? "modifiable" : "lecture seule") · « \(curS) »") }
+        continue
+      }
       guard (code & 0xF000) == 0x5000 || (code & 0xF000) == 0xD000, let size = typeSize(Int(type)) else {
         log("RÉGLAGES : analyse incertaine à l'octet \(startPos) : \(hexDump(startPos, 32))")
         break
