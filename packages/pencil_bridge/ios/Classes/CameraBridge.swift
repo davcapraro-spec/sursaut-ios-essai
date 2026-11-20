@@ -50,7 +50,9 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     case "sonyShoot": sonyShoot()
     case "burst": burst(5)
     case "readSettings": readSettings()
-    case "shareFiles": shareFiles()
+    case "shareFiles": shareFiles(onlyLast: false)
+    case "shareLast": shareFiles(onlyLast: true)
+    case "clearFiles": clearFiles()
     case "downloadLatest": downloadLatest()
     case "state": state()
     case "stop": stop()
@@ -530,11 +532,12 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
 
   /// Ouvre la feuille de partage d'iPadOS avec tous les fichiers reçus
   /// (Enregistrer dans Fichiers, AirDrop, etc.).
-  private func shareFiles() {
+  private func shareFiles(onlyLast: Bool) {
     let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
       .appendingPathComponent("banc_appareil", isDirectory: true)
     let all = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-    let files = all.filter { !$0.lastPathComponent.hasPrefix("apercu_") }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    var files = all.filter { !$0.lastPathComponent.hasPrefix("apercu_") && $0.pathExtension.lowercased() != "bin" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    if onlyLast, let last = files.last { files = [last] }
     if files.isEmpty {
       log("PARTAGE : aucun fichier à partager.")
       return
@@ -557,6 +560,18 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       let total = files.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
       self.log("PARTAGE : \(files.count) fichier(s), \(String(format: "%.1f", Double(total) / 1_000_000)) Mo proposés à la feuille de partage.")
     }
+  }
+
+  /// Vide le dossier des fichiers reçus (cache de l'app uniquement).
+  private func clearFiles() {
+    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("banc_appareil", isDirectory: true)
+    let all = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+    var removed = 0
+    for f in all {
+      if (try? FileManager.default.removeItem(at: f)) != nil { removed += 1 }
+    }
+    log("FICHIERS REÇUS : \(removed) fichier(s) supprimé(s) du cache de l'app (les copies déjà enregistrées dans Fichiers ne sont pas touchées).")
   }
 
   // MARK: - 10. Aperçu de la dernière photo (JPEG intégré au RAW)
