@@ -49,6 +49,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     case "readObject": readObject()
     case "sonyShoot": sonyShoot()
     case "burst": burst(5)
+    case "readSettings": readSettings()
     case "shareFiles": shareFiles()
     case "downloadLatest": downloadLatest()
     case "state": state()
@@ -379,6 +380,101 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
         self?.runControl(steps, index + 1, then)
       }
     })
+  }
+
+  // MARK: - 13. Lire les réglages de l'appareil (Sony 0x9209)
+
+  private func typeSize(_ t: Int) -> Int? {
+    switch t {
+    case 1, 2: return 1
+    case 3, 4: return 2
+    case 5, 6: return 4
+    case 7, 8: return 8
+    default: return nil
+    }
+  }
+
+  private func propName(_ code: Int) -> String {
+    switch code {
+    case 0x5001: return "batterie (probable)"
+    case 0x5005: return "balance des blancs (probable)"
+    case 0x5007: return "ouverture ƒ (probable)"
+    case 0x500A: return "mode de mise au point (probable)"
+    case 0x500E: return "mode d'exposition (probable)"
+    case 0x500F: return "ISO (probable)"
+    case 0x5010: return "compensation d'exposition (probable)"
+    case 0x5013: return "entraînement (probable)"
+    case 0xD20D: return "vitesse d'obturation (probable)"
+    case 0xD21E: return "ISO Sony (probable)"
+    default: return "?"
+    }
+  }
+
+  private func readSettings() {
+    sendPTP(opcode: 0x9209, params: [], label: "SDIOGetAllExtDevicePropInfo (0x9209)", handler: { [weak self] data in
+      self?.parseSettings(self?.stripContainer(data) ?? data)
+    })
+  }
+
+  private func parseSettings(_ body: Data) {
+    let b = [UInt8](body)
+    let n = b.count
+    if let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+      .appendingPathComponent("banc_appareil", isDirectory: true) {
+      try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+      try? body.write(to: dir.appendingPathComponent("reglages_0x9209.bin"))
+    }
+    func hexDump(_ from: Int, _ count: Int) -> String {
+      return b[from..<min(n, from + count)].map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+    log("RÉGLAGES : \(n) octets reçus, début : \(hexDump(0, 40))")
+    var pos = 0
+    func rd(_ size: Int) -> UInt64? {
+      guard pos + size <= n else { return nil }
+      var v: UInt64 = 0
+      for k in 0..<size { v |= UInt64(b[pos + k]) << UInt64(8 * k) }
+      pos += size
+      return v
+    }
+    // En-tête éventuel : nombre de propriétés sur 8 octets.
+    var expected = -1
+    if n >= 8 {
+      var c: UInt64 = 0
+      for k in 0..<8 { c |= UInt64(b[k]) << UInt64(8 * k) }
+      if c >= 1 && c <= 500 { expected = Int(c); pos = 8 }
+    }
+    log("RÉGLAGES : \(expected >= 0 ? "\(expected) propriétés annoncées" : "pas d'en-tête de nombre (lecture directe)")")
+    var count = 0
+    while pos + 6 <= n && (expected < 0 || count < expected) {
+      let startPos = pos
+      guard let code = rd(2), let type = rd(2), let getSet = rd(1), let enabled = rd(1) else { break }
+      guard (code & 0xF000) == 0x5000 || (code & 0xF000) == 0xD000, let size = typeSize(Int(type)) else {
+        log("RÉGLAGES : analyse incertaine à l'octet \(startPos) : \(hexDump(startPos, 32))")
+        break
+      }
+      guard let def = rd(size), let cur = rd(size), let form = rd(1) else { break }
+      var choices = ""
+      if form == 1 {
+        if let lo = rd(size), let hi = rd(size), let st = rd(size) {
+          choices = " · plage \(hex(Int(lo)))…\(hex(Int(hi))) pas \(hex(Int(st)))"
+        }
+      } else if form == 2 {
+        var lists: [[UInt64]] = []
+        for _ in 0..<2 {
+          guard let k = rd(2), k < 2000 else { break }
+          var vals: [UInt64] = []
+          for _ in 0..<Int(k) { if let v = rd(size) { vals.append(v) } }
+          lists.append(vals)
+        }
+        if let l = lists.last, !l.isEmpty {
+          let shown = l.prefix(14).map { hex(Int($0)) }.joined(separator: " ")
+          choices = " · \(l.count) choix : \(shown)\(l.count > 14 ? " …" : "")"
+        }
+      }
+      count += 1
+      log("  \(hex(Int(code))) \(propName(Int(code))) · type \(type) · \(getSet == 1 ? "modifiable" : "lecture seule") · \(enabled == 1 ? "actif" : "inactif") · défaut \(hex(Int(def))) · ACTUEL \(hex(Int(cur)))\(choices)")
+    }
+    log("RÉGLAGES : \(count) propriété(s) lue(s). Fichier brut : reglages_0x9209.bin (dans le partage).")
   }
 
   // MARK: - 11. Rafale de 5 photos / 12. Partager les fichiers
