@@ -42,6 +42,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     case "sonyConnect": sonyConnect()
     case "iccShoot": iccShoot()
     case "readObject": readObject()
+    case "sonyShoot": sonyShoot()
     case "downloadLatest": downloadLatest()
     case "state": state()
     case "stop": stop()
@@ -332,6 +333,37 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     })
   }
 
+  // MARK: - 9. Déclencher depuis l'iPad (Sony 0x9207, expérimental)
+
+  /// Séquence de déclenchement d'après des projets libres (non vérifiée) :
+  /// opération 0x9207, propriété 0xD2C1 (mise au point) puis 0xD2C2
+  /// (déclenchement) ; valeur 2 = appui, 1 = relâchement.
+  private func sonyShoot() {
+    log("DÉCLENCHEMENT SONY (expérimental) : 0x9207 sur 0xD2C1 puis 0xD2C2 (peut prendre une photo)")
+    let steps: [(UInt32, UInt16, String)] = [
+      (0xD2C1, 2, "mise au point : appui"),
+      (0xD2C2, 2, "déclencheur : appui"),
+      (0xD2C2, 1, "déclencheur : relâché"),
+      (0xD2C1, 1, "mise au point : relâchée"),
+    ]
+    runControl(steps, 0)
+  }
+
+  private func runControl(_ steps: [(UInt32, UInt16, String)], _ index: Int) {
+    if index >= steps.count {
+      log("Séquence de déclenchement terminée. Une photo doit arriver (événement 0xC201).")
+      return
+    }
+    let step = steps[index]
+    sendPTP(opcode: 0x9207, params: [step.0], label: "SetControlDeviceB 0x9207 · \(step.2)", handler: nil, outData: le16(step.1), done: { [weak self] ok in
+      guard let self = self else { return }
+      if !ok { self.log("  cette étape n'a pas répondu 0x2001 ; on continue pour relâcher proprement.") }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+        self?.runControl(steps, index + 1)
+      }
+    })
+  }
+
   private func le16(_ v: UInt16) -> Data {
     return Data([UInt8(v & 0xFF), UInt8(v >> 8)])
   }
@@ -340,7 +372,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     return Data([UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 24) & 0xFF)])
   }
 
-  private func sendPTP(opcode: UInt16, params: [UInt32], label: String, handler: ((Data) -> Void)?, done: ((Bool) -> Void)? = nil) {
+  private func sendPTP(opcode: UInt16, params: [UInt32], label: String, handler: ((Data) -> Void)?, outData: Data? = nil, done: ((Bool) -> Void)? = nil) {
     guard let cam = camera else {
       log("Aucun appareil : faites d'abord « 1. Chercher ».")
       done?(false)
@@ -353,7 +385,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     command.append(le32(0))
     for p in params { command.append(le32(p)) }
     log("PTP → \(label)")
-    cam.requestSendPTPCommand(command, outData: nil) { [weak self] inData, response, error in
+    cam.requestSendPTPCommand(command, outData: outData) { [weak self] inData, response, error in
       guard let self = self else { return }
       var code = "?"
       let r = [UInt8](response)
@@ -464,7 +496,8 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     log("ÉVÉNEMENT PTP \(hex(code))" + (params.isEmpty ? "" : " · paramètres : \(text)"))
     if code == 0xC201, let first = params.first {
       lastHandle = first
-      log("  → objet annoncé : \(hex(first)) (touchez « 8. Lire la photo annoncée »)")
+      log("  → objet annoncé : \(hex(first)) : lecture automatique…")
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.readObject() }
     }
   }
 
