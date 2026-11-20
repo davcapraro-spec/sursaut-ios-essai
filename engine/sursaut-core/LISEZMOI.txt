@@ -1,0 +1,3 @@
+COPIE du moteur Rust de Sursaut Windows (dossier C:\Users\davca\Sursaut\core).
+Ne pas modifier ici : corriger dans le dépôt Windows, puis relancer tools\synchroniser_moteur.bat
+(les binaires sursaut-render et sursaut-bench ne sont pas copiés).

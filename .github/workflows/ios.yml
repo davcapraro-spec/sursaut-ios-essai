@@ -12,9 +12,9 @@ jobs:
       - uses: actions/checkout@v4
 
       # Moteur Rust : tests, puis bibliothèque pour l'iPad (étape 1).
-      - name: Tests du moteur Rust
+      - name: Tests du moteur Rust (pont + moteur sursaut-core copié du PC)
         working-directory: engine
-        run: cargo test --release
+        run: cargo test --release --workspace
 
       - name: Compiler le moteur Rust pour l'iPad
         working-directory: engine

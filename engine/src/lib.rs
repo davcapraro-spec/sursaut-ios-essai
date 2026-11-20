@@ -1,361 +1,294 @@
-//! Moteur Sursaut iPad — étape 1.
+//! Pont C du moteur Sursaut (`sursaut-core`) pour l'iPad.
 //!
-//! Interface C minimale, appelée depuis Dart par `dart:ffi` :
-//!   - `sursaut_engine_version`  : texte de version (preuve que la chaîne Flutter -> Rust marche) ;
-//!   - `sursaut_render_rgba8`    : applique une recette JSON à une image RGBA 8 bits ;
-//!   - `sursaut_engine_keep`     : référence toutes les fonctions pour que l'éditeur de liens
-//!                                 iOS ne les supprime pas (appelée une fois par le code Swift).
+//! Dart (dart:ffi) manipule un « moteur » opaque : une photo ouverte, avec le cache par étage
+//! du pipeline. Chaque rendu applique une recette JSON (identique à celle du PC) et rend une
+//! image RGBA 8 bits.
 //!
-//! Le traitement se fait en lumière linéaire (sRGB -> linéaire -> réglages -> sRGB).
-//! Aucune image n'est conservée entre deux appels : l'appelant fournit les deux tampons.
+//!   sursaut_engine_version()                       texte de version
+//!   sursaut_engine_open_rgba8(src, w, h)           ouvre une photo (RGBA 8 bits) -> moteur ou nul
+//!   sursaut_engine_render(moteur, json, &w, &h)    rend -> pointeur RGBA (valable jusqu'au prochain appel) ou nul
+//!   sursaut_engine_last_error()                    dernier message d'erreur (texte)
+//!   sursaut_engine_close(moteur)                   libère
+//!   sursaut_engine_keep()                          référence les fonctions (voir PencilBridgePlugin.swift)
+//!
+//! Un moteur ne doit être utilisé que par un appel à la fois (Dart sérialise les rendus).
+//! Une panique du moteur est attrapée à la frontière : elle devient une erreur, jamais un plantage.
 
-use serde::Deserialize;
-use std::ffi::{c_char, CStr};
+use std::ffi::{c_char, CStr, CString};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Mutex;
+use sursaut_core::{Pipeline, Recipe};
 
-/// Version du moteur (texte terminé par un zéro, durée de vie statique).
-const VERSION: &[u8] = b"sursaut_engine 0.1.0 (etape 1)\0";
+const VERSION: &[u8] = b"sursaut_engine 0.2.0 (moteur sursaut-core)\0";
 
-/// Recette de l'étape 1. Les clés inconnues sont ignorées, les clés absentes valent 0
-/// (règle déjà en vigueur pour la recette du PC).
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct Recipe {
-    /// Exposition en IL (diaphragmes), -5 à +5.
-    pub exposure: f32,
-    /// Contraste, -100 à +100.
-    pub contrast: f32,
-    /// Hautes lumières, -100 à +100 (négatif = récupérer).
-    pub highlights: f32,
-    /// Ombres, -100 à +100 (positif = éclaircir).
-    pub shadows: f32,
-    /// Saturation, -100 à +100.
-    pub saturation: f32,
-    /// Température, -100 (froid) à +100 (chaud).
-    pub temperature: f32,
-}
+static LAST_ERROR: Mutex<Option<CString>> = Mutex::new(None);
 
-impl Default for Recipe {
-    fn default() -> Self {
-        Recipe { exposure: 0.0, contrast: 0.0, highlights: 0.0, shadows: 0.0, saturation: 0.0, temperature: 0.0 }
+fn set_error(msg: &str) {
+    let c = CString::new(msg.replace('\0', " ")).unwrap_or_default();
+    if let Ok(mut g) = LAST_ERROR.lock() {
+        *g = Some(c);
     }
 }
 
-impl Recipe {
-    fn is_identity(&self) -> bool {
-        *self == Recipe::default()
+pub struct Engine {
+    pipe: Pipeline,
+    /// Dernier rendu, en RGBA 8 bits (alpha = 255).
+    out: Vec<u8>,
+}
+
+impl Engine {
+    pub fn open_rgba8(rgba: &[u8], w: usize, h: usize) -> Result<Engine, String> {
+        if w == 0 || h == 0 || rgba.len() != w * h * 4 {
+            return Err(format!("taille d'image incohérente : {w}x{h}, {} octets", rgba.len()));
+        }
+        let mut rgb = Vec::with_capacity(w * h * 3);
+        for p in rgba.chunks_exact(4) {
+            rgb.extend_from_slice(&p[..3]);
+        }
+        Ok(Engine { pipe: Pipeline::from_u8(w, h, &rgb, true), out: Vec::new() })
+    }
+
+    /// Rend la photo avec la recette JSON ; renvoie (largeur, hauteur) du résultat (le recadrage peut changer la taille).
+    pub fn render(&mut self, recipe_json: &str) -> Result<(usize, usize), String> {
+        let recipe = if recipe_json.trim().is_empty() { Recipe::default() } else { Recipe::from_json(recipe_json)? };
+        let (w, h, rgb) = self.pipe.render_u8(&recipe);
+        self.out.clear();
+        self.out.reserve(w * h * 4);
+        for p in rgb.chunks_exact(3) {
+            self.out.extend_from_slice(&[p[0], p[1], p[2], 255]);
+        }
+        Ok((w, h))
+    }
+
+    pub fn output(&self) -> &[u8] {
+        &self.out
+    }
+
+    /// Étages recalculés par le dernier rendu (utile pour vérifier le cache).
+    pub fn recomputed(&self) -> Vec<&'static str> {
+        self.pipe.last_recomputed.clone()
     }
 }
-
-#[inline]
-fn srgb_to_linear(v: f32) -> f32 {
-    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-}
-
-#[inline]
-fn linear_to_srgb(v: f32) -> f32 {
-    if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
-}
-
-#[inline]
-fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-const OUT_LUT_SIZE: usize = 4096;
-
-struct Tables {
-    to_linear: [f32; 256],
-    to_srgb: Vec<u8>, // OUT_LUT_SIZE + 1 entrées, indexées par le linéaire [0,1]
-}
-
-impl Tables {
-    fn new() -> Self {
-        let mut to_linear = [0.0f32; 256];
-        for (i, v) in to_linear.iter_mut().enumerate() {
-            *v = srgb_to_linear(i as f32 / 255.0);
-        }
-        let mut to_srgb = Vec::with_capacity(OUT_LUT_SIZE + 1);
-        for i in 0..=OUT_LUT_SIZE {
-            let l = i as f32 / OUT_LUT_SIZE as f32;
-            to_srgb.push((linear_to_srgb(l) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
-        }
-        Tables { to_linear, to_srgb }
-    }
-}
-
-/// Traite une ligne de pixels (RGBA, 4 octets par pixel).
-fn process_rows(src: &[u8], dst: &mut [u8], r: &Recipe, t: &Tables) {
-    let gain = 2.0f32.powf(r.exposure);
-    // Température : chauffer = plus de rouge, moins de bleu (±20 % aux extrêmes).
-    let wb_r = 1.0 + 0.20 * r.temperature / 100.0;
-    let wb_b = 1.0 - 0.20 * r.temperature / 100.0;
-    let contrast_exp = 1.0 + 0.6 * r.contrast / 100.0;
-    let sat = 1.0 + r.saturation / 100.0;
-    let sh = r.shadows / 100.0;
-    let hl = r.highlights / 100.0;
-    const PIVOT: f32 = 0.18;
-
-    for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
-        let mut rgb = [t.to_linear[s[0] as usize], t.to_linear[s[1] as usize], t.to_linear[s[2] as usize]];
-        rgb[0] *= wb_r * gain;
-        rgb[1] *= gain;
-        rgb[2] *= wb_b * gain;
-
-        if sh != 0.0 || hl != 0.0 {
-            let lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
-            let f = (1.0 + sh * 0.8 * (1.0 - smoothstep(0.0, 0.5, lum)))
-                * (1.0 + hl * 0.5 * smoothstep(0.5, 1.0, lum));
-            for c in rgb.iter_mut() {
-                *c *= f;
-            }
-        }
-        if contrast_exp != 1.0 {
-            for c in rgb.iter_mut() {
-                *c = if *c > 0.0 { PIVOT * (*c / PIVOT).powf(contrast_exp) } else { 0.0 };
-            }
-        }
-        if sat != 1.0 {
-            let lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
-            for c in rgb.iter_mut() {
-                *c = lum + (*c - lum) * sat;
-            }
-        }
-        for k in 0..3 {
-            let l = rgb[k].clamp(0.0, 1.0);
-            d[k] = t.to_srgb[(l * OUT_LUT_SIZE as f32 + 0.5) as usize];
-        }
-        d[3] = s[3];
-    }
-}
-
-/// Rend `src` (RGBA 8 bits, `width * height * 4` octets) dans `dst` (même taille).
-pub fn render(src: &[u8], dst: &mut [u8], width: usize, height: usize, recipe: &Recipe) {
-    let row = width * 4;
-    assert_eq!(src.len(), row * height);
-    assert_eq!(dst.len(), row * height);
-    if recipe.is_identity() {
-        dst.copy_from_slice(src);
-        return;
-    }
-    let tables = Tables::new();
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(8).min(height.max(1));
-    if threads <= 1 || height < 64 {
-        process_rows(src, dst, recipe, &tables);
-        return;
-    }
-    let rows_per = (height + threads - 1) / threads;
-    std::thread::scope(|scope| {
-        for (s, d) in src.chunks(rows_per * row).zip(dst.chunks_mut(rows_per * row)) {
-            let tables = &tables;
-            scope.spawn(move || process_rows(s, d, recipe, tables));
-        }
-    });
-}
-
-// ------------------------------------------------------------------ interface C
-
-/// Codes de retour de `sursaut_render_rgba8`.
-pub const OK: i32 = 0;
-pub const ERR_NULL: i32 = 1;
-pub const ERR_JSON: i32 = 2;
-pub const ERR_SIZE: i32 = 3;
 
 #[no_mangle]
 pub extern "C" fn sursaut_engine_version() -> *const c_char {
     VERSION.as_ptr() as *const c_char
 }
 
-/// # Safety
-/// `src` et `out` pointent vers `width * height * 4` octets valides, `recipe_json` vers un texte
-/// terminé par un zéro (ou nul = recette vide). `src` et `out` peuvent être le même tampon.
 #[no_mangle]
-pub unsafe extern "C" fn sursaut_render_rgba8(
-    src: *const u8,
-    width: u32,
-    height: u32,
-    recipe_json: *const c_char,
-    out: *mut u8,
-) -> i32 {
-    if src.is_null() || out.is_null() {
-        return ERR_NULL;
+pub extern "C" fn sursaut_engine_last_error() -> *const c_char {
+    match LAST_ERROR.lock() {
+        Ok(g) => match g.as_ref() {
+            Some(c) => c.as_ptr(),
+            None => b"\0".as_ptr() as *const c_char,
+        },
+        Err(_) => b"\0".as_ptr() as *const c_char,
+    }
+}
+
+/// # Safety
+/// `src` pointe vers `width * height * 4` octets valides.
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_engine_open_rgba8(src: *const u8, width: u32, height: u32) -> *mut Engine {
+    if src.is_null() {
+        set_error("image absente");
+        return std::ptr::null_mut();
     }
     let (w, h) = (width as usize, height as usize);
     let len = match w.checked_mul(h).and_then(|n| n.checked_mul(4)) {
-        Some(n) if n > 0 => n,
-        _ => return ERR_SIZE,
+        Some(n) => n,
+        None => {
+            set_error("image trop grande");
+            return std::ptr::null_mut();
+        }
     };
-    let recipe = if recipe_json.is_null() {
-        Recipe::default()
+    let slice = std::slice::from_raw_parts(src, len);
+    match catch_unwind(AssertUnwindSafe(|| Engine::open_rgba8(slice, w, h))) {
+        Ok(Ok(e)) => Box::into_raw(Box::new(e)),
+        Ok(Err(m)) => {
+            set_error(&m);
+            std::ptr::null_mut()
+        }
+        Err(_) => {
+            set_error("le moteur a rencontré une erreur interne à l'ouverture");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// # Safety
+/// `engine` vient de `sursaut_engine_open_rgba8` ; `recipe_json` est un texte terminé par un zéro (ou nul) ;
+/// `out_w` et `out_h` pointent vers des entiers valides.
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_engine_render(
+    engine: *mut Engine,
+    recipe_json: *const c_char,
+    out_w: *mut u32,
+    out_h: *mut u32,
+) -> *const u8 {
+    if engine.is_null() || out_w.is_null() || out_h.is_null() {
+        set_error("moteur ou sortie absents");
+        return std::ptr::null();
+    }
+    let json = if recipe_json.is_null() {
+        ""
     } else {
-        let text = match CStr::from_ptr(recipe_json).to_str() {
+        match CStr::from_ptr(recipe_json).to_str() {
             Ok(t) => t,
-            Err(_) => return ERR_JSON,
-        };
-        if text.trim().is_empty() {
-            Recipe::default()
-        } else {
-            match serde_json::from_str::<Recipe>(text) {
-                Ok(r) => r,
-                Err(_) => return ERR_JSON,
+            Err(_) => {
+                set_error("recette : texte non valide");
+                return std::ptr::null();
             }
         }
     };
-    if src == out as *const u8 {
-        // Même tampon : on passe par une copie de la source.
-        let copy = std::slice::from_raw_parts(src, len).to_vec();
-        render(&copy, std::slice::from_raw_parts_mut(out, len), w, h, &recipe);
-    } else {
-        render(std::slice::from_raw_parts(src, len), std::slice::from_raw_parts_mut(out, len), w, h, &recipe);
+    let e = &mut *engine;
+    match catch_unwind(AssertUnwindSafe(|| e.render(json))) {
+        Ok(Ok((w, h))) => {
+            *out_w = w as u32;
+            *out_h = h as u32;
+            e.output().as_ptr()
+        }
+        Ok(Err(m)) => {
+            set_error(&m);
+            std::ptr::null()
+        }
+        Err(_) => {
+            // Le cache a pu rester à moitié écrit : on le vide (la source n'est pas touchée).
+            e.pipe.reset_cache();
+            set_error("le moteur a rencontré une erreur interne pendant le rendu");
+            std::ptr::null()
+        }
     }
-    OK
 }
 
-/// Référence toutes les fonctions exportées. Le code Swift de l'application l'appelle une fois
-/// au démarrage : sans cela, l'éditeur de liens d'iOS peut retirer les fonctions que seul Dart
-/// (par `dart:ffi`) utilise. Renvoie le nombre de fonctions exportées.
+/// # Safety
+/// `engine` vient de `sursaut_engine_open_rgba8` et n'est plus utilisé ensuite (nul accepté).
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_engine_close(engine: *mut Engine) {
+    if !engine.is_null() {
+        drop(Box::from_raw(engine));
+    }
+}
+
+/// Référence toutes les fonctions exportées : l'éditeur de liens d'iOS retire sinon celles que
+/// seul Dart (dart:ffi) utilise. Appelée une fois par le code Swift. Renvoie leur nombre.
 #[no_mangle]
 pub extern "C" fn sursaut_engine_keep() -> u32 {
-    let table: [usize; 2] = [
+    let table: [usize; 5] = [
         sursaut_engine_version as *const () as usize,
-        sursaut_render_rgba8 as *const () as usize,
+        sursaut_engine_last_error as *const () as usize,
+        sursaut_engine_open_rgba8 as *const () as usize,
+        sursaut_engine_render as *const () as usize,
+        sursaut_engine_close as *const () as usize,
     ];
     std::hint::black_box(&table);
     table.len() as u32
 }
 
 #[cfg(test)]
-mod bench {
-    use super::*;
-    #[test]
-    #[ignore]
-    fn chrono_2752x2064() {
-        let (w, h) = (2752usize, 2064usize);
-        let src: Vec<u8> = (0..w * h * 4).map(|i| (i * 7 % 251) as u8).collect();
-        let mut out = vec![0u8; src.len()];
-        let r = Recipe { exposure: 0.5, contrast: 25.0, highlights: -30.0, shadows: 40.0, saturation: 20.0, temperature: 10.0 };
-        let t = std::time::Instant::now();
-        render(&src, &mut out, w, h, &r);
-        eprintln!("rendu {}x{} : {:?} ({} fils)", w, h, t.elapsed(), std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn gradient(w: usize, h: usize) -> Vec<u8> {
+    fn photo(w: usize, h: usize) -> Vec<u8> {
         let mut v = Vec::with_capacity(w * h * 4);
         for y in 0..h {
             for x in 0..w {
-                v.extend_from_slice(&[(x * 255 / w.max(1)) as u8, (y * 255 / h.max(1)) as u8, ((x + y) % 256) as u8, 255]);
+                v.extend_from_slice(&[(x * 255 / w) as u8, (y * 255 / h) as u8, ((x / 8 + y / 8) % 2 * 160 + 40) as u8, 255]);
             }
         }
         v
     }
 
-    fn run(src: &[u8], w: u32, h: u32, json: &str) -> (i32, Vec<u8>) {
-        let mut out = vec![0u8; src.len()];
-        let c = std::ffi::CString::new(json).unwrap();
-        let code = unsafe { sursaut_render_rgba8(src.as_ptr(), w, h, c.as_ptr(), out.as_mut_ptr()) };
-        (code, out)
+    fn maxdiff(a: &[u8], b: &[u8]) -> i32 {
+        a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap_or(0)
     }
 
     #[test]
-    fn version_est_un_texte_c() {
-        let s = unsafe { CStr::from_ptr(sursaut_engine_version()) }.to_str().unwrap();
-        assert!(s.starts_with("sursaut_engine 0.1.0"));
+    fn version_et_erreur_vide() {
+        let v = unsafe { CStr::from_ptr(sursaut_engine_version()) }.to_str().unwrap();
+        assert!(v.starts_with("sursaut_engine 0.2.0"));
     }
 
     #[test]
-    fn recette_vide_ne_change_rien() {
-        let src = gradient(100, 80);
-        let (code, out) = run(&src, 100, 80, "{}");
-        assert_eq!(code, OK);
-        assert_eq!(src, out);
+    fn recette_neutre_redonne_la_photo_a_un_niveau() {
+        let src = photo(64, 48);
+        let mut e = Engine::open_rgba8(&src, 64, 48).unwrap();
+        assert_eq!(e.render("{}").unwrap(), (64, 48));
+        assert!(maxdiff(&src, e.output()) <= 1, "écart {}", maxdiff(&src, e.output()));
+        assert!(e.output().chunks_exact(4).all(|p| p[3] == 255));
     }
 
     #[test]
-    fn recette_neutre_explicite_ne_change_rien_a_un_niveau_pres() {
-        // Les réglages à zéro sont reconnus comme neutres (copie directe).
-        let src = gradient(100, 80);
-        let (_, out) = run(&src, 100, 80, r#"{"exposure":0,"contrast":0,"cle_inconnue":7}"#);
-        assert_eq!(src, out);
+    fn l_exposition_eclaircit_et_le_cache_sert_au_second_rendu() {
+        let src = photo(64, 48);
+        let mut e = Engine::open_rgba8(&src, 64, 48).unwrap();
+        e.render(r#"{"exposure":1.0}"#).unwrap();
+        let first = e.output().to_vec();
+        let mean = |v: &[u8]| v.iter().map(|x| *x as u64).sum::<u64>() as f64 / v.len() as f64;
+        assert!(mean(&first) > mean(&src) + 20.0);
+        e.render(r#"{"exposure":1.0}"#).unwrap();
+        assert!(e.recomputed().is_empty(), "même recette : tout vient du cache, obtenu {:?}", e.recomputed());
+        assert_eq!(first, e.output());
+        // Un curseur de couleur ne recalcule que l'aval.
+        e.render(r#"{"exposure":1.0,"saturation":30}"#).unwrap();
+        assert!(!e.recomputed().contains(&"wb_exposure"), "{:?}", e.recomputed());
     }
 
     #[test]
-    fn aller_retour_des_tables_est_exact_a_un_niveau() {
-        // Un réglage non nul mais infime passe par toute la chaîne : l'écart doit rester ≤ 1.
-        let src = gradient(100, 80);
-        let (_, out) = run(&src, 100, 80, r#"{"exposure":0.00001}"#);
-        let max = src.iter().zip(&out).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
-        assert!(max <= 1, "écart max {max}");
+    fn le_recadrage_change_la_taille_du_resultat() {
+        let src = photo(100, 80);
+        let mut e = Engine::open_rgba8(&src, 100, 80).unwrap();
+        let (w, h) = e.render(r#"{"crop_left":0.1,"crop_right":0.6}"#).unwrap();
+        assert!(w < 100 && h == 80, "{w}x{h}");
+        assert_eq!(e.output().len(), w * h * 4);
     }
 
     #[test]
-    fn exposition_plus_un_double_la_lumiere_lineaire() {
-        // Gris moyen sRGB 118 ≈ 0.18 linéaire ; +1 IL -> 0.36 linéaire ≈ sRGB 160.
-        let src = vec![118, 118, 118, 255];
-        let (_, out) = run(&src, 1, 1, r#"{"exposure":1}"#);
-        assert!((out[0] as i32 - 160).abs() <= 2, "obtenu {}", out[0]);
-        assert_eq!(out[3], 255);
+    fn erreurs_propres_par_l_interface_c() {
+        unsafe {
+            assert!(sursaut_engine_open_rgba8(std::ptr::null(), 4, 4).is_null());
+            let src = photo(4, 4);
+            let e = sursaut_engine_open_rgba8(src.as_ptr(), 4, 4);
+            assert!(!e.is_null());
+            let (mut w, mut h) = (0u32, 0u32);
+            let bad = CString::new("pas du json").unwrap();
+            assert!(sursaut_engine_render(e, bad.as_ptr(), &mut w, &mut h).is_null());
+            let msg = CStr::from_ptr(sursaut_engine_last_error()).to_str().unwrap();
+            assert!(msg.contains("recette"), "{msg}");
+            let good = CString::new(r#"{"exposure":0.5}"#).unwrap();
+            let p = sursaut_engine_render(e, good.as_ptr(), &mut w, &mut h);
+            assert!(!p.is_null() && (w, h) == (4, 4));
+            sursaut_engine_close(e);
+            sursaut_engine_close(std::ptr::null_mut());
+            assert!(sursaut_engine_render(std::ptr::null_mut(), good.as_ptr(), &mut w, &mut h).is_null());
+        }
     }
 
     #[test]
-    fn saturation_moins_cent_donne_du_gris() {
-        let src = vec![200, 50, 30, 255];
-        let (_, out) = run(&src, 1, 1, r#"{"saturation":-100}"#);
-        assert!((out[0] as i32 - out[1] as i32).abs() <= 1 && (out[1] as i32 - out[2] as i32).abs() <= 1, "{out:?}");
-    }
-
-    #[test]
-    fn temperature_chaude_monte_le_rouge_et_baisse_le_bleu() {
-        let src = vec![128, 128, 128, 255];
-        let (_, out) = run(&src, 1, 1, r#"{"temperature":50}"#);
-        assert!(out[0] > 128 && out[2] < 128, "{out:?}");
-    }
-
-    #[test]
-    fn ombres_eclaircissent_le_sombre_sans_toucher_le_clair() {
-        let src = vec![30, 30, 30, 255, 240, 240, 240, 255];
-        let (_, out) = run(&src, 2, 1, r#"{"shadows":100}"#);
-        assert!(out[0] > 30 + 8, "{out:?}");
-        assert!((out[4] as i32 - 240).abs() <= 1, "{out:?}");
-    }
-
-    #[test]
-    fn plusieurs_fils_donnent_le_meme_resultat_qu_un_seul() {
-        let (w, h) = (200, 300);
-        let src = gradient(w, h);
-        let r = Recipe { exposure: 0.4, contrast: 20.0, saturation: 15.0, ..Recipe::default() };
-        let mut a = vec![0u8; src.len()];
-        render(&src, &mut a, w, h, &r);
-        let mut b = vec![0u8; src.len()];
-        process_rows(&src, &mut b, &r, &Tables::new());
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn erreurs_de_l_interface() {
-        let src = gradient(4, 4);
-        assert_eq!(run(&src, 4, 4, "pas du json").0, ERR_JSON);
-        assert_eq!(run(&src, 0, 4, "{}").0, ERR_SIZE);
-        let mut out = vec![0u8; src.len()];
-        assert_eq!(unsafe { sursaut_render_rgba8(std::ptr::null(), 4, 4, std::ptr::null(), out.as_mut_ptr()) }, ERR_NULL);
-    }
-
-    #[test]
-    fn meme_tampon_en_entree_et_sortie() {
-        let mut buf = gradient(8, 8);
-        let expected = run(&buf, 8, 8, r#"{"exposure":1}"#).1;
-        let c = std::ffi::CString::new(r#"{"exposure":1}"#).unwrap();
-        let p = buf.as_mut_ptr();
-        assert_eq!(unsafe { sursaut_render_rgba8(p, 8, 8, c.as_ptr(), p) }, OK);
-        assert_eq!(buf, expected);
+    fn taille_incoherente_refusee() {
+        assert!(Engine::open_rgba8(&[0u8; 10], 4, 4).is_err());
+        assert!(Engine::open_rgba8(&[], 0, 0).is_err());
     }
 
     #[test]
     fn keep_compte_les_fonctions() {
-        assert_eq!(sursaut_engine_keep(), 2);
+        assert_eq!(sursaut_engine_keep(), 5);
+    }
+
+    #[test]
+    #[ignore]
+    fn chrono_2752x2064_curseur_couleur() {
+        let (w, h) = (2752usize, 2064usize);
+        let src = photo(w, h);
+        let mut e = Engine::open_rgba8(&src, w, h).unwrap();
+        let t = std::time::Instant::now();
+        e.render(r#"{"exposure":0.3,"clarity":20,"saturation":10}"#).unwrap();
+        eprintln!("1er rendu complet : {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        e.render(r#"{"exposure":0.3,"clarity":20,"saturation":25}"#).unwrap();
+        eprintln!("curseur de couleur seul : {:?} (étages : {:?})", t.elapsed(), e.recomputed());
+        let t = std::time::Instant::now();
+        e.render(r#"{"exposure":0.6,"clarity":20,"saturation":25}"#).unwrap();
+        eprintln!("curseur d'exposition : {:?} (étages : {:?})", t.elapsed(), e.recomputed());
     }
 }

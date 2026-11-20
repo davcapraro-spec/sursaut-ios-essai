@@ -34,14 +34,23 @@ const List<_Param> _params = <_Param>[
   _Param('contrast', 'Contraste', -100, 100),
   _Param('highlights', 'Hautes lumières', -100, 100),
   _Param('shadows', 'Ombres', -100, 100),
-  _Param('saturation', 'Saturation', -100, 100),
+  _Param('whites', 'Blancs', -100, 100),
+  _Param('blacks', 'Noirs', -100, 100),
   _Param('temperature', 'Température', -100, 100),
+  _Param('tint', 'Teinte', -100, 100),
+  _Param('vibrance', 'Vibrance', -100, 100),
+  _Param('saturation', 'Saturation', -100, 100),
+  _Param('texture', 'Texture', -100, 100),
+  _Param('clarity', 'Clarté', -100, 100),
+  _Param('dehaze', 'Correction du voile', -100, 100),
+  _Param('sharpen_amount', 'Netteté (gain)', 0, 100),
 ];
 
 class _EnginePageState extends State<EnginePage> {
   final ImagePicker _picker = ImagePicker();
-  Engine? _engine;
-  late final String _status;
+  late final EngineInfo _info;
+  PhotoEngine? _photo;
+  String? _error;
 
   Uint8List? _srcRgba;
   int _w = 0, _h = 0;
@@ -61,13 +70,20 @@ class _EnginePageState extends State<EnginePage> {
   @override
   void initState() {
     super.initState();
-    _engine = Engine.load();
-    _status = _engine == null
-        ? 'Moteur Rust ABSENT : ${Engine.lastError}'
-        : 'Moteur Rust chargé : ${_engine!.version}';
+    _info = EngineInfo.probe();
   }
 
   Future<void> _useRgba(Uint8List rgba, int w, int h, String name) async {
+    _photo?.close();
+    _photo = null;
+    _error = null;
+    if (_info.version != null) {
+      try {
+        _photo = PhotoEngine.open(rgba, w, h);
+      } catch (e) {
+        _error = e.toString();
+      }
+    }
     setState(() {
       _srcRgba = rgba;
       _w = w;
@@ -140,36 +156,49 @@ class _EnginePageState extends State<EnginePage> {
       _dirty = true;
       return;
     }
-    final Engine? engine = _engine;
+    final PhotoEngine? photo = _photo;
     final Uint8List? src = _srcRgba;
-    if (engine == null || src == null) return;
+    if (photo == null || src == null) return;
     _busy = true;
-    do {
-      _dirty = false;
-      final Stopwatch sw = Stopwatch()..start();
-      final Uint8List out = _before ? src : engine.render(src, _w, _h, _recipeJson());
-      final int renderMs = sw.elapsedMilliseconds;
-      sw.reset();
-      final Completer<ui.Image> done = Completer<ui.Image>();
-      ui.decodeImageFromPixels(out, _w, _h, ui.PixelFormat.rgba8888, done.complete);
-      final ui.Image img = await done.future;
-      final int imageMs = sw.elapsedMilliseconds;
-      if (!mounted) return;
-      final ui.Image? old = _shown;
-      setState(() {
-        _shown = img;
-        _renderMs = renderMs;
-        _imageMs = imageMs;
-      });
-      // On libère l'ancienne image seulement après le dessin de la nouvelle.
-      WidgetsBinding.instance.addPostFrameCallback((_) => old?.dispose());
-      await Future<void>.delayed(Duration.zero);
-    } while (_dirty);
-    _busy = false;
+    try {
+      do {
+        _dirty = false;
+        final Stopwatch sw = Stopwatch()..start();
+        int w = _w, h = _h;
+        Uint8List out = src;
+        if (!_before) {
+          final RenderResult r = await photo.render(_recipeJson());
+          out = r.rgba;
+          w = r.width;
+          h = r.height;
+        }
+        final int renderMs = sw.elapsedMilliseconds;
+        sw.reset();
+        final Completer<ui.Image> done = Completer<ui.Image>();
+        ui.decodeImageFromPixels(out, w, h, ui.PixelFormat.rgba8888, done.complete);
+        final ui.Image img = await done.future;
+        final int imageMs = sw.elapsedMilliseconds;
+        if (!mounted) return;
+        final ui.Image? old = _shown;
+        setState(() {
+          _shown = img;
+          _renderMs = renderMs;
+          _imageMs = imageMs;
+          _error = null;
+        });
+        // On libère l'ancienne image seulement après le dessin de la nouvelle.
+        WidgetsBinding.instance.addPostFrameCallback((_) => old?.dispose());
+      } while (_dirty);
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    } finally {
+      _busy = false;
+    }
   }
 
   @override
   void dispose() {
+    _photo?.close();
     _shown?.dispose();
     super.dispose();
   }
@@ -183,7 +212,7 @@ class _EnginePageState extends State<EnginePage> {
 
   @override
   Widget build(BuildContext context) {
-    final bool ready = _srcRgba != null && _engine != null;
+    final bool ready = _srcRgba != null && _photo != null;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Moteur Rust (étape 1)'),
@@ -206,9 +235,16 @@ class _EnginePageState extends State<EnginePage> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text(_status,
+                child: Text(
+                    _error != null
+                        ? 'Erreur : $_error'
+                        : _info.version == null
+                            ? 'Moteur Rust ABSENT : ${_info.error}'
+                            : 'Moteur Rust chargé : ${_info.version}',
                     style: TextStyle(
-                        color: _engine == null ? Colors.redAccent : Colors.greenAccent)),
+                        color: (_error != null || _info.version == null)
+                            ? Colors.redAccent
+                            : Colors.greenAccent)),
               ),
             ),
             Expanded(
@@ -225,7 +261,9 @@ class _EnginePageState extends State<EnginePage> {
             Container(
               color: Theme.of(context).colorScheme.surface,
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-              child: Column(
+              constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.42),
+              child: SingleChildScrollView(
+                child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
                   Row(
@@ -234,7 +272,7 @@ class _EnginePageState extends State<EnginePage> {
                         child: Text(
                           _srcRgba == null
                               ? ''
-                              : '$_name · ${_w}×$_h px · rendu moteur $_renderMs ms · '
+                              : '$_name · ${_w}×$_h px · rendu moteur (fil séparé) $_renderMs ms · '
                                   'conversion $_imageMs ms',
                           style: const TextStyle(fontSize: 12),
                         ),
@@ -288,6 +326,7 @@ class _EnginePageState extends State<EnginePage> {
                       ],
                     ),
                 ],
+              ),
               ),
             ),
           ],
