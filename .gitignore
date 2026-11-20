@@ -6,3 +6,5 @@ build/
 .flutter-plugins-dependencies
 *.ipa
 Payload/
+engine/target/
+packages/pencil_bridge/ios/libsursaut_engine.a

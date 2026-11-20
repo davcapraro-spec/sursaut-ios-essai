@@ -9,6 +9,8 @@ Pod::Spec.new do |s|
   s.source           = { :path => '.' }
   s.frameworks = 'ImageCaptureCore'
   s.source_files     = 'Classes/**/*'
+  # Moteur Rust (étape 1) : fabriqué par le workflow, copié ici avant la compilation.
+  s.vendored_libraries = 'libsursaut_engine.a'
   s.dependency 'Flutter'
   s.platform         = :ios, '13.0'
   s.swift_version    = '5.0'

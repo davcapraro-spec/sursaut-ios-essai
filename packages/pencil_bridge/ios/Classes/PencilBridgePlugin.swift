@@ -2,6 +2,12 @@ import Flutter
 import UIKit
 import UIKit.UIGestureRecognizerSubclass
 
+/// Moteur Rust (bibliothèque statique liée dans l'app). Cet appel, fait une fois au
+/// démarrage, empêche l'éditeur de liens de retirer les fonctions que seul Dart
+/// (par dart:ffi) utilise.
+@_silgen_name("sursaut_engine_keep")
+private func sursautEngineKeep() -> UInt32
+
 /// Pont Apple Pencil de Sursaut iPad.
 ///
 /// Observe le Pencil sans jamais gêner Flutter : les touches continuent
@@ -25,6 +31,7 @@ public class PencilBridgePlugin: NSObject, FlutterPlugin, FlutterStreamHandler, 
       binaryMessenger: registrar.messenger())
     registrar.addMethodCallDelegate(instance, channel: methods)
     CameraBridge.register(with: registrar)
+    _ = sursautEngineKeep()
   }
 
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {

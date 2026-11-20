@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../camera_bench/camera_bench_page.dart';
+import '../engine/engine_page.dart';
 import '../pencil_bench/pencil_bench_page.dart';
 
 /// Écran d'essai : choisir une photo, régler une luminosité d'essai.
@@ -59,6 +60,14 @@ class _DevelopPageState extends State<DevelopPage> {
       appBar: AppBar(
         title: Text(_name ?? 'Sursaut iPad (essai)'),
         actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (BuildContext context) => const EnginePage(),
+              ),
+            ),
+            child: const Text('Moteur'),
+          ),
           TextButton(
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(

@@ -11,6 +11,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Moteur Rust : tests, puis bibliothèque pour l'iPad (étape 1).
+      - name: Tests du moteur Rust
+        working-directory: engine
+        run: cargo test --release
+
+      - name: Compiler le moteur Rust pour l'iPad
+        working-directory: engine
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+        run: |
+          rustup target add aarch64-apple-ios
+          cargo build --release --target aarch64-apple-ios
+          cp target/aarch64-apple-ios/release/libsursaut_engine.a ../packages/pencil_bridge/ios/libsursaut_engine.a
+          ls -lh ../packages/pencil_bridge/ios/libsursaut_engine.a
+
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -39,6 +54,12 @@ jobs:
           plutil -insert NSPhotoLibraryUsageDescription -string "Sursaut lit les photos importées de l'appareil." ios/Runner/Info.plist
           plutil -insert NSPhotoLibraryAddUsageDescription -string "Sursaut enregistre les photos développées." ios/Runner/Info.plist
 
+      # Garder les noms des fonctions du moteur Rust dans l'exécutable (dart:ffi les cherche par nom).
+      - name: Conserver les symboles du moteur
+        run: |
+          echo "STRIP_STYLE = non-global" >> ios/Flutter/Release.xcconfig
+          cat ios/Flutter/Release.xcconfig
+
       - run: flutter pub get
 
       - name: Analyse et test
@@ -48,6 +69,13 @@ jobs:
 
       - name: Compiler sans signature
         run: flutter build ios --release --no-codesign
+
+      - name: Vérifier que le moteur Rust est dans l'application (information, ne bloque pas)
+        continue-on-error: true
+        run: |
+          find build/ios/iphoneos/Runner.app -type f \( -name Runner -o -name pencil_bridge \) | while read f; do
+            echo "== $f"; nm -gU "$f" | grep sursaut_ || echo "(aucun symbole sursaut_ dans ce fichier)"
+          done
 
       - name: Fabriquer l'ipa non signé
         run: |
