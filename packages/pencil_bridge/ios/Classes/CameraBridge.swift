@@ -21,6 +21,8 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   private var quietSettings = false
   private var watchCodes: Set<Int> = []
   private var lastISO: Int? = nil
+  private var lastValues: [Int: Int] = [:]
+  private var protocol3 = false
   private var afterRead: (() -> Void)? = nil
 
   public static func register(with registrar: FlutterPluginRegistrar) {
@@ -54,7 +56,10 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     case "sonyShoot": sonyShoot()
     case "burst": burst(5)
     case "readSettings": readSettings()
-    case "writeISO": writeISO()
+    case "writeISO": writeProperty(0xD21E, 4, "ISO") { $0 == 100 ? 200 : 100 }
+    case "writeAperture": writeProperty(0x5007, 2, "ouverture") { $0 == 0x276 ? 0x230 : 0x276 }
+    case "writeShutter": writeProperty(0xD20D, 4, "vitesse") { $0 == 0x10064 ? 0x1007D : 0x10064 }
+    case "sonyConnect3": sonyConnect3()
     case "shareFiles": shareFiles(onlyLast: false)
     case "shareLast": shareFiles(onlyLast: true)
     case "clearFiles": clearFiles()
@@ -253,11 +258,26 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   /// étendues, SDIOConnect 3. Sans elle, l'appareil n'annonce peut-être
   /// pas les nouvelles photos à l'iPad.
   private func sonyConnect() {
+    protocol3 = false
     log("POIGNÉE DE MAIN SONY (expérimentale) : 0x9201 (1) → 0x9201 (2) → 0x9202 → 0x9201 (3)")
     let steps: [(UInt16, [UInt32], String)] = [
       (0x9201, [1, 0, 0], "SDIOConnect phase 1 (0x9201)"),
       (0x9201, [2, 0, 0], "SDIOConnect phase 2 (0x9201)"),
       (0x9202, [0xC8], "SDIOGetExtDeviceInfo (0x9202)"),
+      (0x9201, [3, 0, 0], "SDIOConnect phase 3 (0x9201)"),
+    ]
+    runSteps(steps, 0)
+  }
+
+  /// Poignée de main au protocole « Camera Control PTP 3 » (version 3.00 = 0x012C),
+  /// celui que Sony recommande pour l'A7 IV (le PTP 2 est annoncé comme déprécié).
+  private func sonyConnect3() {
+    protocol3 = true
+    log("POIGNÉE DE MAIN SONY PTP 3 : 0x9201 (1) → 0x9201 (2) → 0x9202 (version 0x012C) → 0x9201 (3)")
+    let steps: [(UInt16, [UInt32], String)] = [
+      (0x9201, [1, 0, 0], "SDIOConnect phase 1 (0x9201)"),
+      (0x9201, [2, 0, 0], "SDIOConnect phase 2 (0x9201)"),
+      (0x9202, [0x012C, 0], "SDIOGetExtDeviceInfo version 3.00 (0x9202)"),
       (0x9201, [3, 0, 0], "SDIOConnect phase 3 (0x9201)"),
     ]
     runSteps(steps, 0)
@@ -437,7 +457,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     quietSettings = quiet
     watchCodes = watch
     afterRead = then
-    sendPTP(opcode: 0x9209, params: [], label: "SDIOGetAllExtDevicePropInfo (0x9209)", handler: { [weak self] data in
+    sendPTP(opcode: 0x9209, params: protocol3 ? [0, 0] : [], label: "SDIOGetAllExtDevicePropInfo (0x9209)\(protocol3 ? " PTP 3" : "")", handler: { [weak self] data in
       self?.parseSettings(self?.stripContainer(data) ?? data)
     }, done: { [weak self] ok in
       if !ok { self?.afterRead = nil; self?.quietSettings = false }
@@ -513,6 +533,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       }
       count += 1
       if Int(code) == 0xD21E { lastISO = Int(cur) }
+      lastValues[Int(code)] = Int(cur)
       if !quiet || watch.contains(Int(code)) { log("  \(hex(Int(code))) \(propName(Int(code))) · type \(type) · \(getSet == 1 ? "modifiable" : "lecture seule") · \(enabled == 1 ? "actif" : "inactif") · défaut \(hex(Int(def))) · ACTUEL \(hex(Int(cur)))\(interp(Int(code), cur))\(choices)") }
     }
     if !quiet { log("RÉGLAGES : \(count) propriété(s) lue(s). Fichier brut : reglages_0x9209.bin (dans le partage).") }
@@ -522,30 +543,36 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     callback?()
   }
 
-  // MARK: - 14. Changer l'ISO (essai d'écriture, Sony 0x9205)
+  // MARK: - 14 à 16. Écrire un réglage (SetExtDevicePropValue 0x9205, protocole PTP 3)
 
-  /// Lit l'ISO, demande 200 (ou 100 si l'ISO est déjà 200), puis relit.
-  private func writeISO() {
+  /// Lit la valeur actuelle, demande la valeur choisie par `pick`, relit, et dit
+  /// si l'appareil a pris le changement. Nécessite la poignée de main PTP 3 (« 6b »).
+  private func writeProperty(_ code: Int, _ size: Int, _ name: String, _ pick: @escaping (Int) -> Int) {
     guard camera != nil else {
-      log("Aucun appareil : faites d'abord 1, 2 et 6.")
+      log("Aucun appareil : faites d'abord 1, 2 puis 6b.")
       return
     }
-    log("ÉCRITURE (essai) : changement d'ISO par SetControlDeviceA 0x9205 sur la propriété 0xD21E.")
-    readSettings(quiet: true, watch: [0xD21E]) { [weak self] in
-      guard let self = self, let old = self.lastISO else {
-        self?.log("ÉCRITURE : ISO actuel introuvable, essai annulé.")
+    guard protocol3 else {
+      log("ÉCRITURE : faites d'abord « 6b. Poignée de main PTP 3 » (l'ancien protocole ne règle pas \(name) directement).")
+      return
+    }
+    log("ÉCRITURE (essai) : \(name) par SetExtDevicePropValue 0x9205 sur la propriété \(hex(code)).")
+    readSettings(quiet: true, watch: [code]) { [weak self] in
+      guard let self = self, let old = self.lastValues[code] else {
+        self?.log("ÉCRITURE : valeur actuelle de \(name) introuvable, essai annulé.")
         return
       }
-      let wanted = old == 100 ? 200 : 100
-      self.log("ÉCRITURE : ISO actuel \(old), demandé \(wanted).")
-      self.sendPTP(opcode: 0x9205, params: [0xD21E], label: "SetControlDeviceA 0x9205 · ISO \(wanted)", handler: nil, outData: self.le32(UInt32(wanted)), done: { [weak self] ok in
+      let wanted = pick(old)
+      self.log("ÉCRITURE : \(name) actuel \(self.hex(old)), demandé \(self.hex(wanted)).")
+      let payload = size == 2 ? self.le16(UInt16(truncatingIfNeeded: wanted)) : self.le32(UInt32(truncatingIfNeeded: wanted))
+      self.sendPTP(opcode: 0x9205, params: [UInt32(code), 0], label: "SetExtDevicePropValue 0x9205 · \(name) \(self.hex(wanted))", handler: nil, outData: payload, done: { [weak self] ok in
         guard let self = self else { return }
         self.log("ÉCRITURE : l'appareil répond \(ok ? "OK (0x2001)" : "autre chose que 0x2001"). Relecture dans 1 s…")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-          self?.readSettings(quiet: true, watch: [0xD21E]) { [weak self] in
+          self?.readSettings(quiet: true, watch: [code]) { [weak self] in
             guard let self = self else { return }
-            let now = self.lastISO ?? -1
-            self.log("ÉCRITURE : ISO avant \(old) · demandé \(wanted) · relu \(now) → " + (now == wanted ? "CHANGEMENT PRIS" : "PAS DE CHANGEMENT"))
+            let now = self.lastValues[code] ?? -1
+            self.log("ÉCRITURE : \(name) avant \(self.hex(old)) · demandé \(self.hex(wanted)) · relu \(self.hex(now)) → " + (now == wanted ? "CHANGEMENT PRIS" : "PAS DE CHANGEMENT"))
           }
         }
       })

@@ -139,7 +139,10 @@ class _CameraBenchPageState extends State<CameraBenchPage> {
                 _button('12b. Partager la dernière photo', 'shareLast'),
                 _button('12c. Vider les photos reçues', 'clearFiles'),
                 _button('13. Lire les réglages', 'readSettings'),
+                _button('6b. Poignée de main PTP 3 (essai)', 'sonyConnect3'),
                 _button('14. Changer l\'ISO (essai)', 'writeISO'),
+                _button('15. Changer l\'ouverture (essai)', 'writeAperture'),
+                _button('16. Changer la vitesse (essai)', 'writeShutter'),
                 _button('État', 'state'),
                 FilledButton(
                   style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),
