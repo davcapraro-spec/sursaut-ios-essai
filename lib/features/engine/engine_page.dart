@@ -66,6 +66,20 @@ const Map<String, double> _cropDefaults = <String, double>{
 
 double _def(String key) => _cropDefaults[key] ?? 0;
 
+/// Compression JPEG dans un fil séparé. Fonction autonome : elle ne reçoit que les
+/// pixels, pour que le fil n'emporte pas l'écran ni le moteur (non copiables).
+Future<Uint8List> _encodeJpeg(Uint8List rgba, int w, int h) {
+  return Isolate.run(() {
+    final img.Image im = img.Image.fromBytes(
+        width: w,
+        height: h,
+        bytes: Uint8List.fromList(rgba).buffer,
+        numChannels: 4,
+        order: img.ChannelOrder.rgba);
+    return Uint8List.fromList(img.encodeJpg(im, quality: 92));
+  });
+}
+
 class _EnginePageState extends State<EnginePage> {
   final ImagePicker _picker = ImagePicker();
   late final EngineInfo _info;
@@ -227,12 +241,7 @@ class _EnginePageState extends State<EnginePage> {
     try {
       final Map<String, dynamic> recipe = <String, dynamic>{..._sidecar.extra, ..._values};
       final RenderResult r = await photo.render(jsonEncode(recipe));
-      final Uint8List jpg = await Isolate.run(() {
-        final img.Image im = img.Image.fromBytes(
-            width: r.width, height: r.height, bytes: Uint8List.fromList(r.rgba).buffer, numChannels: 4,
-            order: img.ChannelOrder.rgba);
-        return Uint8List.fromList(img.encodeJpg(im, quality: 92));
-      });
+      final Uint8List jpg = await _encodeJpeg(r.rgba, r.width, r.height);
       final Directory tmp = await getTemporaryDirectory();
       String base = _name.replaceAll(RegExp(r'\.[^.]*$'), '');
       base = base.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
