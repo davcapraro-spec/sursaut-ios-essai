@@ -16,6 +16,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   private var downloadStart: Date?
   private var downloadDir: URL?
   private var batches = 0
+  private var lastHandle: Int?
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let instance = CameraBridge()
@@ -40,6 +41,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     case "takePicture": takePicture()
     case "sonyConnect": sonyConnect()
     case "iccShoot": iccShoot()
+    case "readObject": readObject()
     case "downloadLatest": downloadLatest()
     case "state": state()
     case "stop": stop()
@@ -272,6 +274,64 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     }
   }
 
+  // MARK: - 8. Lire la photo annoncée
+
+  private func stripContainer(_ data: Data) -> Data {
+    let raw = [UInt8](data)
+    if raw.count >= 12 {
+      let type = Int(raw[4]) | Int(raw[5]) << 8
+      if type == 2 { return data.subdata(in: 12..<data.count) }
+    }
+    return data
+  }
+
+  private func readObject() {
+    let handle = UInt32(lastHandle ?? 0xFFFFC001)
+    log("Lecture de l'objet \(hex(Int(handle))) : GetObjectInfo (0x1008) puis GetObject (0x1009)")
+    var name = "objet.bin"
+    sendPTP(opcode: 0x1008, params: [handle], label: "GetObjectInfo (0x1008)", handler: { [weak self] data in
+      guard let self = self else { return }
+      var r = PTPReader(self.stripContainer(data))
+      guard let _ = r.u32(), let format = r.u16(), let _ = r.u16(), let size = r.u32(),
+            let _ = r.u16(), let _ = r.u32(), let _ = r.u32(), let _ = r.u32(),
+            let w = r.u32(), let h = r.u32(), let _ = r.u32(), let _ = r.u32(),
+            let _ = r.u16(), let _ = r.u32(), let _ = r.u32() else {
+        self.log("  GetObjectInfo : données illisibles (\(data.count) octets)")
+        return
+      }
+      let file = r.string() ?? "?"
+      if file != "?" && !file.isEmpty { name = file }
+      self.log("  OBJET : \(file) · format \(self.hex(format)) · \(size / 1_000_000) Mo · \(w) × \(h) px")
+    }, done: { [weak self] ok in
+      guard let self = self else { return }
+      if !ok { self.log("  GetObjectInfo n'a pas répondu 0x2001 ; on tente quand même GetObject.") }
+      self.getObject(handle, name)
+    })
+  }
+
+  private func getObject(_ handle: UInt32, _ name: String) {
+    let start = Date()
+    sendPTP(opcode: 0x1009, params: [handle], label: "GetObject (0x1009)", handler: { [weak self] data in
+      guard let self = self else { return }
+      let body = self.stripContainer(data)
+      let seconds = Date().timeIntervalSince(start)
+      let mo = Double(body.count) / 1_000_000
+      let sig = [UInt8](body.prefix(4)).map { String(format: "%02X", $0) }.joined(separator: " ")
+      var message = "OBJET REÇU : \(String(format: "%.1f", mo)) Mo en \(String(format: "%.1f", seconds)) s (\(String(format: "%.1f", mo / max(seconds, 0.01))) Mo/s) · début du fichier : \(sig) (FF D8 = JPEG ; 49 49 2A 00 = ARW)"
+      if let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+        .appendingPathComponent("banc_appareil", isDirectory: true) {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        do {
+          try body.write(to: dir.appendingPathComponent(name))
+          message += " · enregistré : \(name)"
+        } catch {
+          message += " · écriture impossible : \(error.localizedDescription)"
+        }
+      }
+      self.log(message)
+    })
+  }
+
   private func le16(_ v: UInt16) -> Data {
     return Data([UInt8(v & 0xFF), UInt8(v >> 8)])
   }
@@ -389,10 +449,22 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
 
   @objc(cameraDevice:didReceivePTPEvent:) public func cameraDevice(_ camera: ICCameraDevice, didReceivePTPEvent eventData: Data) {
     let r = [UInt8](eventData)
-    if r.count >= 8 {
-      log("ÉVÉNEMENT PTP reçu : \(hex(Int(r[6]) | Int(r[7]) << 8)) (0x4002 = fichier ajouté)")
-    } else {
+    guard r.count >= 8 else {
       log("ÉVÉNEMENT PTP reçu (\(eventData.count) octets)")
+      return
+    }
+    let code = Int(r[6]) | Int(r[7]) << 8
+    var params: [Int] = []
+    var i = 12
+    while i + 4 <= r.count {
+      params.append(Int(r[i]) | Int(r[i + 1]) << 8 | Int(r[i + 2]) << 16 | Int(r[i + 3]) << 24)
+      i += 4
+    }
+    let text = params.map { hex($0) }.joined(separator: " ")
+    log("ÉVÉNEMENT PTP \(hex(code))" + (params.isEmpty ? "" : " · paramètres : \(text)"))
+    if code == 0xC201, let first = params.first {
+      lastHandle = first
+      log("  → objet annoncé : \(hex(first)) (touchez « 8. Lire la photo annoncée »)")
     }
   }
 
