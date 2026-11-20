@@ -56,4 +56,15 @@ void main() {
     expect(photoKey(a, 40, 25), isNot(photoKey(b, 40, 25)));
     expect(photoKey(a, 40, 25), isNot(photoKey(a, 25, 40)));
   });
+
+  test('sidecar : valeur par défaut non nulle (cadre plein) non écrite', () {
+    final SidecarData d = SidecarData(<String, double>{}, <String, dynamic>{});
+    const List<String> keys = <String>['crop_left', 'crop_right'];
+    const Map<String, double> defs = <String, double>{'crop_right': 1};
+    final String full = d.encode(<String, double>{'crop_left': 0, 'crop_right': 1}, keys, defaults: defs);
+    expect(full, '{}');
+    final String cut = d.encode(<String, double>{'crop_left': 0.1, 'crop_right': 0.9}, keys, defaults: defs);
+    expect(cut.contains('"crop_left": 0.1'), isTrue);
+    expect(cut.contains('"crop_right": 0.9'), isTrue);
+  });
 }

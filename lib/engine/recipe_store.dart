@@ -81,11 +81,13 @@ class SidecarData {
   }
 
   /// Texte à écrire : les clés inconnues d'abord, puis les réglages à valeur non nulle.
-  String encode(Map<String, double> current, Iterable<String> keys) {
+  String encode(Map<String, double> current, Iterable<String> keys,
+      {Map<String, double> defaults = const <String, double>{}}) {
     final Map<String, dynamic> out = <String, dynamic>{...extra};
     for (final String k in keys) {
-      final double v = current[k] ?? 0;
-      if (v != 0) {
+      final double def = defaults[k] ?? 0;
+      final double v = current[k] ?? def;
+      if (v != def) {
         out[k] = v;
       } else {
         out.remove(k);

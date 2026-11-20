@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../engine/engine.dart';
 import '../../engine/recipe_store.dart';
+import 'crop_overlay.dart';
 import 'engine_bench_page.dart';
 
 /// Étape 1 : aperçu + curseurs branchés sur le moteur Rust.
@@ -48,7 +49,18 @@ const List<_Param> _params = <_Param>[
   _Param('clarity', 'Clarté', -100, 100),
   _Param('dehaze', 'Correction du voile', -100, 100),
   _Param('sharpen_amount', 'Netteté (gain)', 0, 100),
+  _Param('angle', 'Angle (°)', -15, 15),
 ];
+
+/// Valeurs par défaut non nulles : le cadre de recadrage couvre toute l'image.
+const Map<String, double> _cropDefaults = <String, double>{
+  'crop_left': 0,
+  'crop_top': 0,
+  'crop_right': 1,
+  'crop_bottom': 1,
+};
+
+double _def(String key) => _cropDefaults[key] ?? 0;
 
 class _EnginePageState extends State<EnginePage> {
   final ImagePicker _picker = ImagePicker();
@@ -64,7 +76,11 @@ class _EnginePageState extends State<EnginePage> {
 
   final Map<String, double> _values = <String, double>{
     for (final _Param p in _params) p.key: 0,
+    ..._cropDefaults,
   };
+
+  bool _cropMode = false;
+  double? _aspect; // largeur/hauteur imposée ; null = cadre libre
 
   late RecipeHistory _history = RecipeHistory(<String, double>{});
   SidecarData _sidecar = SidecarData(<String, double>{}, <String, dynamic>{});
@@ -101,9 +117,11 @@ class _EnginePageState extends State<EnginePage> {
       _h = h;
       _name = name;
       _sidecar = loaded;
-      for (final _Param p in _params) {
-        _values[p.key] = loaded.values[p.key] ?? 0;
+      for (final String k in _values.keys.toList()) {
+        _values[k] = loaded.values[k] ?? _def(k);
       }
+      _cropMode = false;
+      _aspect = null;
       _history = RecipeHistory(_values);
       _saveInfo = loaded.values.isNotEmpty || loaded.extra.isNotEmpty
           ? 'Réglages retrouvés'
@@ -112,7 +130,7 @@ class _EnginePageState extends State<EnginePage> {
     await _refresh();
   }
 
-  Iterable<String> get _keys => _params.map((_Param p) => p.key);
+  Iterable<String> get _keys => _values.keys;
 
   Future<File> _sidecarFile(String name) async {
     final Directory base = await getApplicationDocumentsDirectory();
@@ -137,7 +155,7 @@ class _EnginePageState extends State<EnginePage> {
     if (_srcRgba == null) return;
     try {
       final File f = await _sidecarFile(_key);
-      await f.writeAsString(_sidecar.encode(_values, _keys));
+      await f.writeAsString(_sidecar.encode(_values, _keys, defaults: _cropDefaults));
       if (mounted) setState(() => _saveInfo = 'Réglages enregistrés');
     } catch (e) {
       if (mounted) setState(() => _saveInfo = 'Enregistrement impossible : $e');
@@ -154,8 +172,8 @@ class _EnginePageState extends State<EnginePage> {
   void _applyHistory(Map<String, double>? v) {
     if (v == null) return;
     setState(() {
-      for (final _Param p in _params) {
-        _values[p.key] = v[p.key] ?? 0;
+      for (final String k in _values.keys.toList()) {
+        _values[k] = v[k] ?? _def(k);
       }
       _before = false;
     });
@@ -214,7 +232,107 @@ class _EnginePageState extends State<EnginePage> {
     await _useRgba(px, w, h, 'Image d\'essai');
   }
 
-  String _recipeJson() => jsonEncode(<String, dynamic>{..._sidecar.extra, ..._values});
+  String _recipeJson() => jsonEncode(<String, dynamic>{
+        ..._sidecar.extra,
+        ..._values,
+        // En mode recadrage, on voit toute l'image (déjà redressée) sous le cadre.
+        if (_cropMode) ..._cropDefaults,
+      });
+
+  Rect get _cropRect => Rect.fromLTRB(_values['crop_left']!, _values['crop_top']!,
+      _values['crop_right']!, _values['crop_bottom']!);
+
+  void _setCropRect(Rect r) {
+    setState(() {
+      _values['crop_left'] = r.left;
+      _values['crop_top'] = r.top;
+      _values['crop_right'] = r.right;
+      _values['crop_bottom'] = r.bottom;
+    });
+  }
+
+  void _enterCrop() {
+    setState(() {
+      _cropMode = true;
+      _before = false;
+    });
+    _refresh();
+  }
+
+  void _leaveCrop() {
+    setState(() => _cropMode = false);
+    _commit();
+    _refresh();
+  }
+
+  void _resetCrop() {
+    setState(() {
+      _aspect = null;
+      _values.addAll(_cropDefaults);
+    });
+    _commit();
+  }
+
+  /// Impose un rapport largeur/hauteur : le plus grand cadre de ce rapport
+  /// contenu dans le cadre actuel, centré sur lui.
+  void _setAspect(double? a) {
+    setState(() => _aspect = a);
+    if (a == null) return;
+    final Rect cur = _cropRect;
+    final double k = _w / (a * _h); // hauteur/largeur en fractions
+    double fw = cur.width < cur.height / k ? cur.width : cur.height / k;
+    double fh = fw * k;
+    if (fw > 1) {
+      fw = 1;
+      fh = k;
+    }
+    if (fh > 1) {
+      fh = 1;
+      fw = 1 / k;
+    }
+    double l = cur.center.dx - fw / 2;
+    double t = cur.center.dy - fh / 2;
+    l = l < 0 ? 0 : (l + fw > 1 ? 1 - fw : l);
+    t = t < 0 ? 0 : (t + fh > 1 ? 1 - fh : t);
+    _setCropRect(Rect.fromLTWH(l, t, fw, fh));
+    _commit();
+  }
+
+  List<Widget> _cropControls() {
+    final double orig = _w / _h;
+    final List<(String, double?)> choices = <(String, double?)>[
+      ('Libre', null),
+      ('Original', orig),
+      ('1:1', 1.0),
+      ('4:3', 4 / 3),
+      ('3:2', 3 / 2),
+      ('16:9', 16 / 9),
+    ];
+    bool sel(double? a) =>
+        a == null ? _aspect == null : (_aspect != null && (_aspect! - a).abs() < 1e-6);
+    return <Widget>[
+      Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: <Widget>[
+          for (final (String label, double? a) in choices)
+            ChoiceChip(
+              label: Text(label),
+              selected: sel(a),
+              onSelected: (_) => _setAspect(a),
+            ),
+          IconButton(
+            tooltip: 'Pivoter le cadre (portrait/paysage)',
+            onPressed: _aspect == null ? null : () => _setAspect(1 / _aspect!),
+            icon: const Icon(Icons.screen_rotation_alt),
+          ),
+          TextButton(onPressed: _resetCrop, child: const Text('Réinitialiser le cadre')),
+          FilledButton(onPressed: _leaveCrop, child: const Text('Terminé')),
+        ],
+      ),
+    ];
+  }
 
   /// Un seul rendu à la fois ; si un curseur bouge pendant le rendu, on refait
   /// un rendu avec la dernière valeur (le dernier gagne).
@@ -273,7 +391,11 @@ class _EnginePageState extends State<EnginePage> {
   String _fmt(_Param p) {
     final double v = _values[p.key]!;
     if (v == 0) return '0';
-    final String s = p.key == 'exposure' ? v.toStringAsFixed(2) : v.round().toString();
+    final String s = p.key == 'exposure'
+        ? v.toStringAsFixed(2)
+        : p.key == 'angle'
+            ? v.toStringAsFixed(1)
+            : v.round().toString();
     return v > 0 ? '+$s' : s.replaceFirst('-', '−');
   }
 
@@ -284,6 +406,9 @@ class _EnginePageState extends State<EnginePage> {
       appBar: AppBar(
         title: const Text('Moteur Rust (étape 2)'),
         actions: <Widget>[
+          TextButton(
+              onPressed: ready && !_cropMode ? _enterCrop : null,
+              child: const Text('Recadrer')),
           IconButton(
               tooltip: 'Annuler',
               onPressed: ready && _history.canUndo
@@ -334,7 +459,18 @@ class _EnginePageState extends State<EnginePage> {
               child: _shown == null
                   ? const Center(
                       child: Text('Touchez « Image d\'essai » ou « Choisir une photo ».'))
-                  : InteractiveViewer(
+                  : _cropMode
+                      ? Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: CropOverlay(
+                            image: _shown!,
+                            rect: _cropRect,
+                            aspect: _aspect,
+                            onChanged: _setCropRect,
+                            onEnd: _commit,
+                          ),
+                        )
+                      : InteractiveViewer(
                       maxScale: 8,
                       child: Center(
                         child: RawImage(image: _shown, fit: BoxFit.contain),
@@ -372,7 +508,9 @@ class _EnginePageState extends State<EnginePage> {
                       ),
                     ],
                   ),
+                  if (_cropMode) ..._cropControls(),
                   for (final _Param p in _params)
+                    if (!_cropMode || p.key == 'angle')
                     Row(
                       children: <Widget>[
                         SizedBox(width: 130, child: Text(p.label)),
