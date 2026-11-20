@@ -48,4 +48,12 @@ void main() {
     expect(SidecarData.parse('pas du json', <String>['a']), isNull);
     expect(SidecarData.parse('[1,2]', <String>['a']), isNull);
   });
+
+  test('photoKey : stable pour le même contenu, différent sinon', () {
+    final List<int> a = List<int>.generate(4000, (int i) => i % 251);
+    final List<int> b = List<int>.of(a)..[97 * 5] = 7;
+    expect(photoKey(a, 40, 25), photoKey(List<int>.of(a), 40, 25));
+    expect(photoKey(a, 40, 25), isNot(photoKey(b, 40, 25)));
+    expect(photoKey(a, 40, 25), isNot(photoKey(a, 25, 40)));
+  });
 }

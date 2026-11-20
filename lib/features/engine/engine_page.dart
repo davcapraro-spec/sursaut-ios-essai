@@ -69,6 +69,7 @@ class _EnginePageState extends State<EnginePage> {
   late RecipeHistory _history = RecipeHistory(<String, double>{});
   SidecarData _sidecar = SidecarData(<String, double>{}, <String, dynamic>{});
   String _saveInfo = '';
+  String _key = '';
 
   bool _busy = false;
   bool _dirty = false;
@@ -92,7 +93,8 @@ class _EnginePageState extends State<EnginePage> {
         _error = e.toString();
       }
     }
-    final SidecarData loaded = await _readSidecar(name);
+    _key = photoKey(rgba, w, h);
+    final SidecarData loaded = await _readSidecar(_key);
     setState(() {
       _srcRgba = rgba;
       _w = w;
@@ -134,7 +136,7 @@ class _EnginePageState extends State<EnginePage> {
   Future<void> _writeSidecar() async {
     if (_srcRgba == null) return;
     try {
-      final File f = await _sidecarFile(_name);
+      final File f = await _sidecarFile(_key);
       await f.writeAsString(_sidecar.encode(_values, _keys));
       if (mounted) setState(() => _saveInfo = 'Réglages enregistrés');
     } catch (e) {
