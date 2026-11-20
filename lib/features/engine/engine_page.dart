@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../engine/engine.dart';
+import 'engine_bench_page.dart';
 
 /// Étape 1 : aperçu + curseurs branchés sur le moteur Rust.
 ///
@@ -217,6 +218,10 @@ class _EnginePageState extends State<EnginePage> {
       appBar: AppBar(
         title: const Text('Moteur Rust (étape 1)'),
         actions: <Widget>[
+          TextButton(
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
+                  builder: (_) => const EngineBenchPage())),
+              child: const Text('Test auto')),
           TextButton(onPressed: _useTestImage, child: const Text('Image d\'essai')),
           Padding(
             padding: const EdgeInsets.only(right: 12),
