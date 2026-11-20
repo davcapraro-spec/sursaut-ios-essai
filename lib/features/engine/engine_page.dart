@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../engine/engine.dart';
+import '../../engine/recipe_store.dart';
 import 'engine_bench_page.dart';
 
 /// Étape 1 : aperçu + curseurs branchés sur le moteur Rust.
@@ -63,6 +66,10 @@ class _EnginePageState extends State<EnginePage> {
     for (final _Param p in _params) p.key: 0,
   };
 
+  late RecipeHistory _history = RecipeHistory(<String, double>{});
+  SidecarData _sidecar = SidecarData(<String, double>{}, <String, dynamic>{});
+  String _saveInfo = '';
+
   bool _busy = false;
   bool _dirty = false;
   int _renderMs = -1;
@@ -85,16 +92,73 @@ class _EnginePageState extends State<EnginePage> {
         _error = e.toString();
       }
     }
+    final SidecarData loaded = await _readSidecar(name);
     setState(() {
       _srcRgba = rgba;
       _w = w;
       _h = h;
       _name = name;
+      _sidecar = loaded;
       for (final _Param p in _params) {
-        _values[p.key] = 0;
+        _values[p.key] = loaded.values[p.key] ?? 0;
       }
+      _history = RecipeHistory(_values);
+      _saveInfo = loaded.values.isNotEmpty || loaded.extra.isNotEmpty
+          ? 'Réglages retrouvés'
+          : '';
     });
     await _refresh();
+  }
+
+  Iterable<String> get _keys => _params.map((_Param p) => p.key);
+
+  Future<File> _sidecarFile(String name) async {
+    final Directory base = await getApplicationDocumentsDirectory();
+    final Directory dir = Directory('${base.path}/reglages');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    final String safe = name.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+    return File('${dir.path}/$safe.sursaut.json');
+  }
+
+  Future<SidecarData> _readSidecar(String name) async {
+    try {
+      final File f = await _sidecarFile(name);
+      if (await f.exists()) {
+        final SidecarData? d = SidecarData.parse(await f.readAsString(), _keys);
+        if (d != null) return d;
+      }
+    } catch (_) {}
+    return SidecarData(<String, double>{}, <String, dynamic>{});
+  }
+
+  Future<void> _writeSidecar() async {
+    if (_srcRgba == null) return;
+    try {
+      final File f = await _sidecarFile(_name);
+      await f.writeAsString(_sidecar.encode(_values, _keys));
+      if (mounted) setState(() => _saveInfo = 'Réglages enregistrés');
+    } catch (e) {
+      if (mounted) setState(() => _saveInfo = 'Enregistrement impossible : $e');
+    }
+  }
+
+  /// Valide l'état actuel : une étape d'annulation + sauvegarde du fichier.
+  void _commit() {
+    _history.commit(_values);
+    _writeSidecar();
+    setState(() {});
+  }
+
+  void _applyHistory(Map<String, double>? v) {
+    if (v == null) return;
+    setState(() {
+      for (final _Param p in _params) {
+        _values[p.key] = v[p.key] ?? 0;
+      }
+      _before = false;
+    });
+    _writeSidecar();
+    _refresh();
   }
 
   Future<void> _choose() async {
@@ -148,7 +212,7 @@ class _EnginePageState extends State<EnginePage> {
     await _useRgba(px, w, h, 'Image d\'essai');
   }
 
-  String _recipeJson() => jsonEncode(_values);
+  String _recipeJson() => jsonEncode(<String, dynamic>{..._sidecar.extra, ..._values});
 
   /// Un seul rendu à la fois ; si un curseur bouge pendant le rendu, on refait
   /// un rendu avec la dernière valeur (le dernier gagne).
@@ -216,8 +280,20 @@ class _EnginePageState extends State<EnginePage> {
     final bool ready = _srcRgba != null && _photo != null;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Moteur Rust (étape 1)'),
+        title: const Text('Moteur Rust (étape 2)'),
         actions: <Widget>[
+          IconButton(
+              tooltip: 'Annuler',
+              onPressed: ready && _history.canUndo
+                  ? () => _applyHistory(_history.undo())
+                  : null,
+              icon: const Icon(Icons.undo)),
+          IconButton(
+              tooltip: 'Rétablir',
+              onPressed: ready && _history.canRedo
+                  ? () => _applyHistory(_history.redo())
+                  : null,
+              icon: const Icon(Icons.redo)),
           TextButton(
               onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
                   builder: (_) => const EngineBenchPage())),
@@ -277,8 +353,8 @@ class _EnginePageState extends State<EnginePage> {
                         child: Text(
                           _srcRgba == null
                               ? ''
-                              : '$_name · $_w×$_h px · rendu moteur (fil séparé) $_renderMs ms · '
-                                  'conversion $_imageMs ms',
+                              : '$_name · $_w×$_h px · rendu $_renderMs ms · '
+                                  'conversion $_imageMs ms · $_saveInfo',
                           style: const TextStyle(fontSize: 12),
                         ),
                       ),
@@ -304,6 +380,7 @@ class _EnginePageState extends State<EnginePage> {
                                 ? null
                                 : () {
                                     setState(() => _values[p.key] = 0);
+                                    _commit();
                                     _refresh();
                                   },
                             child: Slider(
@@ -319,6 +396,7 @@ class _EnginePageState extends State<EnginePage> {
                                       });
                                       _refresh();
                                     },
+                              onChangeEnd: !ready ? null : (double _) => _commit(),
                             ),
                           ),
                         ),

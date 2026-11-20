@@ -1,7 +1,7 @@
 name: sursaut_essai
 description: "Sursaut iPad : application d'essai de l'étape 0 (chaîne de compilation et d'installation)."
 publish_to: "none"
-version: 0.1.1+17
+version: 0.2.0+18
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -11,6 +11,7 @@ dependencies:
     sdk: flutter
   ffi: ^2.1.0
   image_picker: ^1.1.2
+  path_provider: ^2.1.4
   pencil_bridge:
     path: packages/pencil_bridge
 

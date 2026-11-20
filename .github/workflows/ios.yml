@@ -73,6 +73,8 @@ jobs:
           plutil -insert NSCameraUsageDescription -string "Sursaut lit l'appareil photo branché en USB-C." ios/Runner/Info.plist
           plutil -insert NSPhotoLibraryUsageDescription -string "Sursaut lit les photos importées de l'appareil." ios/Runner/Info.plist
           plutil -insert NSPhotoLibraryAddUsageDescription -string "Sursaut enregistre les photos développées." ios/Runner/Info.plist
+          plutil -insert UIFileSharingEnabled -bool true ios/Runner/Info.plist
+          plutil -insert LSSupportsOpeningDocumentsInPlace -bool true ios/Runner/Info.plist
 
       # Garder les noms des fonctions du moteur Rust dans l'exécutable (dart:ffi les cherche par nom).
       - name: Conserver les symboles du moteur
