@@ -85,7 +85,15 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   private func start() {
     DispatchQueue.main.async { [weak self] in
       guard let self = self else { return }
-      self.browser?.stop()
+      // Ne jamais recréer le navigateur : le recréer fait perdre l'appareil déjà trouvé.
+      if self.browser != nil {
+        if let cam = self.camera {
+          self.log("Recherche déjà en cours. Appareil déjà connu : \(cam.name ?? "?"). Passez à « 2. Ouvrir la session ».")
+        } else {
+          self.log("Recherche déjà en cours. Aucun appareil pour l'instant : débranchez puis rebranchez le câble USB-C.")
+        }
+        return
+      }
       let b = ICDeviceBrowser()
       b.delegate = self
       // 0x01 = appareils photo, 0x100 = branchés à cet appareil (USB).
