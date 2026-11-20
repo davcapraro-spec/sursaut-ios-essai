@@ -83,6 +83,17 @@ class CameraBridge {
     });
   }
 
+  /// Extrait l'aperçu JPEG du dernier fichier reçu. Renvoie son chemin, ou null.
+  static Future<String?> previewLast() async {
+    try {
+      return await _methods.invokeMethod<String>('previewLast');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   /// Demande une action au code natif. Renvoie un message d'erreur, ou null.
   static Future<String?> call(String method) async {
     try {

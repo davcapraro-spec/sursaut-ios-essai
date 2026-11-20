@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -56,6 +57,38 @@ class _CameraBenchPageState extends State<CameraBenchPage> {
     if (err != null) _add('Erreur : $err');
   }
 
+  Future<void> _showPreview() async {
+    final String? path = await CameraBridge.previewLast();
+    if (path == null) {
+      _add('Aucun aperçu à afficher (voir la ligne APERÇU ci-dessus).');
+      return;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext ctx) => Dialog.fullscreen(
+        child: Stack(
+          children: <Widget>[
+            Positioned.fill(
+              child: InteractiveViewer(
+                maxScale: 8,
+                child: Image.file(File(path), fit: BoxFit.contain),
+              ),
+            ),
+            Positioned(
+              top: 12,
+              right: 12,
+              child: FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Fermer'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _copy() async {
     final String report = <String>[
       'BANC APPAREIL — Sursaut iPad',
@@ -96,6 +129,11 @@ class _CameraBenchPageState extends State<CameraBenchPage> {
                 _button('7. Photo par iPadOS', 'iccShoot'),
                 _button('8. Lire la photo annoncée', 'readObject'),
                 _button('9. Déclencher depuis l\'iPad (essai)', 'sonyShoot'),
+                FilledButton(
+                  style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),
+                  onPressed: _showPreview,
+                  child: const Text('10. Voir la dernière photo'),
+                ),
                 _button('État', 'state'),
                 FilledButton(
                   style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),

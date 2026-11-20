@@ -34,6 +34,10 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   }
 
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    if call.method == "previewLast" {
+      result(previewLast())
+      return
+    }
     switch call.method {
     case "start": start()
     case "openSession": openSession()
@@ -370,6 +374,96 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
         self?.runControl(steps, index + 1)
       }
     })
+  }
+
+  // MARK: - 10. Aperçu de la dernière photo (JPEG intégré au RAW)
+
+  private func jpegExtent(_ b: UnsafeBufferPointer<UInt8>, _ start: Int) -> (start: Int, end: Int, w: Int, h: Int)? {
+    let n = b.count
+    var p = start + 2
+    var w = 0
+    var h = 0
+    while p + 4 <= n {
+      if b[p] != 0xFF { return nil }
+      let m = b[p + 1]
+      if m == 0xFF { p += 1; continue }
+      if m == 0xD9 { return nil }
+      let len = (Int(b[p + 2]) << 8) | Int(b[p + 3])
+      if (m == 0xC0 || m == 0xC1 || m == 0xC2) && p + 9 <= n {
+        h = (Int(b[p + 5]) << 8) | Int(b[p + 6])
+        w = (Int(b[p + 7]) << 8) | Int(b[p + 8])
+      }
+      if m == 0xDA {
+        var q = p + 2 + len
+        while q + 1 < n {
+          if b[q] == 0xFF {
+            let nx = b[q + 1]
+            if nx == 0xD9 { return (start, q + 2, w, h) }
+            if nx == 0x00 || (nx >= 0xD0 && nx <= 0xD7) || nx == 0xFF { q += 2; continue }
+          }
+          q += 1
+        }
+        return nil
+      }
+      p += 2 + len
+    }
+    return nil
+  }
+
+  /// Cherche dans le dernier fichier reçu le plus grand JPEG intégré (les RAW
+  /// Sony en contiennent un), l'enregistre et renvoie son chemin.
+  private func previewLast() -> String? {
+    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("banc_appareil", isDirectory: true)
+    guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else {
+      log("APERÇU : aucun fichier reçu pour l'instant.")
+      return nil
+    }
+    func modified(_ u: URL) -> Date {
+      return (try? u.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
+    }
+    let candidates = files.filter { !$0.lastPathComponent.hasPrefix("apercu_") }
+    guard let newest = candidates.max(by: { modified($0) < modified($1) }) else {
+      log("APERÇU : aucun fichier reçu pour l'instant.")
+      return nil
+    }
+    guard let data = try? Data(contentsOf: newest, options: .mappedIfSafe) else {
+      log("APERÇU : impossible de lire \(newest.lastPathComponent).")
+      return nil
+    }
+    var best: (start: Int, end: Int, w: Int, h: Int)? = nil
+    data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+      let b = raw.bindMemory(to: UInt8.self)
+      let n = b.count
+      var i = 0
+      while i + 4 < n {
+        if b[i] == 0xFF && b[i + 1] == 0xD8 && b[i + 2] == 0xFF {
+          if let r = jpegExtent(b, i) {
+            if best == nil || (r.end - r.start) > (best!.end - best!.start) { best = r }
+            i = r.end
+            continue
+          }
+        }
+        i += 1
+      }
+    }
+    guard let r = best else {
+      log("APERÇU : aucun JPEG intégré trouvé dans \(newest.lastPathComponent).")
+      return nil
+    }
+    for old in files where old.lastPathComponent.hasPrefix("apercu_") {
+      try? FileManager.default.removeItem(at: old)
+    }
+    let out = dir.appendingPathComponent("apercu_\(Int(Date().timeIntervalSince1970 * 1000)).jpg")
+    do {
+      try data.subdata(in: r.start..<r.end).write(to: out)
+    } catch {
+      log("APERÇU : écriture impossible : \(error.localizedDescription)")
+      return nil
+    }
+    let mo = Double(r.end - r.start) / 1_000_000.0
+    log("APERÇU : JPEG intégré de \(String(format: "%.2f", mo)) Mo, \(r.w) × \(r.h) px, extrait de \(newest.lastPathComponent).")
+    return out.path
   }
 
   private func le16(_ v: UInt16) -> Data {
