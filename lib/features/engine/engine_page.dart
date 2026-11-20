@@ -1,12 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
 import '../../engine/recipe_store.dart';
@@ -184,7 +188,68 @@ class _EnginePageState extends State<EnginePage> {
   Future<void> _choose() async {
     final XFile? file = await _picker.pickImage(source: ImageSource.gallery);
     if (file == null) return;
-    final Uint8List bytes = await file.readAsBytes();
+    await _openBytes(await file.readAsBytes(), file.name);
+  }
+
+  /// Ouvre une photo depuis l'app Fichiers (iCloud Drive, clé USB, dossier de l'app...).
+  Future<void> _chooseFile() async {
+    final FilePickerResult? res = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: <String>['jpg', 'jpeg', 'png', 'heic', 'heif', 'tif', 'tiff', 'bmp', 'gif', 'webp'],
+    );
+    final String? path = res?.files.single.path;
+    if (path == null) return;
+    try {
+      await _openBytes(await File(path).readAsBytes(), res!.files.single.name);
+    } catch (e) {
+      _say('Ouverture impossible : $e');
+    }
+  }
+
+  void _say(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  final GlobalKey _exportKey = GlobalKey();
+  bool _exporting = false;
+
+  /// Développe la photo avec les réglages actuels (taille de travail), l'encode en JPEG
+  /// et ouvre la feuille de partage : « Enregistrer dans Fichiers », « Enregistrer l'image »
+  /// (Photos), AirDrop, Mail...
+  Future<void> _export() async {
+    final PhotoEngine? photo = _photo;
+    if (photo == null || _exporting) return;
+    final RenderBox? box = _exportKey.currentContext?.findRenderObject() as RenderBox?;
+    final Rect origin =
+        box != null ? box.localToGlobal(Offset.zero) & box.size : const Rect.fromLTWH(0, 0, 1, 1);
+    setState(() => _exporting = true);
+    try {
+      final Map<String, dynamic> recipe = <String, dynamic>{..._sidecar.extra, ..._values};
+      final RenderResult r = await photo.render(jsonEncode(recipe));
+      final Uint8List jpg = await Isolate.run(() {
+        final img.Image im = img.Image.fromBytes(
+            width: r.width, height: r.height, bytes: Uint8List.fromList(r.rgba).buffer, numChannels: 4,
+            order: img.ChannelOrder.rgba);
+        return Uint8List.fromList(img.encodeJpg(im, quality: 92));
+      });
+      final Directory tmp = await getTemporaryDirectory();
+      String base = _name.replaceAll(RegExp(r'\.[^.]*$'), '');
+      base = base.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+      if (base.isEmpty) base = 'photo';
+      final File out = File('${tmp.path}/${base}_sursaut.jpg');
+      await out.writeAsBytes(jpg, flush: true);
+      await Share.shareXFiles(<XFile>[XFile(out.path, mimeType: 'image/jpeg')],
+          sharePositionOrigin: origin);
+      _say('Photo développée : ${r.width}×${r.height} px, ${(jpg.length / 1e6).toStringAsFixed(1)} Mo');
+    } catch (e) {
+      _say('Export impossible : $e');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  Future<void> _openBytes(Uint8List bytes, String name) async {
     final ui.Codec probe = await ui.instantiateImageCodec(bytes);
     final ui.FrameInfo first = await probe.getNextFrame();
     final int srcW = first.image.width, srcH = first.image.height;
@@ -200,7 +265,7 @@ class _EnginePageState extends State<EnginePage> {
         await frame.image.toByteData(format: ui.ImageByteFormat.rawStraightRgba);
     if (data == null || !mounted) return;
     await _useRgba(
-        data.buffer.asUint8List(), frame.image.width, frame.image.height, file.name);
+        data.buffer.asUint8List(), frame.image.width, frame.image.height, name);
   }
 
   /// Image d'essai sans fichier : dégradés et pastilles de couleur.
@@ -426,12 +491,25 @@ class _EnginePageState extends State<EnginePage> {
                   builder: (_) => const EngineBenchPage())),
               child: const Text('Test auto')),
           TextButton(onPressed: _useTestImage, child: const Text('Image d\'essai')),
+          PopupMenuButton<String>(
+            tooltip: 'Ouvrir une photo',
+            onSelected: (String v) => v == 'photos' ? _choose() : _chooseFile(),
+            itemBuilder: (BuildContext context) => const <PopupMenuEntry<String>>[
+              PopupMenuItem<String>(value: 'photos', child: Text('Depuis Photos')),
+              PopupMenuItem<String>(value: 'files', child: Text('Depuis Fichiers')),
+            ],
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Text('Ouvrir'),
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 12),
             child: FilledButton(
+              key: _exportKey,
               style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),
-              onPressed: _choose,
-              child: const Text('Choisir une photo'),
+              onPressed: ready && !_cropMode && !_exporting ? _export : null,
+              child: Text(_exporting ? 'Export…' : 'Exporter'),
             ),
           ),
         ],
@@ -458,7 +536,7 @@ class _EnginePageState extends State<EnginePage> {
             Expanded(
               child: _shown == null
                   ? const Center(
-                      child: Text('Touchez « Image d\'essai » ou « Choisir une photo ».'))
+                      child: Text('Touchez « Image d\'essai » ou « Ouvrir ».'))
                   : _cropMode
                       ? Padding(
                           padding: const EdgeInsets.all(12),
