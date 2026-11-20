@@ -444,7 +444,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     switch code {
     case 0x5007: return " ≈ ƒ/" + String(format: "%.1f", Double(cur) / 100)
     case 0xD20D:
-      let den = Int(cur & 0xFFFF), num = Int(cur >> 16)
+      let den = Int(truncatingIfNeeded: cur & 0xFFFF), num = Int(truncatingIfNeeded: cur >> 16)
       return den > 0 ? " ≈ \(num)/\(den) s" : ""
     case 0xD21E: return " ≈ ISO \(cur)"
     case 0xD218: return " ≈ \(Int(Int8(truncatingIfNeeded: cur))) %"
@@ -496,7 +496,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     if n >= 8 {
       var c: UInt64 = 0
       for k in 0..<8 { c |= UInt64(b[k]) << UInt64(8 * k) }
-      if c >= 1 && c <= 500 { expected = Int(c); pos = 8 }
+      if c >= 1 && c <= 500 { expected = Int(truncatingIfNeeded: c); pos = 8 }
     }
     if !quiet { log("RÉGLAGES : \(expected >= 0 ? "\(expected) propriétés annoncées" : "pas d'en-tête de nombre (lecture directe)")") }
     var count = 0
@@ -514,7 +514,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
         }
         guard let _ = rdString(), let curS = rdString(), let _ = rd(1) else { break }
         count += 1
-        if watch.contains(Int(code)) || (!quiet && !curS.isEmpty) { log("  \(hex(Int(code))) texte · \(getSet == 1 ? "modifiable" : "lecture seule") · « \(curS) »") }
+        if watch.contains(Int(truncatingIfNeeded: code)) || (!quiet && !curS.isEmpty) { log("  \(hex(Int(truncatingIfNeeded: code))) texte · \(getSet == 1 ? "modifiable" : "lecture seule") · « \(curS) »") }
         continue
       }
       guard (code & 0xF000) == 0x5000 || (code & 0xF000) == 0xD000, let size = typeSize(Int(type)) else {
@@ -525,7 +525,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       var choices = ""
       if form == 1 {
         if let lo = rd(size), let hi = rd(size), let st = rd(size) {
-          choices = " · plage \(hex(Int(lo)))…\(hex(Int(hi))) pas \(hex(Int(st)))"
+          choices = " · plage \(hex(Int(truncatingIfNeeded: lo)))…\(hex(Int(truncatingIfNeeded: hi))) pas \(hex(Int(truncatingIfNeeded: st)))"
         }
       } else if form == 2 {
         var lists: [[UInt64]] = []
@@ -541,14 +541,14 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
           lists.append(vals)
         }
         if let l = lists.first, !l.isEmpty {
-          let shown = l.prefix(14).map { hex(Int($0)) }.joined(separator: " ")
+          let shown = l.prefix(14).map { hex(Int(truncatingIfNeeded: $0)) }.joined(separator: " ")
           choices = " · \(l.count) choix : \(shown)\(l.count > 14 ? " …" : "")"
         }
       }
       count += 1
-      if Int(code) == 0xD21E { lastISO = Int(cur) }
-      lastValues[Int(code)] = Int(cur)
-      if !quiet || watch.contains(Int(code)) { log("  \(hex(Int(code))) \(propName(Int(code))) · type \(type) · \(getSet == 1 ? "modifiable" : "lecture seule") · \(enabled == 1 ? "actif" : "inactif") · défaut \(hex(Int(def))) · ACTUEL \(hex(Int(cur)))\(interp(Int(code), cur))\(choices)") }
+      if Int(truncatingIfNeeded: code) == 0xD21E { lastISO = Int(truncatingIfNeeded: cur) }
+      lastValues[Int(truncatingIfNeeded: code)] = Int(truncatingIfNeeded: cur)
+      if !quiet || watch.contains(Int(truncatingIfNeeded: code)) { log("  \(hex(Int(truncatingIfNeeded: code))) \(propName(Int(truncatingIfNeeded: code))) · type \(type) · \(getSet == 1 ? "modifiable" : "lecture seule") · \(enabled == 1 ? "actif" : "inactif") · défaut \(hex(Int(truncatingIfNeeded: def))) · ACTUEL \(hex(Int(truncatingIfNeeded: cur)))\(interp(Int(truncatingIfNeeded: code), cur))\(choices)") }
     }
     if !quiet { log("RÉGLAGES : \(count) propriété(s) lue(s). Fichier brut : reglages_0x9209.bin (dans le partage).") }
     let callback = afterRead
