@@ -139,6 +139,7 @@ class _CameraBenchPageState extends State<CameraBenchPage> {
                 _button('12b. Partager la dernière photo', 'shareLast'),
                 _button('12c. Vider les photos reçues', 'clearFiles'),
                 _button('13. Lire les réglages', 'readSettings'),
+                _button('14. Changer l\'ISO (essai)', 'writeISO'),
                 _button('État', 'state'),
                 FilledButton(
                   style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),

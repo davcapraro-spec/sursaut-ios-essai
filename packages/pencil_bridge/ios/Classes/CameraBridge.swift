@@ -18,6 +18,10 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   private var batches = 0
   private var lastHandle: Int?
   private var receivedCount = 0
+  private var quietSettings = false
+  private var watchCodes: Set<Int> = []
+  private var lastISO: Int? = nil
+  private var afterRead: (() -> Void)? = nil
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let instance = CameraBridge()
@@ -50,6 +54,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     case "sonyShoot": sonyShoot()
     case "burst": burst(5)
     case "readSettings": readSettings()
+    case "writeISO": writeISO()
     case "shareFiles": shareFiles(onlyLast: false)
     case "shareLast": shareFiles(onlyLast: true)
     case "clearFiles": clearFiles()
@@ -402,6 +407,9 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     case 0x5005: return "balance des blancs (probable)"
     case 0x5007: return "ouverture ƒ (probable)"
     case 0x500A: return "mode de mise au point (probable)"
+    case 0x500B: return "zone / mesure de mise au point (hypothèse)"
+    case 0xD218: return "batterie % (hypothèse)"
+    case 0xD20F: return "température de couleur K (hypothèse)"
     case 0x500E: return "mode d'exposition (probable)"
     case 0x500F: return "ISO (probable)"
     case 0x5010: return "compensation d'exposition (probable)"
@@ -412,13 +420,33 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     }
   }
 
-  private func readSettings() {
+  private func interp(_ code: Int, _ cur: UInt64) -> String {
+    switch code {
+    case 0x5007: return " ≈ ƒ/" + String(format: "%.1f", Double(cur) / 100)
+    case 0xD20D:
+      let den = Int(cur & 0xFFFF), num = Int(cur >> 16)
+      return den > 0 ? " ≈ \(num)/\(den) s" : ""
+    case 0xD21E: return " ≈ ISO \(cur)"
+    case 0xD218: return " ≈ \(Int(Int8(truncatingIfNeeded: cur))) %"
+    case 0xD20F: return " ≈ \(cur) K"
+    default: return ""
+    }
+  }
+
+  private func readSettings(quiet: Bool = false, watch: Set<Int> = [], then: (() -> Void)? = nil) {
+    quietSettings = quiet
+    watchCodes = watch
+    afterRead = then
     sendPTP(opcode: 0x9209, params: [], label: "SDIOGetAllExtDevicePropInfo (0x9209)", handler: { [weak self] data in
       self?.parseSettings(self?.stripContainer(data) ?? data)
+    }, done: { [weak self] ok in
+      if !ok { self?.afterRead = nil; self?.quietSettings = false }
     })
   }
 
   private func parseSettings(_ body: Data) {
+    let quiet = quietSettings
+    let watch = watchCodes
     let b = [UInt8](body)
     let n = b.count
     if let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
@@ -429,9 +457,9 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     func hexDump(_ from: Int, _ count: Int) -> String {
       return b[from..<min(n, from + count)].map { String(format: "%02X", $0) }.joined(separator: " ")
     }
-    log("RÉGLAGES : \(n) octets reçus, début : \(hexDump(0, 40))")
+    if !quiet { log("RÉGLAGES : \(n) octets reçus, début : \(hexDump(0, 40))") }
     var off = 0
-    while off < n {
+    while off < n && !quiet {
       log("  HEX \(off) : \(hexDump(off, 48))")
       off += 48
     }
@@ -450,7 +478,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       for k in 0..<8 { c |= UInt64(b[k]) << UInt64(8 * k) }
       if c >= 1 && c <= 500 { expected = Int(c); pos = 8 }
     }
-    log("RÉGLAGES : \(expected >= 0 ? "\(expected) propriétés annoncées" : "pas d'en-tête de nombre (lecture directe)")")
+    if !quiet { log("RÉGLAGES : \(expected >= 0 ? "\(expected) propriétés annoncées" : "pas d'en-tête de nombre (lecture directe)")") }
     var count = 0
     while pos + 6 <= n && (expected < 0 || count < expected) {
       let startPos = pos
@@ -484,9 +512,44 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
         }
       }
       count += 1
-      log("  \(hex(Int(code))) \(propName(Int(code))) · type \(type) · \(getSet == 1 ? "modifiable" : "lecture seule") · \(enabled == 1 ? "actif" : "inactif") · défaut \(hex(Int(def))) · ACTUEL \(hex(Int(cur)))\(choices)")
+      if Int(code) == 0xD21E { lastISO = Int(cur) }
+      if !quiet || watch.contains(Int(code)) { log("  \(hex(Int(code))) \(propName(Int(code))) · type \(type) · \(getSet == 1 ? "modifiable" : "lecture seule") · \(enabled == 1 ? "actif" : "inactif") · défaut \(hex(Int(def))) · ACTUEL \(hex(Int(cur)))\(interp(Int(code), cur))\(choices)") }
     }
-    log("RÉGLAGES : \(count) propriété(s) lue(s). Fichier brut : reglages_0x9209.bin (dans le partage).")
+    if !quiet { log("RÉGLAGES : \(count) propriété(s) lue(s). Fichier brut : reglages_0x9209.bin (dans le partage).") }
+    let callback = afterRead
+    afterRead = nil
+    quietSettings = false
+    callback?()
+  }
+
+  // MARK: - 14. Changer l'ISO (essai d'écriture, Sony 0x9205)
+
+  /// Lit l'ISO, demande 200 (ou 100 si l'ISO est déjà 200), puis relit.
+  private func writeISO() {
+    guard camera != nil else {
+      log("Aucun appareil : faites d'abord 1, 2 et 6.")
+      return
+    }
+    log("ÉCRITURE (essai) : changement d'ISO par SetControlDeviceA 0x9205 sur la propriété 0xD21E.")
+    readSettings(quiet: true, watch: [0xD21E]) { [weak self] in
+      guard let self = self, let old = self.lastISO else {
+        self?.log("ÉCRITURE : ISO actuel introuvable, essai annulé.")
+        return
+      }
+      let wanted = old == 100 ? 200 : 100
+      self.log("ÉCRITURE : ISO actuel \(old), demandé \(wanted).")
+      self.sendPTP(opcode: 0x9205, params: [0xD21E], label: "SetControlDeviceA 0x9205 · ISO \(wanted)", handler: nil, outData: self.le32(UInt32(wanted)), done: { [weak self] ok in
+        guard let self = self else { return }
+        self.log("ÉCRITURE : l'appareil répond \(ok ? "OK (0x2001)" : "autre chose que 0x2001"). Relecture dans 1 s…")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+          self?.readSettings(quiet: true, watch: [0xD21E]) { [weak self] in
+            guard let self = self else { return }
+            let now = self.lastISO ?? -1
+            self.log("ÉCRITURE : ISO avant \(old) · demandé \(wanted) · relu \(now) → " + (now == wanted ? "CHANGEMENT PRIS" : "PAS DE CHANGEMENT"))
+          }
+        }
+      })
+    }
   }
 
   // MARK: - 11. Rafale de 5 photos / 12. Partager les fichiers
