@@ -80,7 +80,7 @@ class _Tile extends StatelessWidget {
   Widget build(BuildContext context) {
     return SizedBox(
       width: 290,
-      height: 190,
+      height: 240,
       child: Card(
         clipBehavior: Clip.antiAlias,
         child: InkWell(
