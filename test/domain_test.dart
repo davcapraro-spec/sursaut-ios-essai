@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:sursaut_essai/domain/crop_math.dart';
+import 'package:sursaut_essai/domain/curves.dart';
 import 'package:sursaut_essai/domain/develop_params.dart';
 import 'package:sursaut_essai/domain/photo_key.dart';
 import 'package:sursaut_essai/domain/recipe_history.dart';
@@ -78,7 +79,7 @@ void main() {
     final Map<String, double> v = defaultValues();
     expect(v['exposure'], 0);
     expect(v['crop_right'], 1);
-    expect(v.length, kDevelopParams.length + kCropDefaults.length);
+    expect(v.length, kDevelopParams.length + kHslParams.length + kCropDefaults.length);
     expect(defaultOf('crop_bottom'), 1);
     expect(defaultOf('angle'), 0);
   });
@@ -103,5 +104,53 @@ void main() {
     // Portrait 2:3 : toute la hauteur.
     final CropBox tall = fitAspect(CropBox.full, 2 / 3, 3000, 2000);
     expect(tall.height, closeTo(1.0, 1e-9));
+  });
+
+  test('courbe : identité, points, spline monotone', () {
+    expect(isIdentityCurve(identityCurve()), isTrue);
+    final List<double> id = curveSamples(identityCurve(), size: 5);
+    expect(id[0], closeTo(0, 1e-9));
+    expect(id[2], closeTo(0.5, 1e-9));
+    expect(id[4], closeTo(1, 1e-9));
+    final (CurvePoints a, int i) = addCurvePoint(identityCurve(), 0.5, 0.7);
+    expect(i, 1);
+    expect(a.length, 3);
+    final List<double> s = curveSamples(a, size: 101);
+    expect(s[50], closeTo(0.7, 1e-9));
+    for (int k = 1; k < s.length; k++) {
+      expect(s[k] >= s[k - 1] - 1e-12, isTrue);
+    }
+    final CurvePoints moved = moveCurvePoint(a, 1, 0.9, 0.2);
+    expect(moved[1][0], lessThan(1));
+    expect(moveCurvePoint(a, 0, 0.5, 0.3)[0], <double>[0, 0.3]);
+    expect(removeCurvePoint(a, 1).length, 2);
+    expect(removeCurvePoint(a, 0).length, 3);
+  });
+
+  test('courbes : lecture et écriture dans la recette', () {
+    final (Map<String, CurvePoints> c, Map<String, dynamic> rest) = splitCurves(<String, dynamic>{
+      'curve': <dynamic>[<dynamic>[0, 0], <dynamic>[0.5, 0.6], <dynamic>[1, 1]],
+      'curve_red': <dynamic>[<dynamic>[0, 0], <dynamic>[1, 1]],
+      'preset': 'x',
+    });
+    expect(c.keys, <String>['rvb']);
+    expect(rest, <String, dynamic>{'preset': 'x'});
+    final Map<String, dynamic> j = curvesToJson(c);
+    expect(j.keys, <String>['curve']);
+    expect(curvesToJson(<String, CurvePoints>{'rvb': identityCurve()}), isEmpty);
+  });
+
+  test('historique : les courbes sont annulables', () {
+    final RecipeHistory h = RecipeHistory(<String, double>{'a': 0});
+    final Map<String, CurvePoints> c = <String, CurvePoints>{
+      'rvb': <List<double>>[<double>[0, 0], <double>[0.5, 0.7], <double>[1, 1]],
+    };
+    h.commit(<String, double>{'a': 0}, curves: c);
+    expect(h.canUndo, isTrue);
+    expect(h.currentCurves['rvb']!.length, 3);
+    h.undo();
+    expect(h.currentCurves, isEmpty);
+    h.redo();
+    expect(h.currentCurves['rvb']![1], <double>[0.5, 0.7]);
   });
 }

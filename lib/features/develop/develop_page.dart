@@ -14,11 +14,13 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
 import '../../domain/crop_math.dart';
+import '../../domain/curves.dart';
 import '../../domain/develop_params.dart';
 import '../../domain/photo_key.dart';
 import '../../domain/recipe_history.dart';
 import '../../domain/sidecar.dart';
 import 'crop_overlay.dart';
+import 'curve_editor.dart';
 
 /// Écran Développement : aperçu rendu par le moteur Rust, curseurs, recadrage,
 /// annuler/rétablir, sauvegarde `.sursaut.json`, ouverture (Photos, Fichiers) et export.
@@ -66,8 +68,15 @@ class _DevelopPageState extends State<DevelopPage> {
 
   final Map<String, double> _values = <String, double>{
     for (final DevelopParam p in kDevelopParams) p.key: 0,
+    for (final DevelopParam p in kHslParams) p.key: 0,
     ...kCropDefaults,
   };
+
+  /// Courbes de tonalité non neutres, par canal ('rvb', 'red', 'green', 'blue').
+  Map<String, CurvePoints> _curves = <String, CurvePoints>{};
+  String _tool = 'basic'; // basic | curve | color
+  String _curveChannel = 'rvb';
+  String _hslKind = 'sat';
 
   bool _cropMode = false;
   double? _aspect; // largeur/hauteur imposée ; null = cadre libre
@@ -100,8 +109,11 @@ class _DevelopPageState extends State<DevelopPage> {
       }
     }
     _key = photoKey(rgba, w, h);
-    final SidecarData loaded = await _readSidecar(_key);
+    final SidecarData read = await _readSidecar(_key);
+    final (Map<String, CurvePoints> loadedCurves, Map<String, dynamic> rest) = splitCurves(read.extra);
+    final SidecarData loaded = SidecarData(read.values, rest);
     setState(() {
+      _curves = loadedCurves;
       _srcRgba = rgba;
       _w = w;
       _h = h;
@@ -112,8 +124,8 @@ class _DevelopPageState extends State<DevelopPage> {
       }
       _cropMode = false;
       _aspect = null;
-      _history = RecipeHistory(_values);
-      _saveInfo = loaded.values.isNotEmpty || loaded.extra.isNotEmpty
+      _history = RecipeHistory(_values, curves: _curves);
+      _saveInfo = loaded.values.isNotEmpty || loaded.extra.isNotEmpty || loadedCurves.isNotEmpty
           ? 'Réglages retrouvés'
           : '';
     });
@@ -145,7 +157,9 @@ class _DevelopPageState extends State<DevelopPage> {
     if (_srcRgba == null) return;
     try {
       final File f = await _sidecarFile(_key);
-      await f.writeAsString(_sidecar.encode(_values, _keys, defaults: kCropDefaults));
+      final SidecarData out =
+          SidecarData(_sidecar.values, <String, dynamic>{..._sidecar.extra, ...curvesToJson(_curves)});
+      await f.writeAsString(out.encode(_values, _keys, defaults: kCropDefaults));
       if (mounted) setState(() => _saveInfo = 'Réglages enregistrés');
     } catch (e) {
       if (mounted) setState(() => _saveInfo = 'Enregistrement impossible : $e');
@@ -154,7 +168,7 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Valide l'état actuel : une étape d'annulation + sauvegarde du fichier.
   void _commit() {
-    _history.commit(_values);
+    _history.commit(_values, curves: _curves);
     _writeSidecar();
     setState(() {});
   }
@@ -162,6 +176,7 @@ class _DevelopPageState extends State<DevelopPage> {
   void _applyHistory(Map<String, double>? v) {
     if (v == null) return;
     setState(() {
+      _curves = _history.currentCurves;
       for (final String k in _values.keys.toList()) {
         _values[k] = v[k] ?? defaultOf(k);
       }
@@ -268,7 +283,7 @@ class _DevelopPageState extends State<DevelopPage> {
         box != null ? box.localToGlobal(Offset.zero) & box.size : const Rect.fromLTWH(0, 0, 1, 1);
     setState(() => _exporting = true);
     try {
-      final Map<String, dynamic> recipe = <String, dynamic>{..._sidecar.extra, ..._values};
+      final Map<String, dynamic> recipe = _recipeMap();
       final Stopwatch sw = Stopwatch()..start();
       RenderResult r;
       int devMs = 0;
@@ -362,9 +377,15 @@ class _DevelopPageState extends State<DevelopPage> {
     await _useRgba(px, w, h, 'Image d\'essai');
   }
 
-  String _recipeJson() => jsonEncode(<String, dynamic>{
+  /// Recette complète : clés inconnues du fichier, courbes, réglages.
+  Map<String, dynamic> _recipeMap() => <String, dynamic>{
         ..._sidecar.extra,
+        ...curvesToJson(_curves),
         ..._values,
+      };
+
+  String _recipeJson() => jsonEncode(<String, dynamic>{
+        ..._recipeMap(),
         // En mode recadrage, on voit toute l'image (déjà redressée) sous le cadre.
         if (_cropMode) ...kCropDefaults,
       });
@@ -518,27 +539,368 @@ class _DevelopPageState extends State<DevelopPage> {
     return v > 0 ? '+$s' : s.replaceFirst('-', '−');
   }
 
+  void _resetKeys(Iterable<String> keys) {
+    setState(() {
+      for (final String k in keys) {
+        _values[k] = defaultOf(k);
+      }
+      _before = false;
+    });
+    _commit();
+    _refresh();
+  }
+
+  static const List<(String, List<String>)> _basicGroups = <(String, List<String>)>[
+    ('BALANCE DES BLANCS', <String>['temperature', 'tint']),
+    ('TONALITÉ', <String>['exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks']),
+    ('PRÉSENCE', <String>['texture', 'clarity', 'dehaze', 'vibrance', 'saturation']),
+    ('DÉTAIL', <String>['sharpen_amount']),
+  ];
+
+  /// Une ligne « libellé, curseur, valeur » : double-toucher = remise à zéro.
+  Widget _paramRow(DevelopParam p, bool ready, {Color? color}) {
+    Widget slider = Slider(
+      value: _values[p.key]!,
+      min: p.min,
+      max: p.max,
+      onChanged: !ready
+          ? null
+          : (double v) {
+              setState(() {
+                _values[p.key] = v;
+                _before = false;
+              });
+              _refresh();
+            },
+      onChangeEnd: !ready ? null : (double _) => _commit(),
+    );
+    if (color != null) {
+      slider = SliderTheme(
+        data: SliderTheme.of(context).copyWith(activeTrackColor: color, thumbColor: color),
+        child: slider,
+      );
+    }
+    return Row(
+      children: <Widget>[
+        SizedBox(width: 130, child: Text(p.label)),
+        Expanded(
+          child: GestureDetector(
+            onDoubleTap: !ready
+                ? null
+                : () {
+                    setState(() => _values[p.key] = defaultOf(p.key));
+                    _commit();
+                    _refresh();
+                  },
+            child: slider,
+          ),
+        ),
+        SizedBox(
+          width: 52,
+          child: Text(_fmt(p),
+              textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.w600)),
+        ),
+      ],
+    );
+  }
+
+  Widget _groupTitle(String title, VoidCallback? onReset) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 14, bottom: 2),
+      child: Row(
+        children: <Widget>[
+          Expanded(
+            child: Text(title,
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: Colors.white60)),
+          ),
+          TextButton(onPressed: onReset, child: const Text('Réinitialiser')),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _basicPanel(bool ready) {
+    final Map<String, DevelopParam> byKey = <String, DevelopParam>{
+      for (final DevelopParam p in kDevelopParams) p.key: p,
+    };
+    return <Widget>[
+      for (final (String title, List<String> keys) in _basicGroups) ...<Widget>[
+        _groupTitle(title, ready ? () => _resetKeys(keys) : null),
+        for (final String k in keys) _paramRow(byKey[k]!, ready),
+      ],
+    ];
+  }
+
+  List<Widget> _curvePanel(bool ready) {
+    const Map<String, String> names = <String, String>{
+      'rvb': 'RVB',
+      'red': 'Rouge',
+      'green': 'Vert',
+      'blue': 'Bleu',
+    };
+    return <Widget>[
+      const SizedBox(height: 8),
+      SegmentedButton<String>(
+        showSelectedIcon: false,
+        segments: <ButtonSegment<String>>[
+          for (final MapEntry<String, String> e in names.entries)
+            ButtonSegment<String>(value: e.key, label: Text(e.value)),
+        ],
+        selected: <String>{_curveChannel},
+        onSelectionChanged: (Set<String> v) => setState(() => _curveChannel = v.first),
+      ),
+      const SizedBox(height: 12),
+      IgnorePointer(
+        ignoring: !ready,
+        child: CurveEditor(
+          channel: _curveChannel,
+          curves: _curves,
+          onChanged: (CurvePoints pts) {
+            setState(() {
+              if (isIdentityCurve(pts)) {
+                _curves.remove(_curveChannel);
+              } else {
+                _curves[_curveChannel] = pts;
+              }
+              _before = false;
+            });
+            _refresh();
+          },
+          onEnd: _commit,
+        ),
+      ),
+      const Padding(
+        padding: EdgeInsets.only(top: 8),
+        child: Text(
+          'Touchez la courbe pour ajouter un point, glissez-le pour le déplacer, '
+          'touchez-le deux fois pour le supprimer.',
+          style: TextStyle(fontSize: 12, color: Colors.white60),
+        ),
+      ),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton(
+          onPressed: ready && _curves.containsKey(_curveChannel)
+              ? () {
+                  setState(() => _curves.remove(_curveChannel));
+                  _commit();
+                  _refresh();
+                }
+              : null,
+          child: Text('Réinitialiser la courbe ${names[_curveChannel]}'),
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _colorPanel(bool ready) {
+    final List<DevelopParam> rows = <DevelopParam>[
+      for (final DevelopParam p in kHslParams)
+        if (p.key.startsWith('hsl_${_hslKind}_')) p,
+    ];
+    return <Widget>[
+      _groupTitle('MÉLANGEUR DE COULEURS',
+          ready ? () => _resetKeys(rows.map((DevelopParam p) => p.key)) : null),
+      SegmentedButton<String>(
+        showSelectedIcon: false,
+        segments: <ButtonSegment<String>>[
+          for (int i = 0; i < kHslKinds.length; i++)
+            ButtonSegment<String>(value: kHslKinds[i], label: Text(kHslKindLabels[i])),
+        ],
+        selected: <String>{_hslKind},
+        onSelectionChanged: (Set<String> v) => setState(() => _hslKind = v.first),
+      ),
+      const SizedBox(height: 6),
+      for (int i = 0; i < rows.length; i++) _paramRow(rows[i], ready, color: Color(0xFF000000 | kHslColorRgb[i])),
+    ];
+  }
+
+  Widget _toolButton(String id, IconData icon, String label, {required VoidCallback? onTap}) {
+    final bool on = _tool == id && !_cropMode;
+    final Color fg = on ? const Color(0xFFF2A33A) : Colors.white70;
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: onTap,
+      child: Container(
+        width: 68,
+        height: 68,
+        decoration: BoxDecoration(
+          color: on ? const Color(0xFF33291A) : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Icon(icon, color: fg, size: 26),
+            const SizedBox(height: 4),
+            Text(label, style: TextStyle(color: fg, fontSize: 11, fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _tools(bool ready) => <Widget>[
+        _toolButton('basic', Icons.tune, 'Basique', onTap: _cropMode ? null : () => setState(() => _tool = 'basic')),
+        _toolButton('curve', Icons.show_chart, 'Courbe', onTap: _cropMode ? null : () => setState(() => _tool = 'curve')),
+        _toolButton('color', Icons.palette_outlined, 'Couleur', onTap: _cropMode ? null : () => setState(() => _tool = 'color')),
+        _toolButton('crop', Icons.crop, 'Recadrer', onTap: ready && !_cropMode ? _enterCrop : null),
+      ];
+
+  Widget _photoArea() {
+    if (_shown == null) {
+      return const Center(child: Text('Touchez « Image d\'essai » ou « Ouvrir ».'));
+    }
+    if (_cropMode) {
+      return Padding(
+        padding: const EdgeInsets.all(12),
+        child: CropOverlay(
+          image: _shown!,
+          rect: _cropRect,
+          aspect: _aspect,
+          onChanged: _setCropRect,
+          onEnd: _commit,
+        ),
+      );
+    }
+    return InteractiveViewer(
+      maxScale: 8,
+      child: Center(child: RawImage(image: _shown, fit: BoxFit.contain)),
+    );
+  }
+
+  Widget _banner() {
+    final bool bad = _error != null || _info.version == null;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text(
+          _error != null
+              ? 'Erreur : $_error'
+              : _info.version == null
+                  ? 'Moteur Rust ABSENT : ${_info.error}'
+                  : _loading.isNotEmpty
+                      ? _loading
+                      : 'Moteur Rust chargé : ${_info.version}',
+          style: TextStyle(color: bad ? Colors.redAccent : Colors.greenAccent),
+        ),
+      ),
+    );
+  }
+
+  Widget _infoRow(bool ready) {
+    return Row(
+      children: <Widget>[
+        Expanded(
+          child: Text(
+            _srcRgba == null
+                ? ''
+                : '$_name · $_w×$_h px · rendu $_renderMs ms · conversion $_imageMs ms · $_saveInfo',
+            style: const TextStyle(fontSize: 12),
+          ),
+        ),
+        const Text('Avant'),
+        Switch(
+          value: _before,
+          onChanged: !ready
+              ? null
+              : (bool v) {
+                  setState(() => _before = v);
+                  _refresh();
+                },
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _panelBody(bool ready) {
+    if (_cropMode) {
+      return <Widget>[
+        ..._cropControls(),
+        _paramRow(kDevelopParams.firstWhere((DevelopParam p) => p.key == 'angle'), ready),
+      ];
+    }
+    switch (_tool) {
+      case 'curve':
+        return _curvePanel(ready);
+      case 'color':
+        return _colorPanel(ready);
+      default:
+        return _basicPanel(ready);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool ready = _srcRgba != null && _photo != null;
+    final bool wide = MediaQuery.of(context).size.width >= 1000;
+    final Widget content = wide
+        ? Row(
+            children: <Widget>[
+              Container(
+                width: 84,
+                color: Theme.of(context).colorScheme.surface,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Column(children: _tools(ready)),
+              ),
+              Expanded(
+                child: Column(
+                  children: <Widget>[
+                    _banner(),
+                    Expanded(child: _photoArea()),
+                  ],
+                ),
+              ),
+              Container(
+                width: 396,
+                color: Theme.of(context).colorScheme.surface,
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+                child: Column(
+                  children: <Widget>[
+                    _infoRow(ready),
+                    Expanded(child: SingleChildScrollView(child: Column(children: _panelBody(ready)))),
+                  ],
+                ),
+              ),
+            ],
+          )
+        : Column(
+            children: <Widget>[
+              _banner(),
+              Expanded(child: _photoArea()),
+              Container(
+                color: Theme.of(context).colorScheme.surface,
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+                constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.5),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(children: _tools(ready)),
+                    ),
+                    _infoRow(ready),
+                    Flexible(child: SingleChildScrollView(child: Column(children: _panelBody(ready)))),
+                  ],
+                ),
+              ),
+            ],
+          );
     return Scaffold(
       appBar: AppBar(
         title: const Text('Développement'),
         actions: <Widget>[
           TextButton(
-              onPressed: ready && !_cropMode ? _enterCrop : null,
-              child: const Text('Recadrer')),
+              onPressed: ready && !_cropMode ? _enterCrop : null, child: const Text('Recadrer')),
           IconButton(
               tooltip: 'Annuler',
-              onPressed: ready && _history.canUndo
-                  ? () => _applyHistory(_history.undo())
-                  : null,
+              onPressed: ready && _history.canUndo ? () => _applyHistory(_history.undo()) : null,
               icon: const Icon(Icons.undo)),
           IconButton(
               tooltip: 'Rétablir',
-              onPressed: ready && _history.canRedo
-                  ? () => _applyHistory(_history.redo())
-                  : null,
+              onPressed: ready && _history.canRedo ? () => _applyHistory(_history.redo()) : null,
               icon: const Icon(Icons.redo)),
           TextButton(onPressed: _useTestImage, child: const Text('Image d\'essai')),
           PopupMenuButton<String>(
@@ -564,127 +926,7 @@ class _DevelopPageState extends State<DevelopPage> {
           ),
         ],
       ),
-      body: SafeArea(
-        child: Column(
-          children: <Widget>[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                    _error != null
-                        ? 'Erreur : $_error'
-                        : _info.version == null
-                            ? 'Moteur Rust ABSENT : ${_info.error}'
-                            : _loading.isNotEmpty
-                                ? _loading
-                                : 'Moteur Rust chargé : ${_info.version}',
-                    style: TextStyle(
-                        color: (_error != null || _info.version == null)
-                            ? Colors.redAccent
-                            : Colors.greenAccent)),
-              ),
-            ),
-            Expanded(
-              child: _shown == null
-                  ? const Center(
-                      child: Text('Touchez « Image d\'essai » ou « Ouvrir ».'))
-                  : _cropMode
-                      ? Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: CropOverlay(
-                            image: _shown!,
-                            rect: _cropRect,
-                            aspect: _aspect,
-                            onChanged: _setCropRect,
-                            onEnd: _commit,
-                          ),
-                        )
-                      : InteractiveViewer(
-                      maxScale: 8,
-                      child: Center(
-                        child: RawImage(image: _shown, fit: BoxFit.contain),
-                      ),
-                    ),
-            ),
-            Container(
-              color: Theme.of(context).colorScheme.surface,
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-              constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.42),
-              child: SingleChildScrollView(
-                child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  Row(
-                    children: <Widget>[
-                      Expanded(
-                        child: Text(
-                          _srcRgba == null
-                              ? ''
-                              : '$_name · $_w×$_h px · rendu $_renderMs ms · '
-                                  'conversion $_imageMs ms · $_saveInfo',
-                          style: const TextStyle(fontSize: 12),
-                        ),
-                      ),
-                      const Text('Avant'),
-                      Switch(
-                        value: _before,
-                        onChanged: !ready
-                            ? null
-                            : (bool v) {
-                                setState(() => _before = v);
-                                _refresh();
-                              },
-                      ),
-                    ],
-                  ),
-                  if (_cropMode) ..._cropControls(),
-                  for (final DevelopParam p in kDevelopParams)
-                    if (!_cropMode || p.key == 'angle')
-                    Row(
-                      children: <Widget>[
-                        SizedBox(width: 130, child: Text(p.label)),
-                        Expanded(
-                          child: GestureDetector(
-                            onDoubleTap: !ready
-                                ? null
-                                : () {
-                                    setState(() => _values[p.key] = 0);
-                                    _commit();
-                                    _refresh();
-                                  },
-                            child: Slider(
-                              value: _values[p.key]!,
-                              min: p.min,
-                              max: p.max,
-                              onChanged: !ready
-                                  ? null
-                                  : (double v) {
-                                      setState(() {
-                                        _values[p.key] = v;
-                                        _before = false;
-                                      });
-                                      _refresh();
-                                    },
-                              onChangeEnd: !ready ? null : (double _) => _commit(),
-                            ),
-                          ),
-                        ),
-                        SizedBox(
-                          width: 52,
-                          child: Text(_fmt(p),
-                              textAlign: TextAlign.right,
-                              style: const TextStyle(fontWeight: FontWeight.w600)),
-                        ),
-                      ],
-                    ),
-                ],
-              ),
-              ),
-            ),
-          ],
-        ),
-      ),
+      body: SafeArea(child: content),
     );
   }
 }

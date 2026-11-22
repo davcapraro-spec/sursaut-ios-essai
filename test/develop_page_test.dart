@@ -16,4 +16,22 @@ void main() {
     expect(find.textContaining('Moteur Rust'), findsWidgets);
     expect(find.text('Image d\'essai'), findsOneWidget);
   });
+
+  testWidgets('les panneaux Courbe et Couleur s\'affichent', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1600, 1200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(const MaterialApp(home: DevelopPage()));
+    await tester.pump();
+    expect(find.text('TONALITÉ'), findsOneWidget);
+    await tester.tap(find.text('Courbe'));
+    await tester.pump();
+    expect(find.text('Réinitialiser la courbe RVB'), findsOneWidget);
+    await tester.tap(find.text('Couleur'));
+    await tester.pump();
+    expect(find.text('MÉLANGEUR DE COULEURS'), findsOneWidget);
+    expect(find.text('Magenta'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
