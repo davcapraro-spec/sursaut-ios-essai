@@ -20,6 +20,12 @@ typedef _RawDevelopC = Pointer<Uint8> Function(
 typedef _RawDevelopD = Pointer<Uint8> Function(
     Pointer<Void>, int, int, int, Pointer<Uint32>, Pointer<Uint32>);
 
+typedef _SpotToolC = Int32 Function(
+    Pointer<Uint8>, Uint32, Uint32, Int32, Double, Double, Double, Pointer<Double>);
+typedef _SpotToolD = int Function(Pointer<Uint8>, int, int, int, double, double, double, Pointer<Double>);
+typedef _DustC = Pointer<Utf8> Function(Pointer<Uint8>, Uint32, Uint32);
+typedef _DustD = Pointer<Utf8> Function(Pointer<Uint8>, int, int);
+
 /// Les fonctions du moteur Rust (bibliothèque `sursaut_engine`, qui contient `sursaut-core`).
 ///
 /// Sur iPad la bibliothèque est liée dans l'application : `DynamicLibrary.process()`.
@@ -34,7 +40,9 @@ class _Bindings {
         rawOpen = lib.lookupFunction<_RawOpenC, _RawOpenC>('sursaut_raw_open'),
         rawInfo = lib.lookupFunction<_RawInfoC, _RawInfoC>('sursaut_raw_info_json'),
         rawDevelop = lib.lookupFunction<_RawDevelopC, _RawDevelopD>('sursaut_raw_develop'),
-        rawClose = lib.lookupFunction<_CloseC, _CloseD>('sursaut_raw_close');
+        rawClose = lib.lookupFunction<_CloseC, _CloseD>('sursaut_raw_close'),
+        spotTool = lib.lookupFunction<_SpotToolC, _SpotToolD>('sursaut_spot_tool'),
+        dustDetect = lib.lookupFunction<_DustC, _DustD>('sursaut_dust_detect');
 
   final _VersionC version;
   final _VersionC lastError;
@@ -45,6 +53,8 @@ class _Bindings {
   final _RawInfoC rawInfo;
   final _RawDevelopD rawDevelop;
   final _CloseD rawClose;
+  final _SpotToolD spotTool;
+  final _DustD dustDetect;
 
   static DynamicLibrary _library() {
     if (Platform.isIOS) return DynamicLibrary.process();
@@ -210,5 +220,67 @@ class RawFile {
     final Pointer<Void> h = _handle;
     _handle = nullptr;
     (_last ?? Future<void>.value()).whenComplete(() => _Bindings.load().rawClose(h));
+  }
+}
+
+/// Outils de retouche du moteur : source proposée, repérage d'une tache, poussière du capteur.
+/// Ils travaillent sur l'image affichée (RGBA 8 bits) et n'ont pas besoin du moteur de rendu.
+class RetouchTools {
+  RetouchTools._();
+
+  static Pointer<Uint8> _copy(Uint8List rgba) {
+    final Pointer<Uint8> p = calloc<Uint8>(rgba.length);
+    p.asTypedList(rgba.length).setAll(0, rgba);
+    return p;
+  }
+
+  /// Zone voisine la plus semblable à l'entourage de la tache en (x, y) : (sx, sy) en fractions.
+  static (double, double) suggestSource(Uint8List rgba, int w, int h, double x, double y, double r) {
+    final _Bindings b = _Bindings.load();
+    final Pointer<Uint8> src = _copy(rgba);
+    final Pointer<Double> out = calloc<Double>(3);
+    try {
+      final int n = b.spotTool(src, w, h, 0, x, y, r, out);
+      if (n < 2) throw StateError(b.error());
+      return (out[0], out[1]);
+    } finally {
+      calloc.free(src);
+      calloc.free(out);
+    }
+  }
+
+  /// Ajuste un clic sur la tache réellement présente : (x, y, rayon) en fractions, ou null. [object] : objet clair
+  /// ou sombre avec son halo, au lieu d'une tache sombre.
+  static (double, double, double)? refine(Uint8List rgba, int w, int h, double x, double y, double r,
+      {bool object = false}) {
+    final _Bindings b = _Bindings.load();
+    final Pointer<Uint8> src = _copy(rgba);
+    final Pointer<Double> out = calloc<Double>(3);
+    try {
+      final int n = b.spotTool(src, w, h, object ? 2 : 1, x, y, r, out);
+      if (n < 0) throw StateError(b.error());
+      return n >= 3 ? (out[0], out[1], out[2]) : null;
+    } finally {
+      calloc.free(src);
+      calloc.free(out);
+    }
+  }
+
+  /// Poussière du capteur (taches sombres, rondes et molles sur fond lisse), classée par score décroissant :
+  /// `{x, y, r, score, contrast}`. Tourne dans un autre fil.
+  static Future<List<Map<String, dynamic>>> detectDust(Uint8List rgba, int w, int h) {
+    return Isolate.run<List<Map<String, dynamic>>>(() {
+      final _Bindings b = _Bindings.load();
+      final Pointer<Uint8> src = _copy(rgba);
+      try {
+        final Pointer<Utf8> p = b.dustDetect(src, w, h);
+        if (p == nullptr) throw StateError(b.error());
+        return (jsonDecode(p.toDartString()) as List<dynamic>)
+            .map((Object? e) => Map<String, dynamic>.of(e as Map<String, dynamic>))
+            .toList();
+      } finally {
+        calloc.free(src);
+      }
+    });
   }
 }

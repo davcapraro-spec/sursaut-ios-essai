@@ -36,6 +36,10 @@ void main() {
     await tester.pump();
     expect(find.text('RÉDUCTION DU BRUIT'), findsOneWidget);
     expect(find.text('VIGNETAGE'), findsOneWidget);
+    await tester.tap(find.text('Supprimer'));
+    await tester.pump();
+    expect(find.text('RETOUCHE DE TACHES'), findsOneWidget);
+    expect(find.text('POUSSIÈRE AUTOMATIQUE'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

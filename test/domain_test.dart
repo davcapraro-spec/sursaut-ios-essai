@@ -10,6 +10,7 @@ import 'package:sursaut_essai/domain/develop_params.dart';
 import 'package:sursaut_essai/domain/photo_key.dart';
 import 'package:sursaut_essai/domain/recipe_history.dart';
 import 'package:sursaut_essai/domain/sidecar.dart';
+import 'package:sursaut_essai/domain/spots.dart';
 
 void main() {
   test('annuler / rétablir', () {
@@ -199,5 +200,44 @@ void main() {
     expect(p, isNotNull);
     expect((p!['geo'] as List<dynamic>).length, greaterThan(10));
     expect((p['ca_r'] as List<dynamic>).isNotEmpty, isTrue);
+  });
+
+  test('retouches : création, séparation du fichier, historique', () {
+    final Spot a = newSpot(x: 0.2, y: 0.3, r: 0.01, sx: 0.25, sy: 0.3);
+    expect(a['mode'], 'heal');
+    final Spot b = newSpot(
+        x: 0, y: 0, r: 0.02, sx: 0.5, sy: 0.5, mode: 'inconnu', stroke: <List<double>>[<double>[0.4, 0.4], <double>[0.5, 0.5]]);
+    expect(b['mode'], 'heal');
+    expect(b['x'], 0.4);
+    final (List<Spot> spots, Map<String, dynamic> rest) =
+        splitSpots(<String, dynamic>{'autre': 1, 'spots': <dynamic>[a, b]});
+    expect(spots.length, 2);
+    expect(rest.containsKey('spots'), isFalse);
+    expect(rest['autre'], 1);
+    final RecipeHistory h = RecipeHistory(<String, double>{'a': 0});
+    h.commit(<String, double>{'a': 0}, spots: spots);
+    expect(h.canUndo, isTrue);
+    expect(h.currentSpots.length, 2);
+    h.undo();
+    expect(h.currentSpots, isEmpty);
+    h.redo();
+    expect(h.currentSpots.length, 2);
+    h.currentSpots.first['x'] = 0.9; // copie : l'historique ne change pas
+    expect(h.currentSpots.first['x'], 0.2);
+  });
+
+  test('poussière : seuil de sensibilité et retouches existantes', () {
+    expect(dustThreshold(85), closeTo(3.9, 1e-9));
+    expect(dustThreshold(100), closeTo(3.0, 1e-9));
+    final List<Map<String, dynamic>> dust = <Map<String, dynamic>>[
+      <String, dynamic>{'x': 0.5, 'y': 0.5, 'r': 0.005, 'score': 6.0, 'contrast': 10.0},
+      <String, dynamic>{'x': 0.2, 'y': 0.2, 'r': 0.005, 'score': 3.5, 'contrast': 8.0},
+      <String, dynamic>{'x': 0.8, 'y': 0.8, 'r': 0.005, 'score': 5.0, 'contrast': 9.0},
+    ];
+    final List<Spot> have = <Spot>[newSpot(x: 0.8, y: 0.8, r: 0.01, sx: 0.7, sy: 0.7)];
+    // sensibilité 85 (seuil 3,9) : la 2e est trop faible, la 3e est déjà retouchée
+    expect(keptDust(dust, have, 85, 1000, 800).length, 1);
+    // sensibilité 100 (seuil 3) : la 2e est retenue aussi
+    expect(keptDust(dust, have, 100, 1000, 800).length, 2);
   });
 }

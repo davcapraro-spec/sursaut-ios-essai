@@ -20,9 +20,11 @@ import '../../domain/develop_params.dart';
 import '../../domain/lens_profiles.dart';
 import '../../domain/photo_key.dart';
 import '../../domain/recipe_history.dart';
+import '../../domain/spots.dart';
 import '../../domain/sidecar.dart';
 import 'crop_overlay.dart';
 import 'curve_editor.dart';
+import 'spot_overlay.dart';
 
 /// Écran Développement : aperçu rendu par le moteur Rust, curseurs, recadrage,
 /// annuler/rétablir, sauvegarde `.sursaut.json`, ouverture (Photos, Fichiers) et export.
@@ -77,7 +79,7 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Courbes de tonalité non neutres, par canal ('rvb', 'red', 'green', 'blue').
   Map<String, CurvePoints> _curves = <String, CurvePoints>{};
-  String _tool = 'basic'; // basic | curve | color | detail | lens
+  String _tool = 'basic'; // basic | curve | color | detail | lens | spots
 
   /// Objectif lu dans le RAW (nom, focale, ouverture) et profil trouvé dans la base, s'il existe.
   String? _lensName;
@@ -87,6 +89,20 @@ class _DevelopPageState extends State<DevelopPage> {
   Map<String, dynamic>? _lensDb;
   String _curveChannel = 'rvb';
   String _hslKind = 'sat';
+
+  /// Retouches de taches (onglet « Supprimer ») et réglages de la prochaine retouche.
+  List<Spot> _spots = <Spot>[];
+  int _spotSel = -1;
+  bool _spotBrush = false;
+  String _spotMode = 'heal';
+  double _spotSize = 20; // 1..200 ; rayon = valeur × 0,0005 du grand côté
+  double _spotFeather = 50;
+  double _spotOpacity = 100;
+  bool _spotSnap = true;
+  List<Map<String, dynamic>>? _dust;
+  bool _dustBusy = false;
+  bool _dustShow = true;
+  double _dustSens = 85;
 
   bool _cropMode = false;
   double? _aspect; // largeur/hauteur imposée ; null = cadre libre
@@ -120,10 +136,14 @@ class _DevelopPageState extends State<DevelopPage> {
     }
     _key = photoKey(rgba, w, h);
     final SidecarData read = await _readSidecar(_key);
-    final (Map<String, CurvePoints> loadedCurves, Map<String, dynamic> rest) = splitCurves(read.extra);
+    final (Map<String, CurvePoints> loadedCurves, Map<String, dynamic> rest0) = splitCurves(read.extra);
+    final (List<Spot> loadedSpots, Map<String, dynamic> rest) = splitSpots(rest0);
     final SidecarData loaded = SidecarData(read.values, rest);
     setState(() {
       _curves = loadedCurves;
+      _spots = loadedSpots;
+      _spotSel = -1;
+      _dust = null;
       _srcRgba = rgba;
       _w = w;
       _h = h;
@@ -134,8 +154,8 @@ class _DevelopPageState extends State<DevelopPage> {
       }
       _cropMode = false;
       _aspect = null;
-      _history = RecipeHistory(_values, curves: _curves);
-      _saveInfo = loaded.values.isNotEmpty || loaded.extra.isNotEmpty || loadedCurves.isNotEmpty
+      _history = RecipeHistory(_values, curves: _curves, spots: _spots);
+      _saveInfo = loaded.values.isNotEmpty || loaded.extra.isNotEmpty || loadedCurves.isNotEmpty || loadedSpots.isNotEmpty
           ? 'Réglages retrouvés'
           : '';
     });
@@ -168,7 +188,11 @@ class _DevelopPageState extends State<DevelopPage> {
     try {
       final File f = await _sidecarFile(_key);
       final SidecarData out =
-          SidecarData(_sidecar.values, <String, dynamic>{..._sidecar.extra, ...curvesToJson(_curves)});
+          SidecarData(_sidecar.values, <String, dynamic>{
+        ..._sidecar.extra,
+        ...curvesToJson(_curves),
+        if (_spots.isNotEmpty) 'spots': _spots,
+      });
       await f.writeAsString(out.encode(_values, _keys, defaults: kParamDefaults));
       if (mounted) setState(() => _saveInfo = 'Réglages enregistrés');
     } catch (e) {
@@ -178,7 +202,7 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Valide l'état actuel : une étape d'annulation + sauvegarde du fichier.
   void _commit() {
-    _history.commit(_values, curves: _curves);
+    _history.commit(_values, curves: _curves, spots: _spots);
     _writeSidecar();
     setState(() {});
   }
@@ -187,6 +211,8 @@ class _DevelopPageState extends State<DevelopPage> {
     if (v == null) return;
     setState(() {
       _curves = _history.currentCurves;
+      _spots = _history.currentSpots;
+      _spotSel = -1;
       for (final String k in _values.keys.toList()) {
         _values[k] = v[k] ?? defaultOf(k);
       }
@@ -427,6 +453,7 @@ class _DevelopPageState extends State<DevelopPage> {
   Map<String, dynamic> _recipeMap() => <String, dynamic>{
         ..._sidecar.extra,
         ...curvesToJson(_curves),
+        if (_spots.isNotEmpty) 'spots': _spots,
         ..._values,
       };
 
@@ -434,6 +461,8 @@ class _DevelopPageState extends State<DevelopPage> {
         ..._recipeMap(),
         // En mode recadrage, on voit toute l'image (déjà redressée) sous le cadre.
         if (_cropMode) ...kCropDefaults,
+        // Onglet « Supprimer » : photo entière et droite, pour que les positions touchées soient celles de la source.
+        if (_tool == 'spots' && !_cropMode) ...<String, double>{...kCropDefaults, 'angle': 0},
       });
 
   Rect get _cropRect => Rect.fromLTRB(_values['crop_left']!, _values['crop_top']!,
@@ -788,6 +817,323 @@ class _DevelopPageState extends State<DevelopPage> {
     ];
   }
 
+  void _setTool(String t) {
+    final bool redo = (t == 'spots') != (_tool == 'spots');
+    setState(() => _tool = t);
+    if (redo) _refresh();
+  }
+
+  // -- Supprimer : retouches de taches ---------------------------------------------------------
+  void _spotsChanged() {
+    _commit();
+    _refresh();
+  }
+
+  void _addSpot(double fx, double fy) {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null) return;
+    try {
+      double x = fx, y = fy, r = _spotSize * 0.0005;
+      if (_spotSnap) {
+        final (double, double, double)? f = RetouchTools.refine(rgba, _w, _h, fx, fy, r);
+        if (f != null) {
+          x = f.$1;
+          y = f.$2;
+          r = f.$3;
+        } else {
+          _say('Aucune tache nette près du touché : taille réglée utilisée.');
+        }
+      }
+      final (double sx, double sy) = RetouchTools.suggestSource(rgba, _w, _h, x, y, r);
+      _spots = <Spot>[
+        ..._spots,
+        newSpot(x: x, y: y, r: r, sx: sx, sy: sy, mode: _spotMode, feather: _spotFeather / 100, opacity: _spotOpacity / 100),
+      ];
+      _spotSel = _spots.length - 1;
+      _before = false;
+      _spotsChanged();
+    } catch (e) {
+      _say('Retouche impossible : $e');
+    }
+  }
+
+  void _strokeDone(List<List<double>> pts) {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || pts.isEmpty) return;
+    try {
+      final double r = _spotSize * 0.0005;
+      final (double sx, double sy) = RetouchTools.suggestSource(rgba, _w, _h, pts.first[0], pts.first[1], r);
+      _spots = <Spot>[
+        ..._spots,
+        newSpot(
+            x: pts.first[0], y: pts.first[1], r: r, sx: sx, sy: sy, mode: _spotMode,
+            feather: _spotFeather / 100, opacity: _spotOpacity / 100, stroke: pts),
+      ];
+      _spotSel = _spots.length - 1;
+      _before = false;
+      _spotsChanged();
+    } catch (e) {
+      _say('Retouche impossible : $e');
+    }
+  }
+
+  /// Déplace la retouche (`target`, un trait se déplace d'un bloc) ou sa zone copiée (`source`) : rendu en direct,
+  /// une seule étape d'annulation à la fin du geste.
+  void _moveSpot(int i, String which, double fx, double fy) {
+    if (i < 0 || i >= _spots.length) return;
+    final Spot s = Map<String, dynamic>.of(_spots[i]);
+    if (which == 'target') {
+      final double dx = fx - (s['x'] as num).toDouble(), dy = fy - (s['y'] as num).toDouble();
+      final List<dynamic>? stroke = s['stroke'] as List<dynamic>?;
+      if (stroke != null) {
+        s['stroke'] = <List<double>>[
+          for (final Object? p in stroke)
+            <double>[((p as List<dynamic>)[0] as num).toDouble() + dx, (p[1] as num).toDouble() + dy],
+        ];
+      }
+      s['x'] = fx;
+      s['y'] = fy;
+    } else {
+      s['sx'] = fx;
+      s['sy'] = fy;
+    }
+    setState(() {
+      _spots = <Spot>[for (int k = 0; k < _spots.length; k++) k == i ? s : _spots[k]];
+      _before = false;
+    });
+    _refresh();
+  }
+
+  /// Change un réglage de la retouche choisie (sans retouche choisie : réglage de la prochaine).
+  void _spotField(String field, Object value, {bool end = false}) {
+    final int i = _spotSel;
+    if (i < 0 || i >= _spots.length) return;
+    final Spot s = Map<String, dynamic>.of(_spots[i])..[field] = value;
+    setState(() {
+      _spots = <Spot>[for (int k = 0; k < _spots.length; k++) k == i ? s : _spots[k]];
+      _before = false;
+    });
+    if (end) {
+      _spotsChanged();
+    } else {
+      _refresh();
+    }
+  }
+
+  void _spotDelete() {
+    if (_spotSel < 0 || _spotSel >= _spots.length) return;
+    setState(() {
+      _spots = <Spot>[for (int k = 0; k < _spots.length; k++) if (k != _spotSel) _spots[k]];
+      _spotSel = -1;
+    });
+    _spotsChanged();
+  }
+
+  void _spotsClear() {
+    if (_spots.isEmpty) return;
+    setState(() {
+      _spots = <Spot>[];
+      _spotSel = -1;
+    });
+    _spotsChanged();
+  }
+
+  Future<void> _dustFind() async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _dustBusy) return;
+    final int token = _rawToken;
+    final String key = _key;
+    setState(() => _dustBusy = true);
+    try {
+      final List<Map<String, dynamic>> found = await RetouchTools.detectDust(rgba, _w, _h);
+      if (!mounted || key != _key || token != _rawToken) return;
+      setState(() => _dust = found);
+    } catch (e) {
+      _say('La recherche a échoué : $e');
+    } finally {
+      if (mounted) setState(() => _dustBusy = false);
+    }
+  }
+
+  void _dustApply() {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _dust == null) return;
+    final List<Map<String, dynamic>> kept = keptDust(_dust!, _spots, _dustSens.round(), _w, _h);
+    if (kept.isEmpty) return;
+    try {
+      final List<Spot> added = <Spot>[];
+      for (final Map<String, dynamic> d in kept) {
+        final double x = (d['x'] as num).toDouble(), y = (d['y'] as num).toDouble(), r = (d['r'] as num).toDouble();
+        final (double sx, double sy) = RetouchTools.suggestSource(rgba, _w, _h, x, y, r);
+        added.add(<String, dynamic>{...newSpot(x: x, y: y, r: r, sx: sx, sy: sy), 'auto': true});
+      }
+      setState(() {
+        _spots = <Spot>[..._spots, ...added];
+        _spotSel = -1;
+        _before = false;
+      });
+      _spotsChanged();
+    } catch (e) {
+      _say('Correction impossible : $e');
+    }
+  }
+
+  void _dustRemove() {
+    if (!_spots.any((Spot s) => s['auto'] == true)) return;
+    setState(() {
+      _spots = <Spot>[for (final Spot s in _spots) if (s['auto'] != true) s];
+      _spotSel = -1;
+    });
+    _spotsChanged();
+  }
+
+  Widget _slideRow(String label, double value, double min, double max, String shown,
+      ValueChanged<double> onChanged, VoidCallback onEnd, bool ready) {
+    return Row(
+      children: <Widget>[
+        SizedBox(width: 112, child: Text(label, style: const TextStyle(fontSize: 13))),
+        Expanded(
+          child: Slider(
+            value: value.clamp(min, max),
+            min: min,
+            max: max,
+            onChanged: ready ? onChanged : null,
+            onChangeEnd: ready ? (double _) => onEnd() : null,
+          ),
+        ),
+        SizedBox(width: 46, child: Text(shown, textAlign: TextAlign.end, style: const TextStyle(fontSize: 12))),
+      ],
+    );
+  }
+
+  List<Widget> _spotsPanel(bool ready) {
+    final Spot? sel = _spotSel >= 0 && _spotSel < _spots.length ? _spots[_spotSel] : null;
+    final String mode = sel != null ? '${sel['mode']}' : _spotMode;
+    final double size = sel != null ? (sel['r'] as num).toDouble() / 0.0005 : _spotSize;
+    final double feather = sel != null ? (sel['feather'] as num).toDouble() * 100 : _spotFeather;
+    final double opacity = sel != null ? (sel['opacity'] as num).toDouble() * 100 : _spotOpacity;
+    final int autoCount = _spots.where((Spot s) => s['auto'] == true).length;
+    final int kept = _dust == null ? 0 : keptDust(_dust!, _spots, _dustSens.round(), _w, _h).length;
+    return <Widget>[
+      _groupTitle('RETOUCHE DE TACHES', ready && _spots.isNotEmpty ? _spotsClear : null),
+      Text(
+        _spots.isEmpty
+            ? 'Touchez une tache pour la retirer.'
+            : '${_spots.length} retouche${_spots.length > 1 ? 's' : ''}'
+                '${sel != null ? ' · une est choisie : glissez le cercle ou la zone copiée' : ''}',
+        style: const TextStyle(fontSize: 12, color: Colors.white70),
+      ),
+      const SizedBox(height: 8),
+      SegmentedButton<bool>(
+        showSelectedIcon: false,
+        segments: const <ButtonSegment<bool>>[
+          ButtonSegment<bool>(value: false, label: Text('Toucher'), icon: Icon(Icons.touch_app_outlined)),
+          ButtonSegment<bool>(value: true, label: Text('Pinceau'), icon: Icon(Icons.brush_outlined)),
+        ],
+        selected: <bool>{_spotBrush},
+        onSelectionChanged: (Set<bool> v) => setState(() => _spotBrush = v.first),
+      ),
+      const SizedBox(height: 8),
+      SegmentedButton<String>(
+        showSelectedIcon: false,
+        segments: const <ButtonSegment<String>>[
+          ButtonSegment<String>(value: 'heal', label: Text('Corriger')),
+          ButtonSegment<String>(value: 'clone', label: Text('Cloner')),
+        ],
+        selected: <String>{mode == 'clone' ? 'clone' : 'heal'},
+        onSelectionChanged: (Set<String> v) {
+          if (sel != null) {
+            _spotField('mode', v.first, end: true);
+          } else {
+            setState(() => _spotMode = v.first);
+          }
+        },
+      ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        dense: true,
+        title: const Text('Ajuster sur la tache'),
+        subtitle: const Text('Centre et dimensionne la retouche sur la tache touchée', style: TextStyle(fontSize: 11)),
+        value: _spotSnap,
+        onChanged: (bool v) => setState(() => _spotSnap = v),
+      ),
+      _slideRow('Taille', size, 1, 200, size.round().toString(), (double v) {
+        if (sel != null) {
+          _spotField('r', v * 0.0005);
+        } else {
+          setState(() => _spotSize = v);
+        }
+      }, () {
+        if (sel != null) _spotsChanged();
+      }, ready),
+      _slideRow('Bord progressif', feather, 0, 100, feather.round().toString(), (double v) {
+        if (sel != null) {
+          _spotField('feather', v / 100);
+        } else {
+          setState(() => _spotFeather = v);
+        }
+      }, () {
+        if (sel != null) _spotsChanged();
+      }, ready),
+      _slideRow('Opacité', opacity, 0, 100, opacity.round().toString(), (double v) {
+        if (sel != null) {
+          _spotField('opacity', v / 100);
+        } else {
+          setState(() => _spotOpacity = v);
+        }
+      }, () {
+        if (sel != null) _spotsChanged();
+      }, ready),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          onPressed: ready && sel != null ? _spotDelete : null,
+          icon: const Icon(Icons.delete_outline),
+          label: const Text('Supprimer la retouche choisie'),
+        ),
+      ),
+      _groupTitle('POUSSIÈRE AUTOMATIQUE', null),
+      FilledButton.tonalIcon(
+        onPressed: ready && !_dustBusy ? _dustFind : null,
+        icon: _dustBusy
+            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(Icons.search),
+        label: Text(_dustBusy ? 'Recherche en cours…' : 'Chercher la poussière'),
+      ),
+      if (_dust != null) ...<Widget>[
+        const SizedBox(height: 6),
+        Text(
+          _dust!.isEmpty
+              ? 'Aucune poussière trouvée.'
+              : '${_dust!.length} trouvée${_dust!.length > 1 ? 's' : ''} · $kept à corriger avec cette sensibilité'
+                  '${autoCount > 0 ? ' · $autoCount déjà corrigée${autoCount > 1 ? 's' : ''}' : ''}',
+          style: const TextStyle(fontSize: 12, color: Colors.white70),
+        ),
+        _slideRow('Sensibilité', _dustSens, 0, 100, _dustSens.round().toString(),
+            (double v) => setState(() => _dustSens = v), () {}, ready),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          dense: true,
+          title: const Text('Afficher les repères bleus'),
+          value: _dustShow,
+          onChanged: (bool v) => setState(() => _dustShow = v),
+        ),
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: FilledButton(
+                onPressed: ready && kept > 0 ? _dustApply : null,
+                child: Text(kept > 0 ? 'Corriger $kept tache${kept > 1 ? 's' : ''}' : 'Rien à corriger'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            TextButton(onPressed: ready && autoCount > 0 ? _dustRemove : null, child: const Text('Retirer')),
+          ],
+        ),
+      ],
+    ];
+  }
+
   bool get _lensOn => _sidecar.extra['lens_profile'] is Map;
 
   void _setLensProfile(bool on) {
@@ -860,11 +1206,12 @@ class _DevelopPageState extends State<DevelopPage> {
   }
 
   List<Widget> _tools(bool ready) => <Widget>[
-        _toolButton('basic', Icons.tune, 'Basique', onTap: _cropMode ? null : () => setState(() => _tool = 'basic')),
-        _toolButton('curve', Icons.show_chart, 'Courbe', onTap: _cropMode ? null : () => setState(() => _tool = 'curve')),
-        _toolButton('color', Icons.palette_outlined, 'Couleur', onTap: _cropMode ? null : () => setState(() => _tool = 'color')),
-        _toolButton('detail', Icons.change_history_outlined, 'Détail', onTap: _cropMode ? null : () => setState(() => _tool = 'detail')),
-        _toolButton('lens', Icons.lens_outlined, 'Objectif', onTap: _cropMode ? null : () => setState(() => _tool = 'lens')),
+        _toolButton('basic', Icons.tune, 'Basique', onTap: _cropMode ? null : () => _setTool('basic')),
+        _toolButton('curve', Icons.show_chart, 'Courbe', onTap: _cropMode ? null : () => _setTool('curve')),
+        _toolButton('color', Icons.palette_outlined, 'Couleur', onTap: _cropMode ? null : () => _setTool('color')),
+        _toolButton('detail', Icons.change_history_outlined, 'Détail', onTap: _cropMode ? null : () => _setTool('detail')),
+        _toolButton('lens', Icons.lens_outlined, 'Objectif', onTap: _cropMode ? null : () => _setTool('lens')),
+        _toolButton('spots', Icons.healing, 'Supprimer', onTap: _cropMode ? null : () => _setTool('spots')),
         _toolButton('crop', Icons.crop, 'Recadrer', onTap: ready && !_cropMode ? _enterCrop : null),
       ];
 
@@ -881,6 +1228,24 @@ class _DevelopPageState extends State<DevelopPage> {
           aspect: _aspect,
           onChanged: _setCropRect,
           onEnd: _commit,
+        ),
+      );
+    }
+    if (_tool == 'spots') {
+      return Padding(
+        padding: const EdgeInsets.all(12),
+        child: SpotOverlay(
+          image: _shown!,
+          spots: _spots,
+          selected: _spotSel,
+          brush: _spotBrush,
+          brushRadius: _spotSize * 0.0005,
+          dust: _dustShow && _dust != null ? keptDust(_dust!, _spots, _dustSens.round(), _w, _h) : const <Map<String, dynamic>>[],
+          onAdd: _addSpot,
+          onSelect: (int i) => setState(() => _spotSel = i),
+          onMove: _moveSpot,
+          onMoveEnd: _spotsChanged,
+          onStroke: _strokeDone,
         ),
       );
     }
@@ -951,6 +1316,8 @@ class _DevelopPageState extends State<DevelopPage> {
         return _detailPanel(ready);
       case 'lens':
         return _lensPanel(ready);
+      case 'spots':
+        return _spotsPanel(ready);
       default:
         return _basicPanel(ready);
     }

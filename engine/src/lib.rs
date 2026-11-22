@@ -9,6 +9,8 @@
 //!   sursaut_engine_render(moteur, json, &w, &h)    rend -> pointeur RGBA (valable jusqu'au prochain appel) ou nul
 //!   sursaut_engine_last_error()                    dernier message d'erreur (texte)
 //!   sursaut_engine_close(moteur)                   libère
+//!   sursaut_spot_tool(rgba, w, h, op, x, y, r, sortie)  outils de retouche : source, repérage d'une tache ou d'un objet
+//!   sursaut_dust_detect(rgba, w, h)                poussière du capteur trouvée (JSON)
 //!   sursaut_engine_keep()                          référence les fonctions (voir PencilBridgePlugin.swift)
 //!
 //! Lecture d'un RAW (étape 3a, LibRaw) :
@@ -27,7 +29,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Mutex;
 use sursaut_core::{Pipeline, Recipe};
 
-const VERSION: &[u8] = b"sursaut_engine 0.4.1 (moteur sursaut-core + LibRaw 0.21.3)\0";
+const VERSION: &[u8] = b"sursaut_engine 0.5.0 (moteur sursaut-core + LibRaw 0.21.3)\0";
 
 static LAST_ERROR: Mutex<Option<CString>> = Mutex::new(None);
 
@@ -260,11 +262,104 @@ pub unsafe extern "C" fn sursaut_raw_close(raw: *mut raw::RawFile) {
     }
 }
 
+static DUST_TEXT: Mutex<Option<CString>> = Mutex::new(None);
+
+fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+    for p in rgba.chunks_exact(4) {
+        rgb.extend_from_slice(&p[..3]);
+    }
+    rgb
+}
+
+/// Outils de retouche sur une photo RGBA 8 bits (sans état : la photo n'est pas gardée).
+/// `op` : 0 = source proposée pour une tache (écrit sx, sy), 1 = repérage d'une tache sombre près du clic (x, y, rayon),
+/// 2 = repérage d'un objet clair ou sombre avec son halo (x, y, rayon). x, y en fractions, r en fraction du grand côté.
+/// Renvoie le nombre de valeurs écrites dans `out` (0 = rien trouvé, -1 = erreur).
+///
+/// # Safety
+/// `rgba` pointe vers `w * h * 4` octets valides ; `out` vers au moins 3 réels.
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_spot_tool(
+    rgba: *const u8, w: u32, h: u32, op: i32, x: f64, y: f64, r: f64, out: *mut f64,
+) -> i32 {
+    if rgba.is_null() || out.is_null() {
+        set_error("image ou sortie absente");
+        return -1;
+    }
+    let (w, h) = (w as usize, h as usize);
+    let slice = std::slice::from_raw_parts(rgba, w * h * 4);
+    let res = catch_unwind(AssertUnwindSafe(|| -> Vec<f64> {
+        let rgb = rgba_to_rgb(slice);
+        match op {
+            0 => {
+                let data: Vec<f32> = rgb.iter().map(|&v| v as f32 / 255.0).collect();
+                let img = sursaut_core::Image::new(w, h, data);
+                let (sx, sy) = sursaut_core::spots::suggest_source(&img, x, y, r);
+                vec![sx, sy]
+            }
+            1 => sursaut_core::dust::refine(&rgb, w, h, x, y, r).map(|(a, b, c)| vec![a, b, c]).unwrap_or_default(),
+            _ => sursaut_core::dust::refine_object(&rgb, w, h, x, y, r).map(|(a, b, c)| vec![a, b, c]).unwrap_or_default(),
+        }
+    }));
+    match res {
+        Ok(v) => {
+            for (i, a) in v.iter().enumerate().take(3) {
+                *out.add(i) = *a;
+            }
+            v.len().min(3) as i32
+        }
+        Err(_) => {
+            set_error("erreur interne dans l'outil de retouche");
+            -1
+        }
+    }
+}
+
+/// Poussière du capteur : liste JSON `[{"x":..,"y":..,"r":..,"score":..,"contrast":..}, ...]` (classée par score).
+/// Le texte reste valable jusqu'au prochain appel. Nul en cas d'erreur.
+///
+/// # Safety
+/// `rgba` pointe vers `w * h * 4` octets valides.
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_dust_detect(rgba: *const u8, w: u32, h: u32) -> *const c_char {
+    if rgba.is_null() {
+        set_error("image absente");
+        return std::ptr::null();
+    }
+    let (w, h) = (w as usize, h as usize);
+    let slice = std::slice::from_raw_parts(rgba, w * h * 4);
+    let res = catch_unwind(AssertUnwindSafe(|| {
+        let found = sursaut_core::dust::detect(&rgba_to_rgb(slice), w, h);
+        let items: Vec<String> = found
+            .iter()
+            .map(|d| format!("{{\"x\":{},\"y\":{},\"r\":{},\"score\":{},\"contrast\":{}}}", d.x, d.y, d.r, d.score, d.contrast))
+            .collect();
+        format!("[{}]", items.join(","))
+    }));
+    match res {
+        Ok(t) => {
+            let c = CString::new(t).unwrap_or_default();
+            match DUST_TEXT.lock() {
+                Ok(mut g) => {
+                    *g = Some(c);
+                    g.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null())
+                }
+                Err(_) => std::ptr::null(),
+            }
+        }
+        Err(_) => {
+            set_error("erreur interne dans la recherche de poussière");
+            std::ptr::null()
+        }
+    }
+}
+
 /// Référence toutes les fonctions exportées : l'éditeur de liens d'iOS retire sinon celles que
 /// seul Dart (dart:ffi) utilise. Appelée une fois par le code Swift. Renvoie leur nombre.
 #[no_mangle]
 pub extern "C" fn sursaut_engine_keep() -> u32 {
-    let table: [usize; 9] = [
+    let table: [usize; 11] = [
         sursaut_engine_version as *const () as usize,
         sursaut_engine_last_error as *const () as usize,
         sursaut_engine_open_rgba8 as *const () as usize,
@@ -274,6 +369,8 @@ pub extern "C" fn sursaut_engine_keep() -> u32 {
         sursaut_raw_info_json as *const () as usize,
         sursaut_raw_develop as *const () as usize,
         sursaut_raw_close as *const () as usize,
+        sursaut_spot_tool as *const () as usize,
+        sursaut_dust_detect as *const () as usize,
     ];
     std::hint::black_box(&table);
     table.len() as u32
@@ -300,7 +397,7 @@ mod tests {
     #[test]
     fn version_et_erreur_vide() {
         let v = unsafe { CStr::from_ptr(sursaut_engine_version()) }.to_str().unwrap();
-        assert!(v.starts_with("sursaut_engine 0.4.1"));
+        assert!(v.starts_with("sursaut_engine 0.5.0"));
     }
 
     #[test]
@@ -366,7 +463,7 @@ mod tests {
 
     #[test]
     fn keep_compte_les_fonctions() {
-        assert_eq!(sursaut_engine_keep(), 9);
+        assert_eq!(sursaut_engine_keep(), 11);
     }
 
     #[test]
@@ -384,5 +481,38 @@ mod tests {
         let t = std::time::Instant::now();
         e.render(r#"{"exposure":0.6,"clarity":20,"saturation":25}"#).unwrap();
         eprintln!("curseur d'exposition : {:?} (étages : {:?})", t.elapsed(), e.recomputed());
+    }
+
+    /// Fond lisse avec une tache sombre ronde au centre.
+    fn spotted(w: usize, h: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                let (dx, dy) = (x as f32 - w as f32 / 2.0, y as f32 - h as f32 / 2.0);
+                let d = (dx * dx + dy * dy).sqrt();
+                let g = if d < 6.0 { 150u8 } else { 200u8 };
+                v.extend_from_slice(&[g, g, g, 255]);
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn outils_de_retouche() {
+        let (w, h) = (400usize, 300usize);
+        let img = spotted(w, h);
+        let mut out = [0f64; 3];
+        // source proposée : deux fractions dans la photo
+        let n = unsafe { sursaut_spot_tool(img.as_ptr(), w as u32, h as u32, 0, 0.5, 0.5, 0.02, out.as_mut_ptr()) };
+        assert_eq!(n, 2);
+        assert!(out[0] > 0.0 && out[0] < 1.0 && out[1] > 0.0 && out[1] < 1.0);
+        // poussière : la tache est trouvée au centre
+        let p = unsafe { sursaut_dust_detect(img.as_ptr(), w as u32, h as u32) };
+        assert!(!p.is_null());
+        let txt = unsafe { CStr::from_ptr(p) }.to_str().unwrap().to_string();
+        assert!(txt.starts_with('['));
+        assert!(txt.len() > 2, "aucune tache trouvée : {txt}");
+        // entrée absente : erreur propre
+        assert_eq!(unsafe { sursaut_spot_tool(std::ptr::null(), 1, 1, 0, 0.0, 0.0, 0.01, out.as_mut_ptr()) }, -1);
     }
 }

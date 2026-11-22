@@ -1,4 +1,5 @@
 import 'curves.dart';
+import 'spots.dart';
 
 /// Historique annuler/rétablir d'une recette : réglages numériques à plat + courbes de tonalité.
 ///
@@ -6,8 +7,10 @@ import 'curves.dart';
 /// double-tap, chargement) créent une entrée : un glissement complet = une seule étape d'annulation.
 class RecipeHistory {
   RecipeHistory(Map<String, double> initial,
-      {Map<String, CurvePoints> curves = const <String, CurvePoints>{}, this.limit = 200})
-      : _states = <_State>[_State(Map<String, double>.of(initial), _copyCurves(curves))];
+      {Map<String, CurvePoints> curves = const <String, CurvePoints>{},
+      List<Spot> spots = const <Spot>[],
+      this.limit = 200})
+      : _states = <_State>[_State(Map<String, double>.of(initial), _copyCurves(curves), copySpots(spots))];
 
   final int limit;
   final List<_State> _states;
@@ -15,16 +18,18 @@ class RecipeHistory {
 
   Map<String, double> get current => Map<String, double>.of(_states[_pos].values);
   Map<String, CurvePoints> get currentCurves => _copyCurves(_states[_pos].curves);
+  List<Spot> get currentSpots => copySpots(_states[_pos].spots);
   bool get canUndo => _pos > 0;
   bool get canRedo => _pos < _states.length - 1;
 
   /// Enregistre un nouvel état. Sans effet s'il est identique à l'état courant.
   void commit(Map<String, double> values,
-      {Map<String, CurvePoints> curves = const <String, CurvePoints>{}}) {
+      {Map<String, CurvePoints> curves = const <String, CurvePoints>{},
+      List<Spot> spots = const <Spot>[]}) {
     final _State s = _states[_pos];
-    if (_same(s.values, values) && curvesEqual(s.curves, curves)) return;
+    if (_same(s.values, values) && curvesEqual(s.curves, curves) && spotsEqual(s.spots, spots)) return;
     _states.removeRange(_pos + 1, _states.length);
-    _states.add(_State(Map<String, double>.of(values), _copyCurves(curves)));
+    _states.add(_State(Map<String, double>.of(values), _copyCurves(curves), copySpots(spots)));
     if (_states.length > limit) {
       _states.removeAt(0);
     }
@@ -58,7 +63,8 @@ class RecipeHistory {
 }
 
 class _State {
-  _State(this.values, this.curves);
+  _State(this.values, this.curves, this.spots);
   final Map<String, double> values;
   final Map<String, CurvePoints> curves;
+  final List<Spot> spots;
 }
