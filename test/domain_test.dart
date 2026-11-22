@@ -263,4 +263,15 @@ void main() {
     expect(l[1], '66 mm · f/5,6 · 1/250 s · ISO 4000');
     expect(shootLines(<String, dynamic>{}), <String>['', '']);
   });
+
+  test('réduction du bruit automatique d\'après l\'ISO (même courbe que le PC)', () {
+    expect(suggestDenoiseAmount(null), isNull);
+    expect(suggestDenoiseAmount(100), 0);
+    expect(suggestDenoiseAmount(400), 0);
+    expect(suggestDenoiseAmount(800), 28);
+    expect(suggestDenoiseAmount(4000), 93);
+    expect(suggestDenoiseAmount(25600), 100);
+    expect(noiseAdvice(800), isNull);
+    expect(noiseAdvice(4000), isNotNull);
+  });
 }

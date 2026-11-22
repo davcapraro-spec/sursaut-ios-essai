@@ -91,6 +91,7 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Informations de prise de vue du RAW ouvert (vide pour une image ordinaire).
   List<String> _shoot = const <String>[];
+  num? _iso;
   String _curveChannel = 'rvb';
   String _hslKind = 'sat';
 
@@ -254,6 +255,7 @@ class _DevelopPageState extends State<DevelopPage> {
   /// Ferme le RAW ouvert (et annule un développement en attente).
   void _dropRaw() {
     _shoot = const <String>[];
+    _iso = null;
     _lensName = null;
     _lensFocal = null;
     _lensAperture = null;
@@ -327,6 +329,7 @@ class _DevelopPageState extends State<DevelopPage> {
     try {
       final Map<String, dynamic> i = raw.info();
       _shoot = shootLines(i);
+      _iso = i['iso'] is num ? i['iso'] as num : null;
       lens = (i['lens'] as String?)?.trim();
       focal = (i['focal_len'] as num?)?.toDouble();
       aperture = (i['aperture'] as num?)?.toDouble();
@@ -811,6 +814,49 @@ class _DevelopPageState extends State<DevelopPage> {
     ('VIGNETAGE', <String>['vig_amount', 'vig_mid', 'vig_round', 'vig_feather']),
   ];
 
+  /// Curseur unique « Quantité » (luminosité, et couleur à 80 %) + bouton Auto d'après l'ISO, comme sur le PC.
+  void _setDenoiseAmount(double v, {bool end = false}) {
+    setState(() {
+      _values['denoise_luma'] = v;
+      _values['denoise_color'] = (v * kDenoiseColorRatio).roundToDouble().clamp(0, 100);
+      _before = false;
+    });
+    if (end) _commit();
+    _refresh();
+  }
+
+  List<Widget> _denoiseMacro(bool ready) {
+    final double v = _values['denoise_luma']!;
+    final String? advice = noiseAdvice(_iso);
+    final int? auto = suggestDenoiseAmount(_iso);
+    return <Widget>[
+      _slideRow('Quantité', v, 0, 100, v.round().toString(), (double x) => _setDenoiseAmount(x.roundToDouble()),
+          () => _commit(), ready),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: FilledButton.tonalIcon(
+          onPressed: ready && auto != null
+              ? () {
+                  _setDenoiseAmount(auto.toDouble(), end: true);
+                  _say('Réduction du bruit proposée pour ISO ${_iso!.round()} : $auto. Ajustez à l\'œil.');
+                }
+              : null,
+          icon: const Icon(Icons.auto_fix_high),
+          label: Text(auto == null ? 'Auto (ISO inconnu)' : 'Auto d\'après l\'ISO ($auto)'),
+        ),
+      ),
+      if (advice != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(advice, style: const TextStyle(fontSize: 11, color: Color(0xFFE8B04A))),
+        ),
+      const Padding(
+        padding: EdgeInsets.only(top: 8, bottom: 2),
+        child: Text('Réglages détaillés', style: TextStyle(fontSize: 11, color: Colors.white60)),
+      ),
+    ];
+  }
+
   List<Widget> _detailPanel(bool ready) {
     final Map<String, DevelopParam> byKey = <String, DevelopParam>{
       for (final DevelopParam p in kDetailParams) p.key: p,
@@ -818,6 +864,7 @@ class _DevelopPageState extends State<DevelopPage> {
     return <Widget>[
       for (final (String title, List<String> keys) in _detailGroups) ...<Widget>[
         _groupTitle(title, ready ? () => _resetKeys(keys) : null),
+        if (title == 'RÉDUCTION DU BRUIT') ..._denoiseMacro(ready),
         for (final String k in keys) _paramRow(byKey[k]!, ready),
       ],
     ];

@@ -65,8 +65,8 @@ List<Map<String, dynamic>> keptDust(
     for (final Map<String, dynamic> d in dust)
       if ((d['score'] as num) >= thr &&
           !spots.any((Spot s) {
-            final double dx = ((d['x'] as num) - (s['x'] as num)) * w;
-            final double dy = ((d['y'] as num) - (s['y'] as num)) * h;
+            final double dx = ((d['x'] as num) - (s['x'] as num)).toDouble() * w;
+            final double dy = ((d['y'] as num) - (s['y'] as num)).toDouble() * h;
             final double rr = math.max((d['r'] as num).toDouble(), (s['r'] as num).toDouble()) * longSide;
             return dx * dx + dy * dy < rr * rr;
           }))
