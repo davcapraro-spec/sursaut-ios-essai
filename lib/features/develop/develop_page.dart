@@ -9,7 +9,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:file_picker/file_picker.dart';
 import 'package:image/image.dart' as img;
-import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -55,7 +54,6 @@ Future<Uint8List> _encodeJpeg(Uint8List rgba, int w, int h) {
 }
 
 class _DevelopPageState extends State<DevelopPage> {
-  final ImagePicker _picker = ImagePicker();
   late final EngineInfo _info;
   PhotoEngine? _photo;
   String? _error;
@@ -227,19 +225,54 @@ class _DevelopPageState extends State<DevelopPage> {
     _refresh();
   }
 
+  /// « Depuis Photos » : le sélecteur de Photos, avec le fichier d'origine (compressionQuality 0 : ni
+  /// conversion ni réduction). Un RAW arrive donc tel quel et passe par LibRaw.
   Future<void> _choose() async {
-    final XFile? file = await _picker.pickImage(source: ImageSource.gallery);
-    if (file == null) return;
     try {
-      if (_isRaw(file.name)) {
-        // RAW envoyé tel quel par Photos : on le développe depuis la copie temporaire.
-        await _openRaw(file.path, file.name);
-      } else {
-        await _openBytes(await file.readAsBytes(), file.name);
+      final FilePickerResult? res =
+          await FilePicker.platform.pickFiles(type: FileType.media, compressionQuality: 0);
+      if (res == null || res.files.isEmpty) return;
+      final PlatformFile f = res.files.first;
+      final String? path = f.path;
+      if (path == null) {
+        _say('Photos n\'a pas donné de fichier. Pour un RAW, utilisez « Depuis Fichiers ».');
+        return;
       }
+      await _openPicked(path, f.name);
     } catch (e) {
       if (mounted) setState(() => _loading = '');
       _say('Ouverture impossible : $e\nPour un RAW, utilisez « Depuis Fichiers ».');
+    }
+  }
+
+  /// RAW (d'après l'extension, ou l'en-tête TIFF que partagent ARW, DNG, CR2, NEF...) ou image ordinaire.
+  Future<void> _openPicked(String path, String name) async {
+    final bool byName = _isRaw(name);
+    if (byName || await _looksLikeTiff(path)) {
+      try {
+        await _openRaw(path, name);
+        return;
+      } catch (_) {
+        if (byName) rethrow;
+        if (mounted) setState(() => _loading = ''); // simple TIFF : on l'ouvre comme une image
+      }
+    }
+    await _openBytes(await File(path).readAsBytes(), name);
+  }
+
+  Future<bool> _looksLikeTiff(String path) async {
+    try {
+      final RandomAccessFile raf = await File(path).open();
+      try {
+        final Uint8List b = await raf.read(4);
+        return b.length == 4 &&
+            ((b[0] == 0x49 && b[1] == 0x49 && b[2] == 0x2A && b[3] == 0) ||
+                (b[0] == 0x4D && b[1] == 0x4D && b[2] == 0 && b[3] == 0x2A));
+      } finally {
+        await raf.close();
+      }
+    } catch (_) {
+      return false;
     }
   }
 
@@ -274,11 +307,7 @@ class _DevelopPageState extends State<DevelopPage> {
     if (path == null) return;
     final String name = res!.files.single.name;
     try {
-      if (_isRaw(name)) {
-        await _openRaw(path, name);
-      } else {
-        await _openBytes(await File(path).readAsBytes(), name);
-      }
+      await _openPicked(path, name);
     } catch (e) {
       if (mounted) setState(() => _loading = '');
       _say('Ouverture impossible : $e');
