@@ -23,13 +23,46 @@ class HomePage extends StatelessWidget {
               padding: const EdgeInsets.all(24),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: <Widget>[
-                  Text('Sursaut', style: Theme.of(context).textTheme.displaySmall),
-                  const SizedBox(height: 4),
-                  const Text('Développement des photos et capture connectée'),
-                  const SizedBox(height: 32),
+                  Center(
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: <Widget>[
+                        // Halo doré discret derrière le logo.
+                        Container(
+                          width: 900,
+                          height: 300,
+                          decoration: const BoxDecoration(
+                            gradient: RadialGradient(
+                              colors: <Color>[Color(0x2AD9A441), Color(0x00D9A441)],
+                              stops: <double>[0, 0.65],
+                            ),
+                          ),
+                        ),
+                        Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            Image.asset(
+                              'assets/logo_sursaut.png',
+                              width: 420,
+                              semanticLabel: 'Sursaut by David',
+                              errorBuilder: (BuildContext c, Object e, StackTrace? s) =>
+                                  Text('Sursaut', style: Theme.of(c).textTheme.displaySmall),
+                            ),
+                            const SizedBox(height: 10),
+                            const Text(
+                              'Développement des photos et capture connectée',
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 28),
                   Wrap(
+                    alignment: WrapAlignment.center,
                     spacing: 20,
                     runSpacing: 20,
                     children: <Widget>[
