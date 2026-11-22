@@ -18,6 +18,7 @@ import '../../domain/crop_math.dart';
 import '../../domain/curves.dart';
 import '../../domain/develop_params.dart';
 import '../../domain/lens_profiles.dart';
+import '../../domain/shoot_info.dart';
 import '../../domain/photo_key.dart';
 import '../../domain/recipe_history.dart';
 import '../../domain/spots.dart';
@@ -87,6 +88,9 @@ class _DevelopPageState extends State<DevelopPage> {
   double? _lensAperture;
   Map<String, dynamic>? _lensCandidate;
   Map<String, dynamic>? _lensDb;
+
+  /// Informations de prise de vue du RAW ouvert (vide pour une image ordinaire).
+  List<String> _shoot = const <String>[];
   String _curveChannel = 'rvb';
   String _hslKind = 'sat';
 
@@ -249,6 +253,7 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Ferme le RAW ouvert (et annule un développement en attente).
   void _dropRaw() {
+    _shoot = const <String>[];
     _lensName = null;
     _lensFocal = null;
     _lensAperture = null;
@@ -321,6 +326,7 @@ class _DevelopPageState extends State<DevelopPage> {
     double? focal, aperture;
     try {
       final Map<String, dynamic> i = raw.info();
+      _shoot = shootLines(i);
       lens = (i['lens'] as String?)?.trim();
       focal = (i['focal_len'] as num?)?.toDouble();
       aperture = (i['aperture'] as num?)?.toDouble();
@@ -1276,6 +1282,22 @@ class _DevelopPageState extends State<DevelopPage> {
   }
 
   Widget _infoRow(bool ready) {
+    final List<String> shoot = <String>[for (final String l in _shoot) if (l.isNotEmpty) l];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        if (shoot.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 2),
+            child: Text(shoot.join('\n'),
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFFF2A33A))),
+          ),
+        _infoLine(ready),
+      ],
+    );
+  }
+
+  Widget _infoLine(bool ready) {
     return Row(
       children: <Widget>[
         Expanded(

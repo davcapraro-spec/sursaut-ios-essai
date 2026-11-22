@@ -9,6 +9,7 @@ import 'package:sursaut_essai/domain/lens_profiles.dart';
 import 'package:sursaut_essai/domain/develop_params.dart';
 import 'package:sursaut_essai/domain/photo_key.dart';
 import 'package:sursaut_essai/domain/recipe_history.dart';
+import 'package:sursaut_essai/domain/shoot_info.dart';
 import 'package:sursaut_essai/domain/sidecar.dart';
 import 'package:sursaut_essai/domain/spots.dart';
 
@@ -240,5 +241,26 @@ void main() {
     expect(keptDust(dust, have, 85, 1000, 800).length, 1);
     // sensibilité 100 (seuil 3) : la 2e est retenue aussi
     expect(keptDust(dust, have, 100, 1000, 800).length, 2);
+  });
+
+  test('informations de prise de vue : mise en forme', () {
+    expect(formatShutter(0.004), '1/250 s');
+    expect(formatShutter(0.5), '0,5 s');
+    expect(formatShutter(2), '2 s');
+    expect(formatShutter(0), '');
+    expect(formatShotTime(1795357920), '22/11/2026 14:32');
+    final List<String> l = shootLines(<String, dynamic>{
+      'make': 'Sony',
+      'model': 'ILCE-7M4',
+      'lens': 'FE 24-70mm F2.8 GM II',
+      'iso': 4000,
+      'shutter': 0.004,
+      'aperture': 5.6,
+      'focal_len': 66.0,
+      'timestamp': 0,
+    });
+    expect(l[0], 'Sony ILCE-7M4 · FE 24-70mm F2.8 GM II');
+    expect(l[1], '66 mm · f/5,6 · 1/250 s · ISO 4000');
+    expect(shootLines(<String, dynamic>{}), <String>['', '']);
   });
 }
