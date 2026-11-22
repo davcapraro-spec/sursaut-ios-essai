@@ -11,15 +11,23 @@
 //!   sursaut_engine_close(moteur)                   libère
 //!   sursaut_engine_keep()                          référence les fonctions (voir PencilBridgePlugin.swift)
 //!
+//! Lecture d'un RAW (étape 3a, LibRaw) :
+//!   sursaut_raw_open(chemin)                       ouvre un fichier RAW, lit les métadonnées -> poignée ou nul
+//!   sursaut_raw_info_json(raw)                     métadonnées + temps du dernier développement (JSON)
+//!   sursaut_raw_develop(raw, demi, côté_max, &w, &h)  développe -> pointeur RGBA (valable jusqu'au prochain appel) ou nul
+//!   sursaut_raw_close(raw)                         libère
+//!
 //! Un moteur ne doit être utilisé que par un appel à la fois (Dart sérialise les rendus).
 //! Une panique du moteur est attrapée à la frontière : elle devient une erreur, jamais un plantage.
+
+pub mod raw;
 
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Mutex;
 use sursaut_core::{Pipeline, Recipe};
 
-const VERSION: &[u8] = b"sursaut_engine 0.2.0 (moteur sursaut-core)\0";
+const VERSION: &[u8] = b"sursaut_engine 0.3.0 (moteur sursaut-core + LibRaw 0.21.3)\0";
 
 static LAST_ERROR: Mutex<Option<CString>> = Mutex::new(None);
 
@@ -170,16 +178,101 @@ pub unsafe extern "C" fn sursaut_engine_close(engine: *mut Engine) {
     }
 }
 
+/// # Safety
+/// `path` est un texte UTF-8 terminé par un zéro.
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_raw_open(path: *const c_char) -> *mut raw::RawFile {
+    if path.is_null() {
+        set_error("chemin absent");
+        return std::ptr::null_mut();
+    }
+    let p = match CStr::from_ptr(path).to_str() {
+        Ok(t) => t.to_string(),
+        Err(_) => {
+            set_error("chemin : texte non valide");
+            return std::ptr::null_mut();
+        }
+    };
+    match catch_unwind(AssertUnwindSafe(|| raw::RawFile::open(&p))) {
+        Ok(Ok(f)) => Box::into_raw(Box::new(f)),
+        Ok(Err(m)) => {
+            set_error(&m);
+            std::ptr::null_mut()
+        }
+        Err(_) => {
+            set_error("le moteur a rencontré une erreur interne à l'ouverture du RAW");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// # Safety
+/// `raw` vient de `sursaut_raw_open`. Le texte rendu reste valable jusqu'au prochain développement.
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_raw_info_json(raw: *mut raw::RawFile) -> *const c_char {
+    if raw.is_null() {
+        set_error("RAW absent");
+        return std::ptr::null();
+    }
+    (*raw).json_ptr()
+}
+
+/// # Safety
+/// `raw` vient de `sursaut_raw_open` ; `out_w` et `out_h` pointent vers des entiers valides.
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_raw_develop(
+    raw: *mut raw::RawFile,
+    half: i32,
+    max_side: u32,
+    out_w: *mut u32,
+    out_h: *mut u32,
+) -> *const u8 {
+    if raw.is_null() || out_w.is_null() || out_h.is_null() {
+        set_error("RAW ou sortie absents");
+        return std::ptr::null();
+    }
+    let f = &mut *raw;
+    match catch_unwind(AssertUnwindSafe(|| f.develop(half != 0, max_side))) {
+        Ok(Ok(())) => {
+            let t = f.last.clone().unwrap_or_default();
+            *out_w = t.out_w;
+            *out_h = t.out_h;
+            f.preview().as_ptr()
+        }
+        Ok(Err(m)) => {
+            set_error(&m);
+            std::ptr::null()
+        }
+        Err(_) => {
+            set_error("le moteur a rencontré une erreur interne pendant le développement du RAW");
+            std::ptr::null()
+        }
+    }
+}
+
+/// # Safety
+/// `raw` vient de `sursaut_raw_open` et n'est plus utilisé ensuite (nul accepté).
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_raw_close(raw: *mut raw::RawFile) {
+    if !raw.is_null() {
+        drop(Box::from_raw(raw));
+    }
+}
+
 /// Référence toutes les fonctions exportées : l'éditeur de liens d'iOS retire sinon celles que
 /// seul Dart (dart:ffi) utilise. Appelée une fois par le code Swift. Renvoie leur nombre.
 #[no_mangle]
 pub extern "C" fn sursaut_engine_keep() -> u32 {
-    let table: [usize; 5] = [
+    let table: [usize; 9] = [
         sursaut_engine_version as *const () as usize,
         sursaut_engine_last_error as *const () as usize,
         sursaut_engine_open_rgba8 as *const () as usize,
         sursaut_engine_render as *const () as usize,
         sursaut_engine_close as *const () as usize,
+        sursaut_raw_open as *const () as usize,
+        sursaut_raw_info_json as *const () as usize,
+        sursaut_raw_develop as *const () as usize,
+        sursaut_raw_close as *const () as usize,
     ];
     std::hint::black_box(&table);
     table.len() as u32
@@ -206,7 +299,7 @@ mod tests {
     #[test]
     fn version_et_erreur_vide() {
         let v = unsafe { CStr::from_ptr(sursaut_engine_version()) }.to_str().unwrap();
-        assert!(v.starts_with("sursaut_engine 0.2.0"));
+        assert!(v.starts_with("sursaut_engine 0.3.0"));
     }
 
     #[test]
@@ -272,7 +365,7 @@ mod tests {
 
     #[test]
     fn keep_compte_les_fonctions() {
-        assert_eq!(sursaut_engine_keep(), 5);
+        assert_eq!(sursaut_engine_keep(), 9);
     }
 
     #[test]

@@ -1,0 +1,7 @@
+Ce dossier contient :
+- LibRaw 0.21.3 (LibRaw LLC), sous licence au choix LGPL 2.1 ou CDDL 1.0 (voir LibRaw/COPYRIGHT, LibRaw/LICENSE.*).
+  LibRaw utilise du code de dcraw.c (Dave Coffin), DCB / FBDD (Jacek Gozdz, BSD), X3F (Roland Karlsson, BSD)
+  et des morceaux du DNG SDK 1.4 d'Adobe (MIT).
+- build.rs et src/bindings.rs : dérivés de la caisse « rsraw-sys » 0.1.1 de hexilee (licence MIT),
+  modifiés : liaisons C préécrites toujours utilisées (plus de bindgen).
+Sursaut (GPL v3) les utilise comme bibliothèque. Ne pas modifier les sources LibRaw ici.

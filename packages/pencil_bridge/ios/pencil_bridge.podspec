@@ -11,6 +11,8 @@ Pod::Spec.new do |s|
   s.source_files     = 'Classes/**/*'
   # Moteur Rust (étape 1) : fabriqué par le workflow, copié ici avant la compilation.
   s.vendored_libraries = 'libsursaut_engine.a'
+  # LibRaw est du C++ : la bibliothèque standard du C++ doit être liée à l'application.
+  s.libraries = 'c++'
   s.dependency 'Flutter'
   s.platform         = :ios, '13.0'
   s.swift_version    = '5.0'

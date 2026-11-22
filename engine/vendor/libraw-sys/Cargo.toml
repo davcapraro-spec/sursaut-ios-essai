@@ -1,0 +1,19 @@
+[package]
+name = "sursaut-libraw-sys"
+version = "0.21.3"
+edition = "2021"
+description = "LibRaw 0.21.3 (source embarquée) compilée par cc ; liaisons C préécrites. Dérivé de rsraw-sys 0.1.1 (MIT)."
+license = "MIT AND (LGPL-2.1-only OR CDDL-1.0)"
+publish = false
+build = "build.rs"
+include = ["src/lib.rs", "src/bindings.rs", "LICENSE-*", "LibRaw/libraw/*", "LibRaw/src/**", "LibRaw/internal/*", "LibRaw/COPYRIGHT", "LibRaw/LICENSE.*", "build.rs"]
+
+[lib]
+name = "libraw_sys"
+path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+cc = { version = "1.2", features = ["parallel"] }

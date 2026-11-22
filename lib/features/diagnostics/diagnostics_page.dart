@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'camera_bench/camera_bench_page.dart';
 import 'engine_bench_page.dart';
 import 'pencil_bench/pencil_bench_page.dart';
+import 'raw_bench_page.dart';
 
 /// Outils de mesure : ce que l'iPad, le moteur, le Pencil et l'appareil font réellement.
 class DiagnosticsPage extends StatelessWidget {
@@ -24,6 +25,12 @@ class DiagnosticsPage extends StatelessWidget {
             title: const Text('Test automatique du moteur'),
             subtitle: const Text('Mesure la vitesse du moteur sur cet iPad et produit un rapport à copier'),
             onTap: () => _open(context, const EngineBenchPage()),
+          ),
+          ListTile(
+            leading: const Icon(Icons.raw_on),
+            title: const Text('Lecture d\'un RAW (LibRaw)'),
+            subtitle: const Text('Ouvre un ARW, mesure temps et mémoire, affiche l\'aperçu'),
+            onTap: () => _open(context, const RawBenchPage()),
           ),
           ListTile(
             leading: const Icon(Icons.edit),
