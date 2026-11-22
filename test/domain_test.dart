@@ -184,7 +184,8 @@ void main() {
         },
       ],
     };
-    expect(findLens(db, 'sony FE 50 mm F1.8'), isNull); // « 50 mm » avec espace : espaces ignorés, mais « mm » reste
+    expect(findLens(db, 'sony FE 50 mm F1.8'), isNotNull); // marque et espaces ignorés
+    expect(findLens(db, 'FE 85mm F1.8'), isNull);
     expect(findLens(db, 'FE 50mm F1.8'), isNotNull);
     expect(findLens(db, null), isNull);
     final Map<String, dynamic> p = lensProfileFor(db, 'Zoom 20-40mm', 30, 2.8)!;
