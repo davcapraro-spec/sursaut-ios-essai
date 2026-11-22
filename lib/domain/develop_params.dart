@@ -80,6 +80,16 @@ const Map<String, double> kCropDefaults = <String, double>{
   'crop_bottom': 1,
 };
 
+/// Corrections d'objectif manuelles (mêmes clés et bornes que le PC).
+const List<DevelopParam> kLensParams = <DevelopParam>[
+  DevelopParam('lens_distortion', 'Distorsion', -100, 100),
+  DevelopParam('lens_scale', 'Échelle', 50, 150),
+  DevelopParam('lens_ca_red', 'Frange rouge / cyan', -100, 100),
+  DevelopParam('lens_ca_blue', 'Frange bleu / jaune', -100, 100),
+  DevelopParam('lens_vignette', 'Vignetage', -100, 100),
+  DevelopParam('lens_vignette_mid', 'Point médian du vignetage', 0, 100),
+];
+
 /// Toutes les valeurs par défaut qui ne sont pas zéro : le cadre plein et quelques réglages du détail
 /// (mêmes valeurs que le PC : une clé absente de la recette = cette valeur).
 const Map<String, double> kParamDefaults = <String, double>{
@@ -93,6 +103,8 @@ const Map<String, double> kParamDefaults = <String, double>{
   'grain_roughness': 50,
   'vig_mid': 50,
   'vig_feather': 50,
+  'lens_scale': 100,
+  'lens_vignette_mid': 50,
 };
 
 /// Valeur d'un réglage « à zéro » (absent de la recette = valeur par défaut).
@@ -103,5 +115,6 @@ Map<String, double> defaultValues() => <String, double>{
       for (final DevelopParam p in kDevelopParams) p.key: 0,
       for (final DevelopParam p in kHslParams) p.key: 0,
       for (final DevelopParam p in kDetailParams) p.key: defaultOf(p.key),
+      for (final DevelopParam p in kLensParams) p.key: defaultOf(p.key),
       ...kCropDefaults,
     };

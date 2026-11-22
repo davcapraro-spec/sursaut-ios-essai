@@ -1,7 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:sursaut_essai/domain/crop_math.dart';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:sursaut_essai/domain/curves.dart';
+import 'package:sursaut_essai/domain/lens_profiles.dart';
 import 'package:sursaut_essai/domain/develop_params.dart';
 import 'package:sursaut_essai/domain/photo_key.dart';
 import 'package:sursaut_essai/domain/recipe_history.dart';
@@ -79,7 +83,7 @@ void main() {
     final Map<String, double> v = defaultValues();
     expect(v['exposure'], 0);
     expect(v['crop_right'], 1);
-    expect(v.length, kDevelopParams.length + kHslParams.length + kDetailParams.length + kCropDefaults.length);
+    expect(v.length, kDevelopParams.length + kHslParams.length + kDetailParams.length + kLensParams.length + kCropDefaults.length);
     expect(defaultOf('crop_bottom'), 1);
     expect(defaultOf('angle'), 0);
   });
@@ -152,5 +156,48 @@ void main() {
     expect(h.currentCurves, isEmpty);
     h.redo();
     expect(h.currentCurves['rvb']![1], <double>[0.5, 0.7]);
+  });
+
+  test('profil d\'objectif : nom comparable et interpolation', () {
+    expect(normalizeLensName('Sony FE 24-70mm f/2.8 GM II'), normalizeLensName('FE 24-70mm F2.8 GM II'));
+    final Map<String, dynamic> db = <String, dynamic>{
+      'lenses': <dynamic>[
+        <String, dynamic>{
+          'maker': 'Sony',
+          'model': 'FE 50mm f/1.8',
+          'min_focal': 50.0,
+          'focals': <dynamic>[50.0],
+          'geo': <String, dynamic>{'50.0': <dynamic>[1.0, 1.02]},
+          'ca_r': <String, dynamic>{'50.0': <dynamic>[1.0, 1.0]},
+          'ca_b': <String, dynamic>{'50.0': <dynamic>[1.0, 1.0]},
+        },
+        <String, dynamic>{
+          'maker': 'Zoom',
+          'model': '20-40mm',
+          'min_focal': 20.0,
+          'focals': <dynamic>[20.0, 40.0],
+          'geo': <String, dynamic>{
+            '20.0': <dynamic>[1.0, 1.1],
+            '40.0': <dynamic>[1.0, 1.3]
+          },
+        },
+      ],
+    };
+    expect(findLens(db, 'sony FE 50 mm F1.8'), isNull); // « 50 mm » avec espace : espaces ignorés, mais « mm » reste
+    expect(findLens(db, 'FE 50mm F1.8'), isNotNull);
+    expect(findLens(db, null), isNull);
+    final Map<String, dynamic> p = lensProfileFor(db, 'Zoom 20-40mm', 30, 2.8)!;
+    expect((p['geo'] as List<dynamic>)[1], closeTo(1.2, 1e-9));
+    expect(p.containsKey('vig'), isFalse);
+    expect(describeLensProfile(p), 'Zoom 20-40mm : distorsion');
+  });
+
+  test('profil d\'objectif : la vraie base trouve le FE 24-70 mm GM II', () {
+    final Map<String, dynamic> db =
+        jsonDecode(File('assets/lens_profiles.json').readAsStringSync()) as Map<String, dynamic>;
+    final Map<String, dynamic>? p = lensProfileFor(db, 'FE 24-70mm F2.8 GM II', 66, 5.6);
+    expect(p, isNotNull);
+    expect((p!['geo'] as List<dynamic>).length, greaterThan(10));
+    expect((p['ca_r'] as List<dynamic>).isNotEmpty, isTrue);
   });
 }

@@ -1,0 +1,2 @@
+lens_profiles.json : tables de correction d'objectifs dérivées de la base Lensfun (https://lensfun.github.io),
+licence Creative Commons Attribution-ShareAlike 3.0 (CC BY-SA 3.0).

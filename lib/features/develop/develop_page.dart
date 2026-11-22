@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:file_picker/file_picker.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
@@ -16,6 +17,7 @@ import '../../engine/engine.dart';
 import '../../domain/crop_math.dart';
 import '../../domain/curves.dart';
 import '../../domain/develop_params.dart';
+import '../../domain/lens_profiles.dart';
 import '../../domain/photo_key.dart';
 import '../../domain/recipe_history.dart';
 import '../../domain/sidecar.dart';
@@ -75,7 +77,14 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Courbes de tonalité non neutres, par canal ('rvb', 'red', 'green', 'blue').
   Map<String, CurvePoints> _curves = <String, CurvePoints>{};
-  String _tool = 'basic'; // basic | curve | color | detail
+  String _tool = 'basic'; // basic | curve | color | detail | lens
+
+  /// Objectif lu dans le RAW (nom, focale, ouverture) et profil trouvé dans la base, s'il existe.
+  String? _lensName;
+  double? _lensFocal;
+  double? _lensAperture;
+  Map<String, dynamic>? _lensCandidate;
+  Map<String, dynamic>? _lensDb;
   String _curveChannel = 'rvb';
   String _hslKind = 'sat';
 
@@ -204,6 +213,10 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Ferme le RAW ouvert (et annule un développement en attente).
   void _dropRaw() {
+    _lensName = null;
+    _lensFocal = null;
+    _lensAperture = null;
+    _lensCandidate = null;
     _rawToken++;
     _raw?.close();
     _raw = null;
@@ -249,6 +262,7 @@ class _DevelopPageState extends State<DevelopPage> {
       return;
     }
     _raw = raw;
+    await _detectLens(raw);
     await _useRgba(quick.rgba, quick.width, quick.height, name);
     if (!mounted || token != _rawToken) return;
     setState(() => _loading = 'Développement complet en cours…');
@@ -263,6 +277,27 @@ class _DevelopPageState extends State<DevelopPage> {
       _loading = '';
     });
     await _refresh();
+  }
+
+  /// Lit l'objectif dans le RAW et cherche son profil dans la base Lensfun embarquée.
+  Future<void> _detectLens(RawFile raw) async {
+    String? lens;
+    double? focal, aperture;
+    try {
+      final Map<String, dynamic> i = raw.info();
+      lens = (i['lens'] as String?)?.trim();
+      focal = (i['focal_len'] as num?)?.toDouble();
+      aperture = (i['aperture'] as num?)?.toDouble();
+    } catch (_) {}
+    Map<String, dynamic>? candidate;
+    try {
+      _lensDb ??= jsonDecode(await rootBundle.loadString('assets/lens_profiles.json')) as Map<String, dynamic>;
+      candidate = lensProfileFor(_lensDb!, lens, focal, aperture);
+    } catch (_) {}
+    _lensName = (lens == null || lens.isEmpty) ? null : lens;
+    _lensFocal = focal;
+    _lensAperture = aperture;
+    _lensCandidate = candidate;
   }
 
   void _say(String text) {
@@ -743,6 +778,52 @@ class _DevelopPageState extends State<DevelopPage> {
     ];
   }
 
+  bool get _lensOn => _sidecar.extra['lens_profile'] is Map;
+
+  void _setLensProfile(bool on) {
+    final Map<String, dynamic> extra = Map<String, dynamic>.of(_sidecar.extra);
+    if (on && _lensCandidate != null) {
+      extra['lens_profile'] = _lensCandidate;
+    } else {
+      extra.remove('lens_profile');
+    }
+    setState(() {
+      _sidecar = SidecarData(_sidecar.values, extra);
+      _before = false;
+    });
+    _commit();
+    _refresh();
+  }
+
+  List<Widget> _lensPanel(bool ready) {
+    final String detected = _raw == null
+        ? 'Ouvrez un fichier RAW : l\'objectif est lu dans la photo.'
+        : _lensName == null
+            ? 'Objectif non indiqué dans la photo : aucun profil possible.'
+            : 'Objectif détecté : $_lensName'
+                '${_lensFocal != null ? ' (${_lensFocal!.round()} mm' : ''}'
+                '${_lensAperture != null && _lensAperture! > 0 ? ' · f/${_lensAperture!.toStringAsFixed(1)}' : ''}'
+                '${_lensFocal != null ? ')' : ''}.';
+    final String found = _raw == null || _lensName == null
+        ? ''
+        : _lensCandidate != null
+            ? 'Profil trouvé : ${describeLensProfile(_lensCandidate!)}.'
+            : 'Aucun profil pour « $_lensName ».';
+    final List<String> manual = <String>[for (final DevelopParam p in kLensParams) p.key];
+    return <Widget>[
+      _groupTitle('PROFIL AUTOMATIQUE', null),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Appliquer le profil de l\'objectif'),
+        subtitle: Text('$detected\n$found', style: const TextStyle(fontSize: 12)),
+        value: _lensOn,
+        onChanged: ready && _lensCandidate != null ? _setLensProfile : null,
+      ),
+      _groupTitle('CORRECTIONS MANUELLES', ready ? () => _resetKeys(manual) : null),
+      for (final DevelopParam p in kLensParams) _paramRow(p, ready),
+    ];
+  }
+
   Widget _toolButton(String id, IconData icon, String label, {required VoidCallback? onTap}) {
     final bool on = _tool == id && !_cropMode;
     final Color fg = on ? const Color(0xFFF2A33A) : Colors.white70;
@@ -773,6 +854,7 @@ class _DevelopPageState extends State<DevelopPage> {
         _toolButton('curve', Icons.show_chart, 'Courbe', onTap: _cropMode ? null : () => setState(() => _tool = 'curve')),
         _toolButton('color', Icons.palette_outlined, 'Couleur', onTap: _cropMode ? null : () => setState(() => _tool = 'color')),
         _toolButton('detail', Icons.change_history_outlined, 'Détail', onTap: _cropMode ? null : () => setState(() => _tool = 'detail')),
+        _toolButton('lens', Icons.lens_outlined, 'Objectif', onTap: _cropMode ? null : () => setState(() => _tool = 'lens')),
         _toolButton('crop', Icons.crop, 'Recadrer', onTap: ready && !_cropMode ? _enterCrop : null),
       ];
 
@@ -857,6 +939,8 @@ class _DevelopPageState extends State<DevelopPage> {
         return _colorPanel(ready);
       case 'detail':
         return _detailPanel(ready);
+      case 'lens':
+        return _lensPanel(ready);
       default:
         return _basicPanel(ready);
     }
