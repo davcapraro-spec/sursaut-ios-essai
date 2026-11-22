@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -51,10 +52,9 @@ class _RawBenchPageState extends State<RawBenchPage> {
   }
 
   Future<void> _show(RenderResult r) async {
-    final Completer c = Completer();
-    ui.decodeImageFromPixels(r.rgba, r.width, r.height, ui.PixelFormat.rgba8888,
-        (ui.Image img) => c.complete(img));
-    final ui.Image img = await c.future as ui.Image;
+    final Completer<ui.Image> c = Completer<ui.Image>();
+    ui.decodeImageFromPixels(r.rgba, r.width, r.height, ui.PixelFormat.rgba8888, c.complete);
+    final ui.Image img = await c.future;
     if (!mounted) {
       img.dispose();
       return;
