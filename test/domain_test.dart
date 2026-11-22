@@ -192,7 +192,7 @@ void main() {
     final Map<String, dynamic> p = lensProfileFor(db, 'Zoom 20-40mm', 30, 2.8)!;
     expect((p['geo'] as List<dynamic>)[1], closeTo(1.2, 1e-9));
     expect(p.containsKey('vig'), isFalse);
-    expect(describeLensProfile(p), 'Zoom 20-40mm : distorsion');
+    expect(describeLensProfile(p), '20-40mm : distorsion'); // le nom est le modèle, sans la marque
   });
 
   test('profil d\'objectif : la vraie base trouve le FE 24-70 mm GM II', () {
