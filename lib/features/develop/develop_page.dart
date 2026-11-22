@@ -199,7 +199,17 @@ class _DevelopPageState extends State<DevelopPage> {
   Future<void> _choose() async {
     final XFile? file = await _picker.pickImage(source: ImageSource.gallery);
     if (file == null) return;
-    await _openBytes(await file.readAsBytes(), file.name);
+    try {
+      if (_isRaw(file.name)) {
+        // RAW envoyé tel quel par Photos : on le développe depuis la copie temporaire.
+        await _openRaw(file.path, file.name);
+      } else {
+        await _openBytes(await file.readAsBytes(), file.name);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _loading = '');
+      _say('Ouverture impossible : $e\nPour un RAW, utilisez « Depuis Fichiers ».');
+    }
   }
 
   static const Set<String> _rawExt = <String>{
