@@ -14,7 +14,7 @@
 //! Lecture d'un RAW (étape 3a, LibRaw) :
 //!   sursaut_raw_open(chemin)                       ouvre un fichier RAW, lit les métadonnées -> poignée ou nul
 //!   sursaut_raw_info_json(raw)                     métadonnées + temps du dernier développement (JSON)
-//!   sursaut_raw_develop(raw, demi, côté_max, &w, &h)  développe -> pointeur RGBA (valable jusqu'au prochain appel) ou nul
+//!   sursaut_raw_develop(raw, demi, côté_max, rendu, &w, &h)  développe -> pointeur RGBA (valable jusqu'au prochain appel) ou nul
 //!   sursaut_raw_close(raw)                         libère
 //!
 //! Un moteur ne doit être utilisé que par un appel à la fois (Dart sérialise les rendus).
@@ -27,7 +27,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Mutex;
 use sursaut_core::{Pipeline, Recipe};
 
-const VERSION: &[u8] = b"sursaut_engine 0.3.0 (moteur sursaut-core + LibRaw 0.21.3)\0";
+const VERSION: &[u8] = b"sursaut_engine 0.4.0 (moteur sursaut-core + LibRaw 0.21.3)\0";
 
 static LAST_ERROR: Mutex<Option<CString>> = Mutex::new(None);
 
@@ -224,6 +224,7 @@ pub unsafe extern "C" fn sursaut_raw_develop(
     raw: *mut raw::RawFile,
     half: i32,
     max_side: u32,
+    look: i32,
     out_w: *mut u32,
     out_h: *mut u32,
 ) -> *const u8 {
@@ -232,7 +233,7 @@ pub unsafe extern "C" fn sursaut_raw_develop(
         return std::ptr::null();
     }
     let f = &mut *raw;
-    match catch_unwind(AssertUnwindSafe(|| f.develop(half != 0, max_side))) {
+    match catch_unwind(AssertUnwindSafe(|| f.develop(half != 0, max_side, look))) {
         Ok(Ok(())) => {
             let t = f.last.clone().unwrap_or_default();
             *out_w = t.out_w;
@@ -299,7 +300,7 @@ mod tests {
     #[test]
     fn version_et_erreur_vide() {
         let v = unsafe { CStr::from_ptr(sursaut_engine_version()) }.to_str().unwrap();
-        assert!(v.starts_with("sursaut_engine 0.3.0"));
+        assert!(v.starts_with("sursaut_engine 0.4.0"));
     }
 
     #[test]

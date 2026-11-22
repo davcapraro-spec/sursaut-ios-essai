@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../engine/engine.dart';
+import 'pc_reference.dart';
 
 String _shutter(num s) {
   if (s <= 0) return '?';
@@ -106,7 +107,7 @@ class _RawBenchPageState extends State<RawBenchPage> {
         _log(half ? '— Développement demi-taille (sans démosaïquage) —'
             : '— Développement complet (démosaïquage DHT) —');
         final Stopwatch sw = Stopwatch()..start();
-        final RenderResult r = await raw.develop(half: half, maxSide: 2752);
+        final RenderResult r = await raw.develop(half: half, maxSide: 2752, look: 2);
         final int wall = sw.elapsedMilliseconds;
         final Map<String, dynamic> last = raw.info()['last'] as Map<String, dynamic>;
         _log('Ouverture ${last['open_ms']} ms · lecture du capteur ${last['unpack_ms']} ms · '
@@ -114,6 +115,15 @@ class _RawBenchPageState extends State<RawBenchPage> {
         _log('Total moteur ${last['total_ms']} ms (mesuré côté écran : $wall ms)');
         _log('Image développée ${last['full_w']}×${last['full_h']} → aperçu ${r.width}×${r.height}');
         _log('Mémoire maximale du processus : ${last['peak_rss_mb']} Mo');
+        _log('Rendu de base : ${last['look']} (marge hautes lumières ${last['headroom']})');
+        final (double, double)? gap =
+            comparePcGrid(name, half, last['grid'] as List<dynamic>);
+        if (gap == null) {
+          _log('Écart avec le PC : pas de référence pour ce fichier (envoyez-moi la GRILLE ci-dessous).');
+        } else {
+          _log('Écart avec le PC : moyen ${gap.$1.toStringAsFixed(2)} niveau, maximal ${gap.$2.toStringAsFixed(2)} niveau (sur 255 ; objectif ≤ 1).');
+        }
+        _log('GRILLE ${half ? 'demi' : 'complet'} (moyennes 8×8×3, 0..255) : ${(last['grid'] as List<dynamic>).join(',')}');
         await _show(r);
       }
       _log('');

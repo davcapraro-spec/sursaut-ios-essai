@@ -41,6 +41,10 @@ pub struct Timing {
     pub out_w: u32,
     pub out_h: u32,
     pub peak_rss_mb: f64,
+    pub look: &'static str,
+    pub headroom: f64,
+    /// Moyennes (échelle 0..255) de 8×8 zones × 3 canaux, avant réduction : sert à comparer avec le PC.
+    pub grid: Vec<f32>,
 }
 
 pub struct RawFile {
@@ -182,6 +186,76 @@ fn esc(s: &str) -> String {
     o
 }
 
+/// Rendus de base du PC (`sursaut/imageio.py`, `BASE_LOOKS`) : (exposition en IL, contraste). 0 = neutre (aucune courbe).
+pub fn look_params(look: i32) -> (&'static str, Option<(f64, f64)>) {
+    match look {
+        1 => ("doux", Some((0.8, 0.45))),
+        2 => ("appareil", Some((1.66, 1.0))),
+        _ => ("neutre", None),
+    }
+}
+
+fn s2l(c: f64) -> f64 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+fn l2s(v: f64) -> f64 {
+    let v = v.clamp(0.0, 1.0);
+    if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// Table 65536 entrées du rendu de base (même formule que `base_lut` du PC) ; `headroom` ≥ 1 arrondi à 3 décimales.
+pub fn base_lut(ev: f64, contrast: f64, headroom: f64) -> Vec<u16> {
+    let hr = ((headroom.max(1.0)) * 1000.0).round() / 1000.0;
+    let g = 2f64.powf(ev);
+    (0..65536u32)
+        .map(|i| {
+            let x = i as f64 / 65535.0;
+            let mut v = s2l(x) * hr * g;
+            v = v * (1.0 + v / (hr * g)) / (1.0 + v); // épaule douce (Reinhard étendu)
+            let mut y = l2s(v);
+            y += contrast * (y * y * (3.0 - 2.0 * y) - y); // courbe en S
+            (y * 65535.0).round().clamp(0.0, 65535.0) as u16
+        })
+        .collect()
+}
+
+/// Applique la table (si présente) aux valeurs 16 bits, mesure les moyennes de 8×8 zones (échelle 0..255) et passe en 8 bits.
+fn look_to_8bit(src: &[u16], w: usize, h: usize, lut: Option<&[u16]>) -> (Vec<u8>, Vec<f32>) {
+    let mut out = vec![0u8; w * h * 3];
+    let mut sums = [0u64; 8 * 8 * 3];
+    let mut cnt = [0u64; 8 * 8];
+    for y in 0..h {
+        let gy = (y * 8 / h.max(1)).min(7);
+        for x in 0..w {
+            let gx = (x * 8 / w.max(1)).min(7);
+            let cell = gy * 8 + gx;
+            cnt[cell] += 1;
+            let i = (y * w + x) * 3;
+            for c in 0..3 {
+                let v = match lut {
+                    Some(l) => l[src[i + c] as usize],
+                    None => src[i + c],
+                };
+                sums[cell * 3 + c] += v as u64;
+                out[i + c] = ((v as u32 * 255 + 32767) / 65535) as u8;
+            }
+        }
+    }
+    let grid = (0..192)
+        .map(|k| {
+            let n = cnt[k / 3].max(1) as f64;
+            (sums[k] as f64 / n / 257.0) as f32
+        })
+        .collect();
+    (out, grid)
+}
+
+/// Rendu de base seul, sans LibRaw : sert aux tests.
+pub fn look_to_8bit_for_tests(src: &[u16], w: usize, h: usize, lut: Option<&[u16]>) -> (Vec<u8>, Vec<f32>) {
+    look_to_8bit(src, w, h, lut)
+}
+
 impl RawFile {
     pub fn open(path: &str) -> Result<RawFile, String> {
         let cpath = CString::new(path).map_err(|_| "chemin invalide".to_string())?;
@@ -196,9 +270,17 @@ impl RawFile {
 
     /// Développe le RAW : `half` = demi-taille (sans démosaïquage, rapide) ou complet (DHT).
     /// L'aperçu RGBA est réduit à `max_side` pixels au plus (0 = pleine taille).
-    pub fn develop(&mut self, half: bool, max_side: u32) -> Result<(), String> {
+    pub fn develop(&mut self, half: bool, max_side: u32, look: i32) -> Result<(), String> {
         let t_all = Instant::now();
-        let mut t = Timing { mode: if half { "demi-taille" } else { "complet DHT" }, ..Default::default() };
+        let (look_name, look_p) = look_params(look);
+        let mut t = Timing { mode: if half { "demi-taille" } else { "complet DHT" }, look: look_name, ..Default::default() };
+        // Hautes lumières (comme le PC) : mode Blend, qui sort plus sombre d'un facteur max(wb)/min(wb) ; la table le compense.
+        let mul = &self.info.cam_mul[..3];
+        let mn = mul.iter().cloned().fold(f32::INFINITY, f32::min);
+        let mx = mul.iter().cloned().fold(0.0f32, f32::max);
+        let blend = look_p.is_some() && mn > 0.0 && mn.is_finite() && mx.is_finite();
+        let headroom = if blend { (mx / mn) as f64 } else { 1.0 };
+        t.headroom = headroom;
 
         let t0 = Instant::now();
         let ctx = open_ctx(&self.path)?;
@@ -207,10 +289,12 @@ impl RawFile {
         t.full_h = unsafe { lr::libraw_get_iheight(ctx.0) }.max(0) as u32;
 
         unsafe {
-            lr::libraw_set_output_bps(ctx.0, 8);
+            lr::libraw_set_output_bps(ctx.0, 16);
+            lr::libraw_set_gamma(ctx.0, 0, 1.0 / 2.4);
+            lr::libraw_set_gamma(ctx.0, 1, 12.92);
             lr::libraw_set_output_color(ctx.0, 1); // sRGB
             lr::libraw_set_no_auto_bright(ctx.0, 1);
-            lr::libraw_set_highlight(ctx.0, 0);
+            lr::libraw_set_highlight(ctx.0, if blend { 2 } else { 0 });
             let p = &mut (*ctx.0).params;
             p.use_camera_wb = 1;
             p.half_size = if half { 1 } else { 0 };
@@ -240,14 +324,17 @@ impl RawFile {
         let res = unsafe {
             let im = &*img;
             let (w, h) = (im.width as usize, im.height as usize);
-            if im.bits != 8 || im.colors != 3 || im.data_size as usize != w * h * 3 {
+            if im.bits != 16 || im.colors != 3 || im.data_size as usize != w * h * 6 {
                 Err(format!(
                     "LibRaw : image inattendue ({} bits, {} canaux, {} octets pour {}×{}) — disposition des champs à vérifier",
                     im.bits, im.colors, im.data_size, w, h
                 ))
             } else {
-                let rgb = std::slice::from_raw_parts(im.data.as_ptr(), w * h * 3);
-                Ok(rgb_to_rgba_scaled(rgb, w, h, max_side as usize))
+                let src = std::slice::from_raw_parts(im.data.as_ptr() as *const u16, w * h * 3);
+                let lut = look_p.map(|(ev, c)| base_lut(ev, c, headroom));
+                let (rgb8, grid) = look_to_8bit(src, w, h, lut.as_deref());
+                t.grid = grid;
+                Ok(rgb_to_rgba_scaled(&rgb8, w, h, max_side as usize))
             }
         };
         unsafe { lr::libraw_dcraw_clear_mem(img) };
@@ -283,8 +370,10 @@ impl RawFile {
         );
         if let Some(t) = &self.last {
             s.push_str(&format!(
-                ",\"last\":{{\"mode\":\"{}\",\"open_ms\":{},\"unpack_ms\":{},\"process_ms\":{},\"convert_ms\":{},\"total_ms\":{},\"full_w\":{},\"full_h\":{},\"out_w\":{},\"out_h\":{},\"peak_rss_mb\":{:.1}}}",
-                t.mode, t.open_ms, t.unpack_ms, t.process_ms, t.convert_ms, t.total_ms, t.full_w, t.full_h, t.out_w, t.out_h, t.peak_rss_mb
+                ",\"last\":{{\"mode\":\"{}\",\"open_ms\":{},\"unpack_ms\":{},\"process_ms\":{},\"convert_ms\":{},\"total_ms\":{},\"full_w\":{},\"full_h\":{},\"out_w\":{},\"out_h\":{},\"peak_rss_mb\":{:.1},\"look\":\"{}\",\"headroom\":{:.4},\"grid\":[{}]}}",
+                t.mode, t.open_ms, t.unpack_ms, t.process_ms, t.convert_ms, t.total_ms, t.full_w, t.full_h, t.out_w, t.out_h, t.peak_rss_mb,
+                t.look, t.headroom,
+                t.grid.iter().map(|g| format!("{:.1}", g)).collect::<Vec<_>>().join(",")
             ));
         }
         s.push('}');
@@ -295,6 +384,31 @@ impl RawFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_de_base_blanc_et_noir_conserves() {
+        let l = base_lut(1.66, 1.0, 2.0);
+        assert_eq!(l[0], 0);
+        assert_eq!(l[65535], 65535);
+        assert!(l.windows(2).all(|p| p[0] <= p[1]), "la table doit être croissante");
+    }
+
+    #[test]
+    fn table_appareil_valeur_connue() {
+        // Gris moyen sRGB 0,5 : calcul à la main de la formule du PC (headroom 1, +1,66 IL, contraste 1).
+        let l = base_lut(1.66, 1.0, 1.0);
+        let v = l[32768] as f64 / 65535.0;
+        assert!(v > 0.7 && v < 0.95, "{v}");
+    }
+
+    #[test]
+    fn grille_et_passage_8_bits() {
+        let src = vec![65535u16; 16 * 16 * 3];
+        let (o, g) = look_to_8bit_for_tests(&src, 16, 16, None);
+        assert!(o.iter().all(|&v| v == 255));
+        assert_eq!(g.len(), 192);
+        assert!(g.iter().all(|&v| (v - 255.0).abs() < 0.01));
+    }
 
     #[test]
     fn reduction_par_blocs() {
@@ -334,7 +448,7 @@ mod tests {
         let mut f = RawFile::open(&path).expect("ouverture");
         assert!(f.info.width > 1000 && f.info.height > 1000);
         for half in [true, false] {
-            f.develop(half, 1500).expect("développement");
+            f.develop(half, 1500, 2).expect("développement");
             let t = f.last.clone().unwrap();
             eprintln!("{} : {} ms ({}×{} -> {}×{}), pic {:.0} Mo", t.mode, t.total_ms, t.full_w, t.full_h, t.out_w, t.out_h, t.peak_rss_mb);
             assert_eq!(f.preview().len(), (t.out_w * t.out_h * 4) as usize);

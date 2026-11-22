@@ -16,9 +16,9 @@ typedef _CloseD = void Function(Pointer<Void>);
 typedef _RawOpenC = Pointer<Void> Function(Pointer<Utf8>);
 typedef _RawInfoC = Pointer<Utf8> Function(Pointer<Void>);
 typedef _RawDevelopC = Pointer<Uint8> Function(
-    Pointer<Void>, Int32, Uint32, Pointer<Uint32>, Pointer<Uint32>);
+    Pointer<Void>, Int32, Uint32, Int32, Pointer<Uint32>, Pointer<Uint32>);
 typedef _RawDevelopD = Pointer<Uint8> Function(
-    Pointer<Void>, int, int, Pointer<Uint32>, Pointer<Uint32>);
+    Pointer<Void>, int, int, int, Pointer<Uint32>, Pointer<Uint32>);
 
 /// Les fonctions du moteur Rust (bibliothèque `sursaut_engine`, qui contient `sursaut-core`).
 ///
@@ -179,8 +179,9 @@ class RawFile {
   }
 
   /// Développe le RAW : [half] = demi-taille (rapide, sans démosaïquage) ou complet (DHT).
+  /// [look] : rendu de base du PC (0 neutre, 1 doux, 2 « comme le JPEG de l'appareil »).
   /// L'image rendue est réduite à [maxSide] pixels au plus (0 = pleine taille).
-  Future<RenderResult> develop({required bool half, int maxSide = 2752}) {
+  Future<RenderResult> develop({required bool half, int maxSide = 2752, int look = 2}) {
     if (_closed) throw StateError('RAW fermé.');
     final int address = _handle.address;
     final Future<RenderResult> f = Isolate.run<RenderResult>(() {
@@ -189,7 +190,7 @@ class RawFile {
       final Pointer<Uint32> ph = calloc<Uint32>();
       try {
         final Pointer<Uint8> p = b.rawDevelop(
-            Pointer<Void>.fromAddress(address), half ? 1 : 0, maxSide, pw, ph);
+            Pointer<Void>.fromAddress(address), half ? 1 : 0, maxSide, look, pw, ph);
         if (p == nullptr) throw StateError(b.error());
         final int w = pw.value, h = ph.value;
         return RenderResult(w, h, Uint8List.fromList(p.asTypedList(w * h * 4)));
