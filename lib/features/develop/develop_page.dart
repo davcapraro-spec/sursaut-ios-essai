@@ -59,6 +59,11 @@ class _DevelopPageState extends State<DevelopPage> {
   bool _before = false;
   String _name = '';
 
+  /// RAW ouvert (étape 3c) : gardé pour développer à pleine taille à l'export.
+  RawFile? _raw;
+  int _rawToken = 0;
+  String _loading = '';
+
   final Map<String, double> _values = <String, double>{
     for (final DevelopParam p in kDevelopParams) p.key: 0,
     ...kCropDefaults,
@@ -172,19 +177,76 @@ class _DevelopPageState extends State<DevelopPage> {
     await _openBytes(await file.readAsBytes(), file.name);
   }
 
-  /// Ouvre une photo depuis l'app Fichiers (iCloud Drive, clé USB, dossier de l'app...).
+  static const Set<String> _rawExt = <String>{
+    'arw', 'sr2', 'srf', 'dng', 'cr2', 'cr3', 'crw', 'nef', 'nrw', 'raf', 'orf', 'rw2', 'pef', 'srw', '3fr', 'iiq',
+  };
+
+  static bool _isRaw(String name) {
+    final int i = name.lastIndexOf('.');
+    return i >= 0 && _rawExt.contains(name.substring(i + 1).toLowerCase());
+  }
+
+  /// Ferme le RAW ouvert (et annule un développement en attente).
+  void _dropRaw() {
+    _rawToken++;
+    _raw?.close();
+    _raw = null;
+    _loading = '';
+  }
+
+  /// Ouvre une photo depuis l'app Fichiers (iCloud Drive, clé USB, dossier de l'app...) :
+  /// image ordinaire ou RAW (Sony ARW, DNG, Canon, Nikon...).
   Future<void> _chooseFile() async {
-    final FilePickerResult? res = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: <String>['jpg', 'jpeg', 'png', 'heic', 'heif', 'tif', 'tiff', 'bmp', 'gif', 'webp'],
-    );
+    final FilePickerResult? res = await FilePicker.platform.pickFiles(type: FileType.any);
     final String? path = res?.files.single.path;
     if (path == null) return;
+    final String name = res!.files.single.name;
     try {
-      await _openBytes(await File(path).readAsBytes(), res!.files.single.name);
+      if (_isRaw(name)) {
+        await _openRaw(path, name);
+      } else {
+        await _openBytes(await File(path).readAsBytes(), name);
+      }
     } catch (e) {
+      if (mounted) setState(() => _loading = '');
       _say('Ouverture impossible : $e');
     }
+  }
+
+  /// Ouvre un RAW : aperçu rapide (demi-taille, quelques centaines de ms) puis développement
+  /// complet (démosaïquage DHT) qui remplace l'aperçu. Les réglages faits entre-temps sont gardés.
+  /// Couleur : rendu « Comme le JPEG de l'appareil » (identique au PC, mesuré à l'étape 3b).
+  Future<void> _openRaw(String path, String name) async {
+    _dropRaw();
+    final int token = _rawToken;
+    setState(() => _loading = 'Lecture du RAW…');
+    final RawFile raw = RawFile.open(path);
+    final RenderResult quick;
+    try {
+      quick = await raw.develop(half: true, maxSide: 2752, look: 2);
+    } catch (_) {
+      raw.close();
+      rethrow;
+    }
+    if (!mounted || token != _rawToken) {
+      raw.close();
+      return;
+    }
+    _raw = raw;
+    await _useRgba(quick.rgba, quick.width, quick.height, name);
+    if (!mounted || token != _rawToken) return;
+    setState(() => _loading = 'Développement complet en cours…');
+    final RenderResult full = await raw.develop(half: false, maxSide: 2752, look: 2);
+    if (!mounted || token != _rawToken) return;
+    _photo?.close();
+    _photo = PhotoEngine.open(full.rgba, full.width, full.height);
+    setState(() {
+      _srcRgba = full.rgba;
+      _w = full.width;
+      _h = full.height;
+      _loading = '';
+    });
+    await _refresh();
   }
 
   void _say(String text) {
@@ -200,15 +262,34 @@ class _DevelopPageState extends State<DevelopPage> {
   /// (Photos), AirDrop, Mail...
   Future<void> _export() async {
     final PhotoEngine? photo = _photo;
-    if (photo == null || _exporting) return;
+    if (photo == null || _exporting || _loading.isNotEmpty) return;
     final RenderBox? box = _exportKey.currentContext?.findRenderObject() as RenderBox?;
     final Rect origin =
         box != null ? box.localToGlobal(Offset.zero) & box.size : const Rect.fromLTWH(0, 0, 1, 1);
     setState(() => _exporting = true);
     try {
       final Map<String, dynamic> recipe = <String, dynamic>{..._sidecar.extra, ..._values};
-      final RenderResult r = await photo.render(jsonEncode(recipe));
+      final Stopwatch sw = Stopwatch()..start();
+      RenderResult r;
+      int devMs = 0;
+      final RawFile? raw = _raw;
+      if (raw != null) {
+        // RAW : développement complet à pleine taille, puis rendu des réglages sur cette image.
+        setState(() => _loading = 'Développement pleine taille…');
+        final RenderResult big = await raw.develop(half: false, maxSide: 0, look: 2);
+        devMs = sw.elapsedMilliseconds;
+        final PhotoEngine bigEngine = PhotoEngine.open(big.rgba, big.width, big.height);
+        try {
+          r = await bigEngine.render(jsonEncode(recipe));
+        } finally {
+          bigEngine.close();
+        }
+      } else {
+        r = await photo.render(jsonEncode(recipe));
+      }
+      final int renderMs = sw.elapsedMilliseconds;
       final Uint8List jpg = await _encodeJpeg(r.rgba, r.width, r.height);
+      final int totalMs = sw.elapsedMilliseconds;
       final Directory tmp = await getTemporaryDirectory();
       String base = _name.replaceAll(RegExp(r'\.[^.]*$'), '');
       base = base.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
@@ -217,15 +298,22 @@ class _DevelopPageState extends State<DevelopPage> {
       await out.writeAsBytes(jpg, flush: true);
       await Share.shareXFiles(<XFile>[XFile(out.path, mimeType: 'image/jpeg')],
           sharePositionOrigin: origin);
-      _say('Photo développée : ${r.width}×${r.height} px, ${(jpg.length / 1e6).toStringAsFixed(1)} Mo');
+      _say('Photo développée : ${r.width}×${r.height} px, ${(jpg.length / 1e6).toStringAsFixed(1)} Mo'
+          '${raw != null ? ' · RAW $devMs ms, rendu ${renderMs - devMs} ms, JPEG ${totalMs - renderMs} ms' : ''}');
     } catch (e) {
       _say('Export impossible : $e');
     } finally {
-      if (mounted) setState(() => _exporting = false);
+      if (mounted) {
+        setState(() {
+          _exporting = false;
+          _loading = '';
+        });
+      }
     }
   }
 
   Future<void> _openBytes(Uint8List bytes, String name) async {
+    _dropRaw();
     final ui.Codec probe = await ui.instantiateImageCodec(bytes);
     final ui.FrameInfo first = await probe.getNextFrame();
     final int srcW = first.image.width, srcH = first.image.height;
@@ -246,6 +334,7 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Image d'essai sans fichier : dégradés et pastilles de couleur.
   Future<void> _useTestImage() async {
+    _dropRaw();
     const int w = 1600, h = 1000;
     final Uint8List px = Uint8List(w * h * 4);
     for (int y = 0; y < h; y++) {
@@ -369,13 +458,14 @@ class _DevelopPageState extends State<DevelopPage> {
       _dirty = true;
       return;
     }
-    final PhotoEngine? photo = _photo;
-    final Uint8List? src = _srcRgba;
-    if (photo == null || src == null) return;
+    if (_photo == null || _srcRgba == null) return;
     _busy = true;
     try {
       do {
         _dirty = false;
+        final PhotoEngine? photo = _photo;
+        final Uint8List? src = _srcRgba;
+        if (photo == null || src == null) break;
         final Stopwatch sw = Stopwatch()..start();
         int w = _w, h = _h;
         Uint8List out = src;
@@ -411,6 +501,7 @@ class _DevelopPageState extends State<DevelopPage> {
 
   @override
   void dispose() {
+    _dropRaw();
     _photo?.close();
     _shown?.dispose();
     super.dispose();
@@ -467,7 +558,7 @@ class _DevelopPageState extends State<DevelopPage> {
             child: FilledButton(
               key: _exportKey,
               style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),
-              onPressed: ready && !_cropMode && !_exporting ? _export : null,
+              onPressed: ready && !_cropMode && !_exporting && _loading.isEmpty ? _export : null,
               child: Text(_exporting ? 'Export…' : 'Exporter'),
             ),
           ),
@@ -485,7 +576,9 @@ class _DevelopPageState extends State<DevelopPage> {
                         ? 'Erreur : $_error'
                         : _info.version == null
                             ? 'Moteur Rust ABSENT : ${_info.error}'
-                            : 'Moteur Rust chargé : ${_info.version}',
+                            : _loading.isNotEmpty
+                                ? _loading
+                                : 'Moteur Rust chargé : ${_info.version}',
                     style: TextStyle(
                         color: (_error != null || _info.version == null)
                             ? Colors.redAccent

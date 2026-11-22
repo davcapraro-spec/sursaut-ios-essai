@@ -135,39 +135,75 @@ fn read_info(ctx: &Ctx, file_bytes: u64) -> RawInfo {
     }
 }
 
-/// Réduit une image RGB 8 bits (`w`×`h`) à `max_side` pixels au plus (moyenne par blocs) et
-/// la convertit en RGBA. `max_side` = 0 : pas de réduction.
+/// Réduit une image RGB 8 bits (`w`×`h`) à `max_side` pixels de grand côté exactement (moyenne par aire, poids
+/// fractionnaires) et la convertit en RGBA. `max_side` = 0 ou image déjà assez petite : pas de réduction.
+/// Le travail se fait ligne de sortie par ligne de sortie : pas de grande image intermédiaire.
 pub fn rgb_to_rgba_scaled(rgb: &[u8], w: usize, h: usize, max_side: usize) -> (Vec<u8>, usize, usize) {
     let longest = w.max(h);
-    let f = if max_side == 0 || longest <= max_side { 1 } else { (longest + max_side - 1) / max_side };
-    let (ow, oh) = ((w / f).max(1), (h / f).max(1));
+    if max_side == 0 || longest <= max_side {
+        let mut out = vec![255u8; w * h * 4];
+        for i in 0..w * h {
+            out[i * 4] = rgb[i * 3];
+            out[i * 4 + 1] = rgb[i * 3 + 1];
+            out[i * 4 + 2] = rgb[i * 3 + 2];
+        }
+        return (out, w, h);
+    }
+    let scale = max_side as f64 / longest as f64;
+    let ow = ((w as f64 * scale).round() as usize).clamp(1, w);
+    let oh = ((h as f64 * scale).round() as usize).clamp(1, h);
     let mut out = vec![255u8; ow * oh * 4];
+    // Poids horizontaux : pour chaque colonne de sortie, les colonnes sources touchées et leur part.
+    let mut hx: Vec<(usize, Vec<f32>)> = Vec::with_capacity(ow);
+    for ox in 0..ow {
+        let x0 = ox as f64 * w as f64 / ow as f64;
+        let x1 = (ox + 1) as f64 * w as f64 / ow as f64;
+        let first = x0.floor() as usize;
+        let last = (x1.ceil() as usize).min(w);
+        let mut ws = Vec::with_capacity(last - first);
+        let mut tot = 0.0f64;
+        for sx in first..last {
+            let wt = ((sx + 1) as f64).min(x1) - (sx as f64).max(x0);
+            let wt = wt.max(0.0);
+            tot += wt;
+            ws.push(wt as f32);
+        }
+        let inv = if tot > 0.0 { (1.0 / tot) as f32 } else { 0.0 };
+        for v in ws.iter_mut() {
+            *v *= inv;
+        }
+        hx.push((first, ws));
+    }
+    let mut acc = vec![0f32; w * 3];
     for oy in 0..oh {
-        for ox in 0..ow {
-            let mut acc = [0u32; 3];
-            let mut n = 0u32;
-            for dy in 0..f {
-                let y = oy * f + dy;
-                if y >= h {
-                    break;
-                }
-                for dx in 0..f {
-                    let x = ox * f + dx;
-                    if x >= w {
-                        break;
-                    }
-                    let i = (y * w + x) * 3;
-                    acc[0] += rgb[i] as u32;
-                    acc[1] += rgb[i + 1] as u32;
-                    acc[2] += rgb[i + 2] as u32;
-                    n += 1;
-                }
+        let y0 = oy as f64 * h as f64 / oh as f64;
+        let y1 = (oy + 1) as f64 * h as f64 / oh as f64;
+        let first = y0.floor() as usize;
+        let last = (y1.ceil() as usize).min(h);
+        acc.iter_mut().for_each(|v| *v = 0.0);
+        let mut tot = 0.0f64;
+        for sy in first..last {
+            let wt = (((sy + 1) as f64).min(y1) - (sy as f64).max(y0)).max(0.0);
+            tot += wt;
+            let wf = wt as f32;
+            let row = &rgb[sy * w * 3..(sy + 1) * w * 3];
+            for (a, &v) in acc.iter_mut().zip(row.iter()) {
+                *a += wf * v as f32;
+            }
+        }
+        let invy = if tot > 0.0 { (1.0 / tot) as f32 } else { 0.0 };
+        for (ox, (fx, ws)) in hx.iter().enumerate() {
+            let mut sum = [0f32; 3];
+            for (k, &wt) in ws.iter().enumerate() {
+                let i = (fx + k) * 3;
+                sum[0] += wt * acc[i];
+                sum[1] += wt * acc[i + 1];
+                sum[2] += wt * acc[i + 2];
             }
             let o = (oy * ow + ox) * 4;
-            let n = n.max(1);
-            out[o] = (acc[0] / n) as u8;
-            out[o + 1] = (acc[1] / n) as u8;
-            out[o + 2] = (acc[2] / n) as u8;
+            out[o] = (sum[0] * invy + 0.5).clamp(0.0, 255.0) as u8;
+            out[o + 1] = (sum[1] * invy + 0.5).clamp(0.0, 255.0) as u8;
+            out[o + 2] = (sum[2] * invy + 0.5).clamp(0.0, 255.0) as u8;
         }
     }
     (out, ow, oh)
@@ -419,8 +455,19 @@ mod tests {
         assert_eq!(out.len(), 2 * 4);
         assert_eq!(out[3], 255);
         // Premier pixel de sortie : moyenne des pixels (0,0) (1,0) (0,1) (1,1), canal R.
-        let r = [rgb[0], rgb[3], rgb[12], rgb[15]].iter().map(|&v| v as u32).sum::<u32>() / 4;
-        assert_eq!(out[0] as u32, r);
+        let r = [rgb[0], rgb[3], rgb[12], rgb[15]].iter().map(|&v| v as u32).sum::<u32>() as f32 / 4.0;
+        assert!((out[0] as f32 - r).abs() <= 1.0, "{} contre {}", out[0], r);
+    }
+
+    #[test]
+    fn reduction_a_la_taille_exacte() {
+        // 7028×4688 -> grand côté 2752 : rapport non entier, taille de sortie exacte, image unie conservée.
+        let (w, h) = (700usize, 470usize);
+        let rgb = vec![120u8; w * h * 3];
+        let (out, ow, oh) = rgb_to_rgba_scaled(&rgb, w, h, 275);
+        assert_eq!(ow, 275);
+        assert_eq!(oh, ((470.0f64 * 275.0 / 700.0).round()) as usize);
+        assert!(out.chunks(4).all(|p| p[0] == 120 && p[1] == 120 && p[2] == 120 && p[3] == 255));
     }
 
     #[test]

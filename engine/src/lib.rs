@@ -27,7 +27,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Mutex;
 use sursaut_core::{Pipeline, Recipe};
 
-const VERSION: &[u8] = b"sursaut_engine 0.4.0 (moteur sursaut-core + LibRaw 0.21.3)\0";
+const VERSION: &[u8] = b"sursaut_engine 0.4.1 (moteur sursaut-core + LibRaw 0.21.3)\0";
 
 static LAST_ERROR: Mutex<Option<CString>> = Mutex::new(None);
 
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn version_et_erreur_vide() {
         let v = unsafe { CStr::from_ptr(sursaut_engine_version()) }.to_str().unwrap();
-        assert!(v.starts_with("sursaut_engine 0.4.0"));
+        assert!(v.starts_with("sursaut_engine 0.4.1"));
     }
 
     #[test]
