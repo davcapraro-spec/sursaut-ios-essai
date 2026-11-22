@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:sursaut_essai/features/pencil_bench/pencil_bench_model.dart';
+import 'package:sursaut_essai/features/diagnostics/pencil_bench/pencil_bench_model.dart';
 
 void main() {
   test('StatRange garde min, max et dernière valeur', () {

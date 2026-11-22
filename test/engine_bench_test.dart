@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:sursaut_essai/features/engine/engine_bench_page.dart';
+import 'package:sursaut_essai/features/diagnostics/engine_bench_page.dart';
 
 void main() {
   testWidgets('le test automatique signale un moteur absent sans planter',
