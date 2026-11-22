@@ -58,11 +58,11 @@ void main() {
     final SidecarData d = SidecarData.empty();
     expect(d.isEmpty, isTrue);
     final Iterable<String> keys = defaultValues().keys;
-    expect(d.encode(defaultValues(), keys, defaults: kCropDefaults), '{}');
+    expect(d.encode(defaultValues(), keys, defaults: kParamDefaults), '{}');
     final Map<String, double> cut = defaultValues()
       ..['crop_left'] = 0.1
       ..['crop_right'] = 0.9;
-    final String out = d.encode(cut, keys, defaults: kCropDefaults);
+    final String out = d.encode(cut, keys, defaults: kParamDefaults);
     expect(out.contains('"crop_left": 0.1'), isTrue);
     expect(out.contains('"crop_right": 0.9'), isTrue);
     expect(out.contains('crop_top'), isFalse);
@@ -79,7 +79,7 @@ void main() {
     final Map<String, double> v = defaultValues();
     expect(v['exposure'], 0);
     expect(v['crop_right'], 1);
-    expect(v.length, kDevelopParams.length + kHslParams.length + kCropDefaults.length);
+    expect(v.length, kDevelopParams.length + kHslParams.length + kDetailParams.length + kCropDefaults.length);
     expect(defaultOf('crop_bottom'), 1);
     expect(defaultOf('angle'), 0);
   });

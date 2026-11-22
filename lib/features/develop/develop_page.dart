@@ -69,12 +69,13 @@ class _DevelopPageState extends State<DevelopPage> {
   final Map<String, double> _values = <String, double>{
     for (final DevelopParam p in kDevelopParams) p.key: 0,
     for (final DevelopParam p in kHslParams) p.key: 0,
+    for (final DevelopParam p in kDetailParams) p.key: defaultOf(p.key),
     ...kCropDefaults,
   };
 
   /// Courbes de tonalité non neutres, par canal ('rvb', 'red', 'green', 'blue').
   Map<String, CurvePoints> _curves = <String, CurvePoints>{};
-  String _tool = 'basic'; // basic | curve | color
+  String _tool = 'basic'; // basic | curve | color | detail
   String _curveChannel = 'rvb';
   String _hslKind = 'sat';
 
@@ -159,7 +160,7 @@ class _DevelopPageState extends State<DevelopPage> {
       final File f = await _sidecarFile(_key);
       final SidecarData out =
           SidecarData(_sidecar.values, <String, dynamic>{..._sidecar.extra, ...curvesToJson(_curves)});
-      await f.writeAsString(out.encode(_values, _keys, defaults: kCropDefaults));
+      await f.writeAsString(out.encode(_values, _keys, defaults: kParamDefaults));
       if (mounted) setState(() => _saveInfo = 'Réglages enregistrés');
     } catch (e) {
       if (mounted) setState(() => _saveInfo = 'Enregistrement impossible : $e');
@@ -530,6 +531,11 @@ class _DevelopPageState extends State<DevelopPage> {
 
   String _fmt(DevelopParam p) {
     final double v = _values[p.key]!;
+    if (p.min >= 0) {
+      return p.key == 'sharpen_radius'
+          ? v.toStringAsFixed(1).replaceAll('.', ',')
+          : v.round().toString();
+    }
     if (v == 0) return '0';
     final String s = p.key == 'exposure'
         ? v.toStringAsFixed(2)
@@ -554,7 +560,6 @@ class _DevelopPageState extends State<DevelopPage> {
     ('BALANCE DES BLANCS', <String>['temperature', 'tint']),
     ('TONALITÉ', <String>['exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks']),
     ('PRÉSENCE', <String>['texture', 'clarity', 'dehaze', 'vibrance', 'saturation']),
-    ('DÉTAIL', <String>['sharpen_amount']),
   ];
 
   /// Une ligne « libellé, curseur, valeur » : double-toucher = remise à zéro.
@@ -716,6 +721,28 @@ class _DevelopPageState extends State<DevelopPage> {
     ];
   }
 
+  static const List<(String, List<String>)> _detailGroups = <(String, List<String>)>[
+    ('NETTETÉ', <String>['sharpen_amount', 'sharpen_radius', 'sharpen_detail', 'sharpen_masking']),
+    ('RÉDUCTION DU BRUIT', <String>[
+      'denoise_luma', 'denoise_luma_detail', 'denoise_luma_contrast',
+      'denoise_color', 'denoise_color_detail', 'denoise_color_smooth',
+    ]),
+    ('GRAIN', <String>['grain_amount', 'grain_size', 'grain_roughness']),
+    ('VIGNETAGE', <String>['vig_amount', 'vig_mid', 'vig_round', 'vig_feather']),
+  ];
+
+  List<Widget> _detailPanel(bool ready) {
+    final Map<String, DevelopParam> byKey = <String, DevelopParam>{
+      for (final DevelopParam p in kDetailParams) p.key: p,
+    };
+    return <Widget>[
+      for (final (String title, List<String> keys) in _detailGroups) ...<Widget>[
+        _groupTitle(title, ready ? () => _resetKeys(keys) : null),
+        for (final String k in keys) _paramRow(byKey[k]!, ready),
+      ],
+    ];
+  }
+
   Widget _toolButton(String id, IconData icon, String label, {required VoidCallback? onTap}) {
     final bool on = _tool == id && !_cropMode;
     final Color fg = on ? const Color(0xFFF2A33A) : Colors.white70;
@@ -745,6 +772,7 @@ class _DevelopPageState extends State<DevelopPage> {
         _toolButton('basic', Icons.tune, 'Basique', onTap: _cropMode ? null : () => setState(() => _tool = 'basic')),
         _toolButton('curve', Icons.show_chart, 'Courbe', onTap: _cropMode ? null : () => setState(() => _tool = 'curve')),
         _toolButton('color', Icons.palette_outlined, 'Couleur', onTap: _cropMode ? null : () => setState(() => _tool = 'color')),
+        _toolButton('detail', Icons.change_history_outlined, 'Détail', onTap: _cropMode ? null : () => setState(() => _tool = 'detail')),
         _toolButton('crop', Icons.crop, 'Recadrer', onTap: ready && !_cropMode ? _enterCrop : null),
       ];
 
@@ -827,6 +855,8 @@ class _DevelopPageState extends State<DevelopPage> {
         return _curvePanel(ready);
       case 'color':
         return _colorPanel(ready);
+      case 'detail':
+        return _detailPanel(ready);
       default:
         return _basicPanel(ready);
     }

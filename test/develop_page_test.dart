@@ -32,6 +32,10 @@ void main() {
     await tester.pump();
     expect(find.text('MÉLANGEUR DE COULEURS'), findsOneWidget);
     expect(find.text('Magenta'), findsOneWidget);
+    await tester.tap(find.text('Détail'));
+    await tester.pump();
+    expect(find.text('RÉDUCTION DU BRUIT'), findsOneWidget);
+    expect(find.text('VIGNETAGE'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

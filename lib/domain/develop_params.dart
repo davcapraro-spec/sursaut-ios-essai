@@ -22,7 +22,6 @@ const List<DevelopParam> kDevelopParams = <DevelopParam>[
   DevelopParam('texture', 'Texture', -100, 100),
   DevelopParam('clarity', 'Clarté', -100, 100),
   DevelopParam('dehaze', 'Correction du voile', -100, 100),
-  DevelopParam('sharpen_amount', 'Netteté (gain)', 0, 100),
   DevelopParam('angle', 'Angle (°)', -15, 15),
 ];
 
@@ -52,6 +51,27 @@ final List<DevelopParam> kHslParams = <DevelopParam>[
       DevelopParam(hslKey(kind, kHslColorKeys[i]), kHslColorLabels[i], -100, 100),
 ];
 
+/// Netteté, réduction du bruit, grain, vignetage (mêmes clés et bornes que le PC).
+const List<DevelopParam> kDetailParams = <DevelopParam>[
+  DevelopParam('sharpen_amount', 'Quantité', 0, 100),
+  DevelopParam('sharpen_radius', 'Rayon', 0.5, 3.0),
+  DevelopParam('sharpen_detail', 'Détail', 0, 100),
+  DevelopParam('sharpen_masking', 'Masque (épargne le grain)', 0, 100),
+  DevelopParam('denoise_luma', 'Luminosité', 0, 100),
+  DevelopParam('denoise_luma_detail', 'Détail (luminosité)', 0, 100),
+  DevelopParam('denoise_luma_contrast', 'Contraste (luminosité)', 0, 100),
+  DevelopParam('denoise_color', 'Couleur', 0, 100),
+  DevelopParam('denoise_color_detail', 'Détail (couleur)', 0, 100),
+  DevelopParam('denoise_color_smooth', 'Lissage (couleur)', 0, 100),
+  DevelopParam('grain_amount', 'Quantité', 0, 100),
+  DevelopParam('grain_size', 'Taille', 0, 100),
+  DevelopParam('grain_roughness', 'Rugosité', 0, 100),
+  DevelopParam('vig_amount', 'Quantité', -100, 100),
+  DevelopParam('vig_mid', 'Point médian', 0, 100),
+  DevelopParam('vig_round', 'Arrondi', -100, 100),
+  DevelopParam('vig_feather', 'Progressivité', 0, 100),
+];
+
 /// Valeurs par défaut non nulles : le cadre de recadrage couvre toute l'image.
 const Map<String, double> kCropDefaults = <String, double>{
   'crop_left': 0,
@@ -60,12 +80,28 @@ const Map<String, double> kCropDefaults = <String, double>{
   'crop_bottom': 1,
 };
 
+/// Toutes les valeurs par défaut qui ne sont pas zéro : le cadre plein et quelques réglages du détail
+/// (mêmes valeurs que le PC : une clé absente de la recette = cette valeur).
+const Map<String, double> kParamDefaults = <String, double>{
+  ...kCropDefaults,
+  'sharpen_radius': 1,
+  'sharpen_detail': 25,
+  'denoise_luma_detail': 50,
+  'denoise_color_detail': 50,
+  'denoise_color_smooth': 50,
+  'grain_size': 25,
+  'grain_roughness': 50,
+  'vig_mid': 50,
+  'vig_feather': 50,
+};
+
 /// Valeur d'un réglage « à zéro » (absent de la recette = valeur par défaut).
-double defaultOf(String key) => kCropDefaults[key] ?? 0;
+double defaultOf(String key) => kParamDefaults[key] ?? 0;
 
 /// Tous les réglages à leur valeur par défaut.
 Map<String, double> defaultValues() => <String, double>{
       for (final DevelopParam p in kDevelopParams) p.key: 0,
       for (final DevelopParam p in kHslParams) p.key: 0,
+      for (final DevelopParam p in kDetailParams) p.key: defaultOf(p.key),
       ...kCropDefaults,
     };
