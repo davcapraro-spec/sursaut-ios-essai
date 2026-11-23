@@ -1067,6 +1067,7 @@ class _DevelopPageState extends State<DevelopPage> {
         _compSel = compsOf(grown).length - 1;
         _maskDraw = null;
         _maskAttach = false;
+        _maskZone = true; // la zone du masque se voit toujours quand on le crée ou qu'on y ajoute
       });
       _commit();
       _refresh();
@@ -1079,8 +1080,10 @@ class _DevelopPageState extends State<DevelopPage> {
       _maskDraw = null;
       _maskAttach = false;
       _before = false;
+        _maskZone = true; // la zone du masque se voit toujours quand on le crée ou qu'on y ajoute
     });
     _commit();
+    _refresh();
   }
 
   /// Un nouveau masque : les dégradés se tracent au doigt, les plages se créent tout de suite.
@@ -1108,6 +1111,7 @@ class _DevelopPageState extends State<DevelopPage> {
         _maskPickNew = false;
         _brushTool = 'paint';
         _before = false;
+        _maskZone = true; // la zone du masque se voit toujours quand on le crée ou qu'on y ajoute
       });
       _commit();
       return;
@@ -1133,6 +1137,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _brushTool = null;
       _maskPickNew = false;
       _before = false;
+      _maskZone = true; // la zone du masque se voit toujours quand on le crée ou qu'on y ajoute
     });
     _commit();
   }
@@ -1159,6 +1164,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _maskPick = kind == kColor;
       _maskPickNew = false;
       _brushTool = kind == kBrush ? (_newOp == 'subtract' ? 'erase' : 'paint') : null;
+      _maskZone = true; // la zone du masque se voit toujours quand on le crée ou qu'on y ajoute
     });
     _commit();
     _refresh();
@@ -1203,8 +1209,10 @@ class _DevelopPageState extends State<DevelopPage> {
         _brushTool = null;
         _maskPickNew = false;
         _before = false;
+        _maskZone = true; // la zone du masque se voit toujours quand on le crée ou qu'on y ajoute
       });
       _commit();
+      _refresh();
       return;
     }
     final MaskMap? m = _maskSelected;
@@ -1216,7 +1224,10 @@ class _DevelopPageState extends State<DevelopPage> {
           'hue': hue,
           'sat_min': (sat * 0.5).clamp(0.02, 0.5).toDouble(),
         }));
-    setState(() => _maskPick = false);
+    setState(() {
+      _maskPick = false;
+      _maskZone = true;
+    });
     _commit();
     _refresh();
   }
@@ -1393,6 +1404,7 @@ class _DevelopPageState extends State<DevelopPage> {
   void _maskAdj(String key, double v) {
     final MaskMap? m = _maskSelected;
     if (m == null) return;
+    if (_maskZone) setState(() => _maskZone = false); // on règle : on veut voir l'effet, plus la zone
     _maskSet(_maskSel, withAdj(m, key, v));
     _refresh();
   }
