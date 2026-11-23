@@ -124,6 +124,7 @@ class _DevelopPageState extends State<DevelopPage> {
   int _compSel = 0; // composante choisie du masque choisi
   String? _maskDraw;
   bool _maskAttach = false; // le tracé en cours s'ajoute au masque choisi au lieu d'en créer un
+  bool _maskPickNew = false; // la pipette sert à créer un nouveau masque de couleur (rien n'existe avant le toucher)
   bool _maskPick = false; // pipette : le prochain toucher sur la photo choisit la couleur
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
   String _newOp = 'add'; // comment la prochaine composante se combine : add | subtract | intersect
@@ -1093,6 +1094,17 @@ class _DevelopPageState extends State<DevelopPage> {
         _maskDraw = on ? null : kind;
         _maskAttach = false;
         _maskPick = false;
+        _maskPickNew = false;
+      });
+      return;
+    }
+    if (kind == kColor) {
+      // le masque n'est créé qu'au toucher sur la photo : aucune zone « rouge par défaut » avant de choisir
+      setState(() {
+        _maskPickNew = !(_maskPick && _maskPickNew);
+        _maskPick = _maskPickNew;
+        _maskDraw = null;
+        _maskAttach = false;
       });
       return;
     }
@@ -1103,7 +1115,8 @@ class _DevelopPageState extends State<DevelopPage> {
       _compSel = 0;
       _maskDraw = null;
       _maskAttach = false;
-      _maskPick = kind == kColor;
+      _maskPick = false;
+      _maskPickNew = false;
       _before = false;
     });
     _commit();
@@ -1128,6 +1141,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _maskDraw = null;
       _maskAttach = false;
       _maskPick = kind == kColor;
+      _maskPickNew = false;
     });
     _commit();
     _refresh();
@@ -1156,10 +1170,27 @@ class _DevelopPageState extends State<DevelopPage> {
   /// Pipette : la teinte (et une saturation minimale) de la couleur touchée sur la photo.
   void _maskPicked(double fx, double fy) {
     final Uint8List? rgba = _srcRgba;
+    if (rgba == null) return;
+    final (double hue, double sat) = hueSatAt(rgba, _w, _h, fx, fy);
+    if (_maskPickNew) {
+      final MaskMap made = withCompAt(rangeMask(nextMaskName(_masks, kMaskKindNames[kColor]!), kColor), 0, <String, dynamic>{
+        'hue': hue,
+        'sat_min': (sat * 0.5).clamp(0.02, 0.5).toDouble(),
+      });
+      setState(() {
+        _masks = <MaskMap>[..._masks, made];
+        _maskSel = _masks.length - 1;
+        _compSel = 0;
+        _maskPick = false;
+        _maskPickNew = false;
+        _before = false;
+      });
+      _commit();
+      return;
+    }
     final MaskMap? m = _maskSelected;
     final Map<String, dynamic>? c = m == null ? null : compAt(m, _compSel);
-    if (rgba == null || m == null || c == null || '${c['kind']}' != kColor) return;
-    final (double hue, double sat) = hueSatAt(rgba, _w, _h, fx, fy);
+    if (m == null || c == null || '${c['kind']}' != kColor) return;
     _maskSet(
         _maskSel,
         withCompAt(m, _compSel, <String, dynamic>{
@@ -1310,7 +1341,7 @@ class _DevelopPageState extends State<DevelopPage> {
               : Icons.gradient;
 
   Widget _maskKindButton(String kind, bool ready) {
-    final bool on = (_maskDraw == kind && !_maskAttach) || (kind == kColor && _maskPick && _maskSelected == null);
+    final bool on = (_maskDraw == kind && !_maskAttach) || (kind == kColor && _maskPick && _maskPickNew);
     return OutlinedButton.icon(
       style: OutlinedButton.styleFrom(
         backgroundColor: on ? const Color(0xFF33291A) : null,
@@ -1338,7 +1369,9 @@ class _DevelopPageState extends State<DevelopPage> {
     const TextStyle title =
         TextStyle(fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: Colors.white60);
     final String guide = _maskPick
-        ? 'Touchez sur la photo la couleur à cibler.'
+        ? (_maskPickNew
+            ? 'Touchez sur la photo la couleur à cibler : le masque sera créé à cet endroit.'
+            : 'Touchez sur la photo la couleur à cibler.')
         : _maskDraw == kLinear
             ? 'Posez le doigt là où l\'effet est plein, glissez jusqu\'où il s\'arrête, puis levez le doigt.'
             : _maskDraw == kRadial
@@ -1521,6 +1554,7 @@ class _DevelopPageState extends State<DevelopPage> {
                 child: OutlinedButton.icon(
                   onPressed: () => setState(() {
                     _maskPick = !_maskPick;
+                    _maskPickNew = false;
                     _maskDraw = null;
                     _maskAttach = false;
                   }),
