@@ -59,6 +59,10 @@ jobs:
         run: |
           sed -i '' -E "s/^#? *platform :ios, .*/platform :ios, '15.0'/" ios/Podfile
           grep -n "^platform :ios, '15.0'" ios/Podfile
+          # MediaPipe est une bibliothèque statique, l'application est en bibliothèques dynamiques : CocoaPods refuse ce mélange
+          # par défaut ; on désactive ce contrôle (MediaPipe est alors lié dans le plugin pencil_bridge).
+          printf '%s\n' '' 'pre_install do |installer|' '  Pod::Installer::Xcode::TargetValidator.send(:define_method, :verify_no_static_framework_transitive_dependencies) {}' 'end' >> ios/Podfile
+          tail -8 ios/Podfile
           sed -i '' -E 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' ios/Runner.xcodeproj/project.pbxproj
           plutil -replace MinimumOSVersion -string "15.0" ios/Flutter/AppFrameworkInfo.plist
           mkdir -p packages/pencil_bridge/ios/Assets

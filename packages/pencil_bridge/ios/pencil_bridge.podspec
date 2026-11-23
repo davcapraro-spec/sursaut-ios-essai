@@ -15,7 +15,7 @@ Pod::Spec.new do |s|
   s.libraries = 'c++'
   s.dependency 'Flutter'
   # Maillage du visage à 478 points (Google, Apache 2.0). Le modèle « face_landmarker.task » est mis dans Assets/ par le workflow.
-  s.dependency 'MediaPipeTasksVision'
+  s.dependency 'MediaPipeTasksVision', '0.10.35'
   s.resources        = ['Assets/*.task']
   s.platform         = :ios, '15.0'
   s.swift_version    = '5.0'
