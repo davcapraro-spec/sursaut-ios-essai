@@ -53,26 +53,6 @@ jobs:
           cp -R /tmp/sauvegarde/lib /tmp/sauvegarde/test ./
           cp /tmp/sauvegarde/pubspec.yaml /tmp/sauvegarde/analysis_options.yaml ./
 
-      # MediaPipe (maillage du visage à 478 points, Google, Apache 2.0) : demande iOS 15 au minimum, et le modèle
-      # « face_landmarker.task » est téléchargé ici puis mis dans l'application (il n'est pas dans le dépôt).
-      - name: MediaPipe (iOS 15 et modèle du visage)
-        run: |
-          sed -i '' -E "s/^#? *platform :ios, .*/platform :ios, '15.0'/" ios/Podfile
-          grep -n "^platform :ios, '15.0'" ios/Podfile
-          # MediaPipe est une bibliothèque statique, l'application est en bibliothèques dynamiques : CocoaPods refuse ce mélange
-          # par défaut ; on désactive ce contrôle (MediaPipe est alors lié dans le plugin pencil_bridge).
-          printf '%s\n' '' 'pre_install do |installer|' '  Pod::Installer::Xcode::TargetValidator.send(:define_method, :verify_no_static_framework_transitive_dependencies) {}' 'end' >> ios/Podfile
-          cat tools/podfile_mediapipe.rb >> ios/Podfile
-          tail -25 ios/Podfile
-          sed -i '' -E 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' ios/Runner.xcodeproj/project.pbxproj
-          plutil -replace MinimumOSVersion -string "15.0" ios/Flutter/AppFrameworkInfo.plist
-          mkdir -p packages/pencil_bridge/ios/Assets
-          curl -fL --retry 3 -o packages/pencil_bridge/ios/Assets/face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
-          ls -l packages/pencil_bridge/ios/Assets/face_landmarker.task
-          shasum -a 256 packages/pencil_bridge/ios/Assets/face_landmarker.task
-          # taille exacte du fichier vu au premier essai (3 758 596 octets) : un autre fichier est refusé
-          test "$(stat -f %z packages/pencil_bridge/ios/Assets/face_landmarker.task)" = "3758596"
-
       # Logo de Sursaut : on remplace l'icône Flutter par assets/app_icon_1024.png (carré, sans transparence,
       # comme l'exige iOS) en fabriquant toutes les tailles listées par le modèle Flutter.
       - name: Icône de l'application
@@ -120,24 +100,6 @@ jobs:
 
       - name: Compiler sans signature
         run: flutter build ios --release --no-codesign
-
-      # Information seulement : ce que contiennent les paquets MediaPipe installés (pour comprendre une erreur de liaison).
-      - name: Diagnostic MediaPipe (information, ne bloque pas)
-        if: always()
-        continue-on-error: true
-        run: |
-          grep -n -i -B1 -A4 mediapipe ios/Podfile.lock || true
-          for d in ios/Pods/MediaPipeTasksCommon ios/Pods/MediaPipeTasksVision; do
-            echo "=== $d"; du -sh "$d"; find "$d" -maxdepth 4 -not -name '*.h' -not -name '*.modulemap' | head -60
-          done
-          find ios/Pods/MediaPipeTasksCommon ios/Pods/MediaPipeTasksVision -path '*ios-arm64/*' -type f -size +100k | while read f; do
-            echo "== $f"; ls -l "$f"; file "$f"; lipo -info "$f" 2>&1 || true
-            echo -n "absl SpinLockWake : "; nm -g "$f" 2>/dev/null | grep -c AbslInternalSpinLockWake || true
-            echo -n "TfLiteIntArrayCopy : "; nm -g "$f" 2>/dev/null | grep -c TfLiteIntArrayCopy || true
-            echo -n "MPPFaceLandmarker : "; nm -g "$f" 2>/dev/null | grep -c MPPFaceLandmarker || true
-          done
-          echo "=== OTHER_LDFLAGS"
-          grep -rn "OTHER_LDFLAGS" "ios/Pods/Target Support Files/pencil_bridge" "ios/Pods/Target Support Files/Pods-Runner" | grep -i release || true
 
       - name: Vérifier que le moteur Rust est dans l'application (information, ne bloque pas)
         continue-on-error: true

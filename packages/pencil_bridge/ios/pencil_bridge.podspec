@@ -7,24 +7,14 @@ Pod::Spec.new do |s|
   s.license          = { :type => 'Proprietary' }
   s.author           = { 'Sursaut' => 'noreply@example.com' }
   s.source           = { :path => '.' }
-  s.frameworks = 'ImageCaptureCore', 'Vision', 'Accelerate', 'AVFoundation', 'CoreGraphics', 'CoreImage', 'CoreMedia', 'CoreVideo', 'Metal', 'QuartzCore', 'UIKit'
+  s.frameworks = 'ImageCaptureCore', 'Vision'
   s.source_files     = 'Classes/**/*'
   # Moteur Rust (étape 1) : fabriqué par le workflow, copié ici avant la compilation.
   s.vendored_libraries = 'libsursaut_engine.a'
   # LibRaw est du C++ : la bibliothèque standard du C++ doit être liée à l'application.
   s.libraries = 'c++'
   s.dependency 'Flutter'
-  # Maillage du visage à 478 points (Google, Apache 2.0). Le modèle « face_landmarker.task » est mis dans Assets/ par le workflow.
-  s.dependency 'MediaPipeTasksVision', '0.10.35'
-  s.resources        = ['Assets/*.task']
-  s.platform         = :ios, '15.0'
+  s.platform         = :ios, '13.0'
   s.swift_version    = '5.0'
-  # MediaPipe est une bibliothèque statique : on la lie explicitement dans ce plugin (sinon « Undefined symbol: MPPFaceLandmarker »).
-  s.pod_target_xcconfig = {
-    'DEFINES_MODULE' => 'YES',
-    'OTHER_LDFLAGS' => '$(inherited) -ObjC -framework MediaPipeTasksVision -framework MediaPipeTasksCommon',
-    # Le moteur de MediaPipe (TensorFlow Lite, abseil) est dans ce fichier à part : MediaPipe demande de le charger en entier.
-    'OTHER_LDFLAGS[sdk=iphoneos*]' => '$(inherited) -force_load "$(PODS_ROOT)/MediaPipeTasksCommon/frameworks/graph_libraries/libMediaPipeTasksCommon_device_graph.a"',
-    'OTHER_LDFLAGS[sdk=iphonesimulator*]' => '$(inherited) -force_load "$(PODS_ROOT)/MediaPipeTasksCommon/frameworks/graph_libraries/libMediaPipeTasksCommon_simulator_graph.a"',
-  }
+  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
 end

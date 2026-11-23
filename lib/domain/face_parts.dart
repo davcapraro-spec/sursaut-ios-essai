@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-/// Zones d'un visage (peau, yeux, sourcils, lèvres) dessinées à partir des repères de MediaPipe (478 points) ou, à défaut, de Vision (iPadOS, 76 points).
+/// Zones d'un visage (peau, yeux, sourcils, lèvres) dessinées à partir des repères de Vision (iPadOS).
 ///
 /// Les points sont des suites x, y, x, y… en fractions de la photo (origine en haut à gauche).
 
@@ -76,29 +76,6 @@ PartShape? partShape(Map<String, List<double>> f, String part) {
   if (box.length < 4) return null;
   final double half = (box[3] - box[1]) * 0.035;
   PartShape? shape;
-  if (f.containsKey('fine')) {
-    // repères MediaPipe : vrais contours fermés des yeux, sourcils, lèvres et de l'ovale du visage
-    if (part == 'eyes') {
-      shape = PartShape(solid(<List<double>>[scalePoly(g('leftEye'), 1.12), scalePoly(g('rightEye'), 1.12)]), const <List<double>>[]);
-    } else if (part == 'brows') {
-      shape = PartShape(solid(<List<double>>[scalePoly(g('leftBrow'), 1.08), scalePoly(g('rightBrow'), 1.08)]), const <List<double>>[]);
-    } else if (part == 'lips') {
-      shape = PartShape(solid(<List<double>>[g('outerLips')]), solid(<List<double>>[g('innerLips')]));
-    } else if (part == 'skin') {
-      shape = PartShape(
-        solid(<List<double>>[g('contour')]),
-        solid(<List<double>>[
-          scalePoly(g('leftEye'), 1.3),
-          scalePoly(g('rightEye'), 1.3),
-          scalePoly(g('leftBrow'), 1.2),
-          scalePoly(g('rightBrow'), 1.2),
-          scalePoly(g('outerLips'), 1.08),
-        ]),
-      );
-    }
-    if (shape == null || shape.add.isEmpty) return null;
-    return shape;
-  }
   if (part == 'eyes') {
     shape = PartShape(solid(<List<double>>[scalePoly(g('leftEye'), 1.4), scalePoly(g('rightEye'), 1.4)]), const <List<double>>[]);
   } else if (part == 'brows') {
