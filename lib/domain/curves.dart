@@ -20,9 +20,13 @@ const double kCurveMinGap = 1e-4;
 final List<(String, CurvePoints)> kCurvePresets = <(String, CurvePoints)>[
   ('Linéaire', <List<double>>[<double>[0, 0], <double>[1, 1]]),
   ('Contraste doux', <List<double>>[<double>[0, 0], <double>[0.25, 0.21], <double>[0.75, 0.79], <double>[1, 1]]),
+  ('Contraste moyen', <List<double>>[<double>[0, 0], <double>[0.25, 0.18], <double>[0.75, 0.82], <double>[1, 1]]),
   ('Contraste fort', <List<double>>[<double>[0, 0], <double>[0.25, 0.16], <double>[0.75, 0.86], <double>[1, 1]]),
   ('Éclaircir', <List<double>>[<double>[0, 0], <double>[0.5, 0.62], <double>[1, 1]]),
   ('Assombrir', <List<double>>[<double>[0, 0], <double>[0.5, 0.38], <double>[1, 1]]),
+  ('Ombres ouvertes', <List<double>>[<double>[0, 0], <double>[0.15, 0.22], <double>[0.4, 0.45], <double>[1, 1]]),
+  ('Hautes lumières douces', <List<double>>[<double>[0, 0], <double>[0.7, 0.7], <double>[0.85, 0.82], <double>[1, 0.93]]),
+  ('Film', <List<double>>[<double>[0, 0.05], <double>[0.25, 0.22], <double>[0.75, 0.8], <double>[1, 0.96]]),
   ('Mat (noirs relevés)', <List<double>>[<double>[0, 0.08], <double>[1, 0.94]]),
   ('Inverser', <List<double>>[<double>[0, 1], <double>[1, 0]]),
 ];

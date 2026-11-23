@@ -360,22 +360,32 @@ void main() {
   });
 
   test('courbes prêtes à l\'emploi', () {
-    expect(kCurvePresets.length, 7);
-    expect(isIdentityCurve(curvePresetPoints(0)), isTrue); // Linéaire
+    int idx(String name) => kCurvePresets.indexWhere(((String, CurvePoints) p) => p.$1 == name);
+    List<double> samples(String name) => curveSamples(curvePresetPoints(idx(name)));
+    expect(kCurvePresets.length, 11);
+    expect(isIdentityCurve(curvePresetPoints(idx('Linéaire'))), isTrue);
     for (int i = 0; i < kCurvePresets.length; i++) {
       final List<double> s = curveSamples(curvePresetPoints(i));
       expect(s.length, 256, reason: kCurvePresets[i].$1);
       expect(s.every((double v) => v >= -1e-9 && v <= 1 + 1e-9), isTrue, reason: kCurvePresets[i].$1);
     }
-    expect(curveSamples(curvePresetPoints(1))[64], lessThan(64 / 255)); // Contraste doux : ombres plus sombres
-    expect(curveSamples(curvePresetPoints(1))[191], greaterThan(191 / 255)); // ... hautes lumières plus claires
-    expect(curveSamples(curvePresetPoints(3))[128], greaterThan(0.55)); // Éclaircir
-    expect(curveSamples(curvePresetPoints(4))[128], lessThan(0.45)); // Assombrir
-    expect(curveSamples(curvePresetPoints(5))[0], closeTo(0.08, 1e-6)); // Mat
-    expect(curveSamples(curvePresetPoints(6))[0], closeTo(1, 1e-6)); // Inverser
+    expect(samples('Contraste doux')[64], lessThan(64 / 255)); // ombres plus sombres
+    expect(samples('Contraste doux')[191], greaterThan(191 / 255)); // hautes lumières plus claires
+    expect(samples('Contraste moyen')[64], lessThan(samples('Contraste doux')[64]));
+    expect(samples('Contraste fort')[64], lessThan(samples('Contraste moyen')[64]));
+    expect(samples('Éclaircir')[128], greaterThan(0.55));
+    expect(samples('Assombrir')[128], lessThan(0.45));
+    expect(samples('Ombres ouvertes')[38], greaterThan(38 / 255 + 0.05)); // ombres relevées
+    expect(samples('Ombres ouvertes')[255], closeTo(1, 1e-6));
+    expect(samples('Hautes lumières douces')[255], closeTo(0.93, 1e-6)); // blanc pur adouci
+    expect(samples('Hautes lumières douces')[100], closeTo(100 / 255, 0.02)); // tons moyens intacts
+    expect(samples('Film')[0], closeTo(0.05, 1e-6));
+    expect(samples('Film')[255], closeTo(0.96, 1e-6));
+    expect(samples('Mat (noirs relevés)')[0], closeTo(0.08, 1e-6));
+    expect(samples('Inverser')[0], closeTo(1, 1e-6));
     // la copie est indépendante de la liste d'origine
-    final CurvePoints c = curvePresetPoints(1);
+    final CurvePoints c = curvePresetPoints(idx('Contraste doux'));
     c[1][1] = 0.9;
-    expect(kCurvePresets[1].$2[1][1], 0.21);
+    expect(kCurvePresets[idx('Contraste doux')].$2[1][1], 0.21);
   });
 }
