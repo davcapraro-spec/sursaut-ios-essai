@@ -120,6 +120,24 @@ jobs:
       - name: Compiler sans signature
         run: flutter build ios --release --no-codesign
 
+      # Information seulement : ce que contiennent les paquets MediaPipe installés (pour comprendre une erreur de liaison).
+      - name: Diagnostic MediaPipe (information, ne bloque pas)
+        if: always()
+        continue-on-error: true
+        run: |
+          grep -n -i -B1 -A4 mediapipe ios/Podfile.lock || true
+          for d in ios/Pods/MediaPipeTasksCommon ios/Pods/MediaPipeTasksVision; do
+            echo "=== $d"; du -sh "$d"; find "$d" -maxdepth 4 -not -name '*.h' -not -name '*.modulemap' | head -60
+          done
+          find ios/Pods/MediaPipeTasksCommon ios/Pods/MediaPipeTasksVision -path '*ios-arm64/*' -type f -size +100k | while read f; do
+            echo "== $f"; ls -l "$f"; file "$f"; lipo -info "$f" 2>&1 || true
+            echo -n "absl SpinLockWake : "; nm -g "$f" 2>/dev/null | grep -c AbslInternalSpinLockWake || true
+            echo -n "TfLiteIntArrayCopy : "; nm -g "$f" 2>/dev/null | grep -c TfLiteIntArrayCopy || true
+            echo -n "MPPFaceLandmarker : "; nm -g "$f" 2>/dev/null | grep -c MPPFaceLandmarker || true
+          done
+          echo "=== OTHER_LDFLAGS"
+          grep -rn "OTHER_LDFLAGS" "ios/Pods/Target Support Files/pencil_bridge" "ios/Pods/Target Support Files/Pods-Runner" | grep -i release || true
+
       - name: Vérifier que le moteur Rust est dans l'application (information, ne bloque pas)
         continue-on-error: true
         run: |
