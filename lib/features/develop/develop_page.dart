@@ -1281,6 +1281,7 @@ class _DevelopPageState extends State<DevelopPage> {
         _maskPick = false;
         _brushTool = null;
         _before = false;
+        _maskZone = true; // la sélection s'affiche tout de suite en rouge ; l'interrupteur « Voir la zone du masque » la retire
       });
       _commit();
       _refresh();
