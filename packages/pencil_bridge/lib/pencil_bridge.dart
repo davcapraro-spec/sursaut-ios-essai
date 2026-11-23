@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 
@@ -106,3 +107,59 @@ class CameraBridge {
     }
   }
 }
+
+/// Résultat d'un détourage par Vision : image de masque (un octet par pixel, 255 = dans la zone) ou message d'erreur.
+class VisionMaskResult {
+  const VisionMaskResult({this.width = 0, this.height = 0, this.count = 0, this.mask, this.error});
+
+  final int width;
+  final int height;
+
+  /// Nombre d'éléments (sujets, personnes) trouvés sur la photo.
+  final int count;
+  final Uint8List? mask;
+  final String? error;
+
+  bool get ok => mask != null && error == null;
+}
+
+/// Détourage par Vision (Apple) : sujet principal ou personnes, sans fichier de modèle (iPadOS 17 ou plus).
+class VisionBridge {
+  VisionBridge._();
+
+  static const MethodChannel _methods = MethodChannel('sursaut/vision/methods');
+
+  /// [rgba] : photo RGBA 8 bits ([width] × [height]). [person] : les personnes au lieu du sujet principal.
+  /// Avec [fx], [fy] (fractions de la photo, origine en haut à gauche) : seul l'élément touché ; sinon tous ensemble.
+  static Future<VisionMaskResult> instanceMask(Uint8List rgba, int width, int height,
+      {bool person = false, double? fx, double? fy}) async {
+    try {
+      final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>(
+        'instanceMask',
+        <String, Object?>{
+          'rgba': rgba,
+          'width': width,
+          'height': height,
+          'kind': person ? 'person' : 'subject',
+          if (fx != null && fy != null) 'x': fx,
+          if (fx != null && fy != null) 'y': fy,
+        },
+      );
+      if (r == null) return const VisionMaskResult(error: 'Pas de réponse du détourage.');
+      final Object? err = r['error'];
+      if (err != null) return VisionMaskResult(error: err.toString());
+      final Object? m = r['mask'];
+      final Object? w = r['width'];
+      final Object? h = r['height'];
+      if (m is! Uint8List || w is! int || h is! int) {
+        return const VisionMaskResult(error: 'Réponse du détourage illisible.');
+      }
+      return VisionMaskResult(width: w, height: h, count: (r['count'] as int?) ?? 0, mask: m);
+    } on MissingPluginException {
+      return const VisionMaskResult(error: 'Détourage indisponible (pas un iPad).');
+    } on PlatformException catch (e) {
+      return VisionMaskResult(error: e.message ?? e.code);
+    }
+  }
+}
+

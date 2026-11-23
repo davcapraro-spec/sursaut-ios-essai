@@ -10,9 +10,11 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:file_picker/file_picker.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
+import 'package:pencil_bridge/pencil_bridge.dart' show VisionBridge, VisionMaskResult;
 import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
+import '../../domain/ai_masks.dart';
 import '../../domain/crop_math.dart';
 import '../../domain/curves.dart';
 import '../../domain/develop_params.dart';
@@ -124,6 +126,7 @@ class _DevelopPageState extends State<DevelopPage> {
   int _compSel = 0; // composante choisie du masque choisi
   String? _maskDraw;
   bool _maskAttach = false; // le tracé en cours s'ajoute au masque choisi au lieu d'en créer un
+  bool _aiBusy = false; // un détourage (Vision) est en cours
   String? _brushTool; // pinceau actif : 'paint' (peindre), 'erase' (gommer) ou null (déplacer les poignées)
   double _brushR = kBrushDefaultR; // taille du pinceau pour un nouveau masque ou une nouvelle composante
   bool _maskPickNew = false; // la pipette sert à créer un nouveau masque de couleur (rien n'existe avant le toucher)
@@ -498,12 +501,12 @@ class _DevelopPageState extends State<DevelopPage> {
         devMs = sw.elapsedMilliseconds;
         final PhotoEngine bigEngine = PhotoEngine.open(big.rgba, big.width, big.height);
         try {
-          r = await bigEngine.render(jsonEncode(recipe));
+          r = await bigEngine.render(jsonEncode(_forEngine(recipe)));
         } finally {
           bigEngine.close();
         }
       } else {
-        r = await photo.render(jsonEncode(recipe));
+        r = await photo.render(jsonEncode(_forEngine(recipe)));
       }
       final int renderMs = sw.elapsedMilliseconds;
       final Uint8List jpg = await _encodeJpeg(r.rgba, r.width, r.height);
@@ -589,7 +592,24 @@ class _DevelopPageState extends State<DevelopPage> {
         ..._values,
       };
 
-  String _recipeJson() => jsonEncode(<String, dynamic>{
+  /// Recette pour le moteur : les images des masques d'IA (`png`) lui sont d'abord confiées sous leur clé, puis retirées du texte.
+  Map<String, dynamic> _forEngine(Map<String, dynamic> recipe) {
+    final Object? masks = recipe['masks'];
+    if (masks is! List<dynamic>) return recipe;
+    for (final Map<String, dynamic> c in bitmapComps(masks)) {
+      final Object? key = c['key'], png = c['png'];
+      if (key is! String || key.isEmpty || png is! String || png.isEmpty || MaskBitmaps.has(key)) continue;
+      try {
+        final (Uint8List, int, int)? plane = pngToPlane(base64Decode(png));
+        if (plane != null) MaskBitmaps.set(key, plane.$2, plane.$3, plane.$1);
+      } catch (_) {
+        // image illisible : le masque reste sans effet, la photo se rend quand même
+      }
+    }
+    return <String, dynamic>{...recipe, 'masks': withoutPngs(masks)};
+  }
+
+  String _recipeJson() => jsonEncode(_forEngine(<String, dynamic>{
         ..._recipeMap(),
         // « Voir la zone du masque » : le masque choisi est montré en rouge (jamais enregistré ni exporté).
         if (_tool == 'masks' && _maskZone && _maskSelected != null) 'masks': _zoneMasks(),
@@ -597,7 +617,7 @@ class _DevelopPageState extends State<DevelopPage> {
         if (_cropMode) ...kCropDefaults,
         // Onglet « Supprimer » : photo entière et droite, pour que les positions touchées soient celles de la source.
         if (_uncropped(_tool) && !_cropMode) ...<String, double>{...kCropDefaults, 'angle': 0},
-      });
+      }));
 
   Rect get _cropRect => Rect.fromLTRB(_values['crop_left']!, _values['crop_top']!,
       _values['crop_right']!, _values['crop_bottom']!);
@@ -1229,6 +1249,48 @@ class _DevelopPageState extends State<DevelopPage> {
     _refresh();
   }
 
+  /// Masque d'IA par Vision (iPadOS) : le sujet, l'arrière-plan (le sujet inversé) ou les personnes.
+  Future<void> _maskAi(String what) async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
+    setState(() => _aiBusy = true);
+    try {
+      final VisionMaskResult r = await VisionBridge.instanceMask(rgba, _w, _h, person: what == 'person');
+      if (!mounted) return;
+      final Uint8List? mask = r.mask;
+      if (!r.ok || mask == null) {
+        _say(r.error ?? 'Détourage impossible.');
+        return;
+      }
+      final (Uint8List, int, int) fit = fitPlane(mask, r.width, r.height);
+      final String key = maskKey(fit.$1);
+      MaskBitmaps.set(key, fit.$2, fit.$3, fit.$1);
+      final MaskMap m = bitmapMask(
+        name: nextMaskName(_masks, kAiNames[what]!),
+        key: key,
+        pngBase64: planeToBase64(fit.$1, fit.$2, fit.$3),
+        what: what,
+        invert: what == 'background',
+      );
+      setState(() {
+        _masks = <MaskMap>[..._masks, m];
+        _maskSel = _masks.length - 1;
+        _compSel = 0;
+        _maskDraw = null;
+        _maskAttach = false;
+        _maskPick = false;
+        _brushTool = null;
+        _before = false;
+      });
+      _commit();
+      _refresh();
+    } catch (e) {
+      _say('Détourage impossible : $e');
+    } finally {
+      if (mounted) setState(() => _aiBusy = false);
+    }
+  }
+
   /// Rayon du pinceau montré à l'écran : celui de la composante pinceau choisie, sinon celui de départ.
   double get _effBrushR {
     final MaskMap? m = _maskSelected;
@@ -1421,7 +1483,9 @@ class _DevelopPageState extends State<DevelopPage> {
     kBrush: 'Pinceau',
   };
 
-  static IconData _kindIcon(String kind) => kind == kBrush
+  static IconData _kindIcon(String kind) => kind == kBitmap
+      ? Icons.auto_awesome
+      : kind == kBrush
       ? Icons.brush
       : kind == kRadial
       ? Icons.radio_button_unchecked
@@ -1445,6 +1509,20 @@ class _DevelopPageState extends State<DevelopPage> {
     );
   }
 
+  Widget _aiButton(String what, IconData icon, bool ready) {
+    return OutlinedButton.icon(
+      style: OutlinedButton.styleFrom(
+        side: const BorderSide(color: Colors.white24),
+        minimumSize: const Size(48, 48),
+      ),
+      onPressed: ready && !_aiBusy ? () => _maskAi(what) : null,
+      icon: _aiBusy
+          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+          : Icon(icon, size: 20),
+      label: Text(kAiNames[what]!),
+    );
+  }
+
   List<Widget> _masksPanel(bool ready) {
     final List<int> idx = <int>[
       for (int i = 0; i < _masks.length; i++)
@@ -1459,7 +1537,9 @@ class _DevelopPageState extends State<DevelopPage> {
     const TextStyle hint = TextStyle(fontSize: 12, color: Colors.white60);
     const TextStyle title =
         TextStyle(fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: Colors.white60);
-    final String guide = _brushTool != null
+    final String guide = _aiBusy
+        ? 'Détourage en cours par iPadOS…'
+        : _brushTool != null
         ? (_brushTool == 'erase'
             ? 'Passez le doigt sur la photo pour effacer une partie du masque.'
             : 'Passez le doigt sur la photo pour peindre la zone à retoucher.')
@@ -1496,7 +1576,15 @@ class _DevelopPageState extends State<DevelopPage> {
         children: <Widget>[
           Expanded(child: _maskKindButton(kBrush, ready)),
           const SizedBox(width: 8),
-          const Expanded(child: SizedBox()),
+          Expanded(child: _aiButton('subject', Icons.person_outline, ready)),
+        ],
+      ),
+      const SizedBox(height: 8),
+      Row(
+        children: <Widget>[
+          Expanded(child: _aiButton('background', Icons.landscape_outlined, ready)),
+          const SizedBox(width: 8),
+          Expanded(child: _aiButton('person', Icons.groups_outlined, ready)),
         ],
       ),
       Padding(padding: const EdgeInsets.only(top: 6), child: Text(guide, style: hint)),
@@ -1647,6 +1735,12 @@ class _DevelopPageState extends State<DevelopPage> {
               (double v) => _maskEdit(<String, dynamic>{'feather': v / 100}), onEnd: _maskEditEnd, reset: 50),
           _maskSlider('Angle', num0('angle', 0), -90, 90, 0,
               (double v) => _maskEdit(<String, dynamic>{'angle': v}), onEnd: _maskEditEnd),
+        ],
+        if (ckind == kBitmap) ...<Widget>[
+          const SizedBox(height: 6),
+          const Text('Zone calculée par iPadOS à partir de la photo.', style: hint),
+          _maskSlider('Agrandir / réduire', num0('grow', 0) * 100, -100, 100, 0,
+              (double v) => _maskEdit(<String, dynamic>{'grow': v / 100}), onEnd: _maskEditEnd),
         ],
         if (ckind == kBrush) ...<Widget>[
           const SizedBox(height: 6),

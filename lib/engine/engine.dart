@@ -23,6 +23,10 @@ typedef _RawDevelopD = Pointer<Uint8> Function(
 typedef _SpotToolC = Int32 Function(
     Pointer<Uint8>, Uint32, Uint32, Int32, Double, Double, Double, Pointer<Double>);
 typedef _SpotToolD = int Function(Pointer<Uint8>, int, int, int, double, double, double, Pointer<Double>);
+typedef _SetBitmapC = Int32 Function(Pointer<Utf8>, Uint32, Uint32, Pointer<Uint8>);
+typedef _SetBitmapD = int Function(Pointer<Utf8>, int, int, Pointer<Uint8>);
+typedef _HasBitmapC = Int32 Function(Pointer<Utf8>);
+typedef _HasBitmapD = int Function(Pointer<Utf8>);
 typedef _DustC = Pointer<Utf8> Function(Pointer<Uint8>, Uint32, Uint32);
 typedef _DustD = Pointer<Utf8> Function(Pointer<Uint8>, int, int);
 
@@ -43,7 +47,9 @@ class _Bindings {
         rawClose = lib.lookupFunction<_CloseC, _CloseD>('sursaut_raw_close'),
         spotTool = lib.lookupFunction<_SpotToolC, _SpotToolD>('sursaut_spot_tool'),
         dustDetect = lib.lookupFunction<_DustC, _DustD>('sursaut_dust_detect'),
-        eyesDetect = lib.lookupFunction<_DustC, _DustD>('sursaut_eyes_detect');
+        eyesDetect = lib.lookupFunction<_DustC, _DustD>('sursaut_eyes_detect'),
+        setBitmap = lib.lookupFunction<_SetBitmapC, _SetBitmapD>('sursaut_set_bitmap'),
+        hasBitmap = lib.lookupFunction<_HasBitmapC, _HasBitmapD>('sursaut_has_bitmap');
 
   final _VersionC version;
   final _VersionC lastError;
@@ -57,6 +63,8 @@ class _Bindings {
   final _SpotToolD spotTool;
   final _DustD dustDetect;
   final _DustD eyesDetect;
+  final _SetBitmapD setBitmap;
+  final _HasBitmapD hasBitmap;
 
   static DynamicLibrary _library() {
     if (Platform.isIOS) return DynamicLibrary.process();
@@ -302,5 +310,38 @@ class RetouchTools {
         calloc.free(src);
       }
     });
+  }
+}
+
+/// Images des masques d'IA (Sujet, Personnes, Arrière-plan…) confiées au moteur : une composante `bitmap` de la recette
+/// les cite par leur clé. Le moteur les garde en mémoire pour toute l'application.
+class MaskBitmaps {
+  MaskBitmaps._();
+
+  /// Le moteur a-t-il déjà l'image de ce masque ?
+  static bool has(String key) {
+    final Pointer<Utf8> k = key.toNativeUtf8();
+    try {
+      return _Bindings.load().hasBitmap(k) == 1;
+    } finally {
+      calloc.free(k);
+    }
+  }
+
+  /// Confie au moteur l'image d'un masque : [plane] = largeur × hauteur octets, 255 = dans la zone.
+  static void set(String key, int width, int height, Uint8List plane) {
+    if (width <= 0 || height <= 0 || plane.length != width * height) {
+      throw ArgumentError('Image de masque : ${plane.length} octets pour $width × $height.');
+    }
+    final _Bindings b = _Bindings.load();
+    final Pointer<Utf8> k = key.toNativeUtf8();
+    final Pointer<Uint8> data = calloc<Uint8>(plane.length);
+    try {
+      data.asTypedList(plane.length).setAll(0, plane);
+      if (b.setBitmap(k, width, height, data) != 1) throw StateError(b.error());
+    } finally {
+      calloc.free(k);
+      calloc.free(data);
+    }
   }
 }

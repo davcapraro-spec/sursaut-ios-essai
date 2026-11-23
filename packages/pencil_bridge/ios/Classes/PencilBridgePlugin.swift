@@ -31,6 +31,7 @@ public class PencilBridgePlugin: NSObject, FlutterPlugin, FlutterStreamHandler, 
       binaryMessenger: registrar.messenger())
     registrar.addMethodCallDelegate(instance, channel: methods)
     CameraBridge.register(with: registrar)
+    VisionBridge.register(with: registrar)
     _ = sursautEngineKeep()
   }
 

@@ -12,6 +12,7 @@ import 'masks.dart';
 const String kLinear = 'linear';
 const String kRadial = 'radial';
 const String kBrush = 'brush';
+const String kBitmap = 'bitmap'; // image d'IA (Sujet, Personnes…), voir ai_masks.dart
 const String kLuminance = 'luminance';
 const String kColor = 'color';
 
@@ -19,6 +20,7 @@ const Map<String, String> kMaskKindNames = <String, String>{
   kLinear: 'Dégradé linéaire',
   kRadial: 'Dégradé radial',
   kBrush: 'Pinceau',
+  kBitmap: 'Sélection IA',
   kLuminance: 'Plage de luminosité',
   kColor: 'Plage de couleur',
 };
@@ -41,6 +43,7 @@ Map<String, dynamic> defaultComp(String kind, {String op = 'add'}) {
   if (kind == kRadial) {
     return <String, dynamic>{...base, 'x0': 0.5, 'y0': 0.5, 'rx': 0.25, 'ry': 0.18, 'angle': 0.0, 'feather': 0.5};
   }
+  if (kind == kBitmap) return <String, dynamic>{...base, 'key': '', 'grow': 0.0};
   if (kind == kBrush) {
     return <String, dynamic>{...base, 'stroke': <List<double>>[], 'r': kBrushDefaultR, 'feather': 0.5, 'grow': 0.0};
   }

@@ -7,7 +7,7 @@ Pod::Spec.new do |s|
   s.license          = { :type => 'Proprietary' }
   s.author           = { 'Sursaut' => 'noreply@example.com' }
   s.source           = { :path => '.' }
-  s.frameworks = 'ImageCaptureCore'
+  s.frameworks = 'ImageCaptureCore', 'Vision'
   s.source_files     = 'Classes/**/*'
   # Moteur Rust (étape 1) : fabriqué par le workflow, copié ici avant la compilation.
   s.vendored_libraries = 'libsursaut_engine.a'

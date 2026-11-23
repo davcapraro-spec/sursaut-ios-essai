@@ -396,11 +396,55 @@ pub unsafe extern "C" fn sursaut_eyes_detect(rgba: *const u8, w: u32, h: u32) ->
     }
 }
 
+/// Confie au moteur l'image d'un masque d'IA (octets, `w * h`, 255 = dans la zone) sous la clé `key` : une composante
+/// `bitmap` de la recette la cite ensuite par cette clé. Renvoie 1 si c'est fait, 0 sinon.
+///
+/// # Safety
+/// `key` est un texte UTF-8 terminé par un zéro ; `data` pointe vers `w * h` octets valides.
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_set_bitmap(key: *const c_char, w: u32, h: u32, data: *const u8) -> i32 {
+    if key.is_null() || data.is_null() || w == 0 || h == 0 {
+        set_error("image de masque absente");
+        return 0;
+    }
+    let k = match CStr::from_ptr(key).to_str() {
+        Ok(t) => t.to_string(),
+        Err(_) => {
+            set_error("clé de masque illisible");
+            return 0;
+        }
+    };
+    let (w, h) = (w as usize, h as usize);
+    let v = std::slice::from_raw_parts(data, w * h).to_vec();
+    match catch_unwind(AssertUnwindSafe(|| sursaut_core::masks::set_bitmap(&k, w, h, v))) {
+        Ok(()) => 1,
+        Err(_) => {
+            set_error("erreur interne : image de masque refusée");
+            0
+        }
+    }
+}
+
+/// Le moteur a-t-il déjà l'image du masque `key` ? 1 = oui, 0 = non.
+///
+/// # Safety
+/// `key` est un texte UTF-8 terminé par un zéro.
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_has_bitmap(key: *const c_char) -> i32 {
+    if key.is_null() {
+        return 0;
+    }
+    match CStr::from_ptr(key).to_str() {
+        Ok(k) => i32::from(sursaut_core::masks::has_bitmap(k)),
+        Err(_) => 0,
+    }
+}
+
 /// Référence toutes les fonctions exportées : l'éditeur de liens d'iOS retire sinon celles que
 /// seul Dart (dart:ffi) utilise. Appelée une fois par le code Swift. Renvoie leur nombre.
 #[no_mangle]
 pub extern "C" fn sursaut_engine_keep() -> u32 {
-    let table: [usize; 12] = [
+    let table: [usize; 14] = [
         sursaut_engine_version as *const () as usize,
         sursaut_engine_last_error as *const () as usize,
         sursaut_engine_open_rgba8 as *const () as usize,
@@ -413,6 +457,8 @@ pub extern "C" fn sursaut_engine_keep() -> u32 {
         sursaut_spot_tool as *const () as usize,
         sursaut_dust_detect as *const () as usize,
         sursaut_eyes_detect as *const () as usize,
+        sursaut_set_bitmap as *const () as usize,
+        sursaut_has_bitmap as *const () as usize,
     ];
     std::hint::black_box(&table);
     table.len() as u32
@@ -608,6 +654,36 @@ mod tests {
     }
 
     #[test]
+    fn un_masque_d_ia_confie_au_moteur_agit_la_ou_il_est_blanc() {
+        let (w, h) = (64usize, 32usize);
+        let src = aplat(w, h, [100, 100, 100], [100, 100, 100]);
+        let mut e = Engine::open_rgba8(&src, w, h).unwrap();
+        // plan de masque 16 x 8 : moitié gauche pleine, moitié droite vide
+        let mut plan = vec![0u8; 16 * 8];
+        for y in 0..8 {
+            for x in 0..8 {
+                plan[y * 16 + x] = 255;
+            }
+        }
+        let cle = CString::new("test-ia-1").unwrap();
+        assert_eq!(unsafe { sursaut_has_bitmap(cle.as_ptr()) }, 0);
+        assert_eq!(unsafe { sursaut_set_bitmap(cle.as_ptr(), 16, 8, plan.as_ptr()) }, 1);
+        assert_eq!(unsafe { sursaut_has_bitmap(cle.as_ptr()) }, 1);
+        let comp = r#"{"kind":"bitmap","op":"add","invert":false,"key":"test-ia-1","grow":0.0}"#;
+        e.render(&masque(comp, 2.0)).unwrap();
+        let out = e.output().to_vec();
+        let (gauche, droite) = (canal(&out, w, 2, 22, 0), canal(&out, w, 42, 62, 0));
+        assert!(gauche > 100.0 + 25.0, "la moitié blanche doit s'éclaircir : {gauche}");
+        assert!((droite - 100.0).abs() < 2.0, "la moitié vide ne doit pas bouger : {droite}");
+        // une clé inconnue ne fait rien
+        let inconnu = r#"{"kind":"bitmap","op":"add","invert":false,"key":"absent","grow":0.0}"#;
+        e.render(&masque(inconnu, 2.0)).unwrap();
+        assert!((canal(e.output(), w, 2, 22, 0) - 100.0).abs() < 2.0);
+        // refus propres
+        assert_eq!(unsafe { sursaut_set_bitmap(std::ptr::null(), 4, 4, plan.as_ptr()) }, 0);
+    }
+
+    #[test]
     fn version_et_erreur_vide() {
         let v = unsafe { CStr::from_ptr(sursaut_engine_version()) }.to_str().unwrap();
         assert!(v.starts_with("sursaut_engine 0.6.0"));
@@ -676,7 +752,7 @@ mod tests {
 
     #[test]
     fn keep_compte_les_fonctions() {
-        assert_eq!(sursaut_engine_keep(), 12);
+        assert_eq!(sursaut_engine_keep(), 14);
     }
 
     #[test]

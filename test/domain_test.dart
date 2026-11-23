@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:sursaut_essai/domain/ai_masks.dart';
 import 'package:sursaut_essai/domain/crop_math.dart';
 import 'dart:convert';
 import 'dart:io';
@@ -526,5 +527,59 @@ void main() {
     // pas un pinceau : rien ne change
     final MaskMap lin = linearMask('L');
     expect(addStrokePoints(lin, 0, dense), same(lin));
+  });
+  test('masques d\'IA : image du masque, clé, PNG, recette', () {
+    // plan 8 x 4 : moitié gauche pleine
+    final Uint8List plane = Uint8List(8 * 4);
+    for (int y = 0; y < 4; y++) {
+      for (int x = 0; x < 4; x++) {
+        plane[y * 8 + x] = 255;
+      }
+    }
+    final String key = maskKey(plane);
+    expect(key.length, 16);
+    expect(maskKey(Uint8List.fromList(plane)), key); // même contenu, même clé
+    final Uint8List autre = Uint8List.fromList(plane)..[31] = 128;
+    expect(maskKey(autre), isNot(key));
+
+    // PNG : aller-retour sans perte
+    final Uint8List png = planeToPng(plane, 8, 4);
+    final (Uint8List, int, int)? back = pngToPlane(png);
+    expect(back, isNotNull);
+    expect(back!.$2, 8);
+    expect(back.$3, 4);
+    expect(back.$1, plane);
+    expect(pngToPlane(Uint8List.fromList(<int>[1, 2, 3])), isNull);
+
+    // réduction : plus petit que la limite = inchangé ; plus grand = ramené à la limite
+    expect(fitPlane(plane, 8, 4).$2, 8);
+    final Uint8List big = Uint8List(40 * 20)..fillRange(0, 40 * 20, 200);
+    final (Uint8List, int, int) small = fitPlane(big, 40, 20, maxSide: 10);
+    expect(small.$2, 10);
+    expect(small.$3, 5);
+    expect(small.$1.length, 50);
+    expect(small.$1.every((int v) => (v - 200).abs() <= 1), isTrue);
+
+    // le masque d'IA suit le format du PC : composante bitmap avec clé, png et origine
+    final MaskMap m = bitmapMask(name: 'Sujet 1', key: key, pngBase64: planeToBase64(plane, 8, 4), what: 'subject');
+    expect(maskKind(m), kBitmap);
+    expect(mainComp(m)!['key'], key);
+    expect((mainComp(m)!['ai'] as Map<String, dynamic>)['what'], 'subject');
+    expect(m['invert'], false);
+    expect(bitmapMask(name: 'F', key: key, pngBase64: 'x', what: 'background', invert: true)['invert'], true);
+    expect(maskIsNeutral(m), isTrue);
+    expect(isManualMask(m), isTrue);
+
+    // le moteur ne reçoit que la clé : le PNG est retiré, l'original n'est pas touché
+    expect(bitmapComps(<dynamic>[m]).length, 1);
+    final List<dynamic> propre = withoutPngs(<dynamic>[m]);
+    expect(mainComp(propre.first as Map<String, dynamic>)!.containsKey('png'), isFalse);
+    expect(mainComp(propre.first as Map<String, dynamic>)!['key'], key);
+    expect(mainComp(m)!.containsKey('png'), isTrue);
+    // un masque sans image est laissé tel quel
+    final MaskMap lin = linearMask('L');
+    expect(withoutPngs(<dynamic>[lin]).first, same(lin));
+    // copie et enregistrement : le PNG suit
+    expect(mainComp(duplicateMask(m))!['png'], mainComp(m)!['png']);
   });
 }
