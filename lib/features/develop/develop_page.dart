@@ -1269,8 +1269,45 @@ class _DevelopPageState extends State<DevelopPage> {
   /// Les pastilles des personnes repérées sont-elles à montrer (même photo que celle où on les a cherchées) ?
   bool get _personsShown => _persons.isNotEmpty && identical(_personsFor, _srcRgba);
 
+  /// Numéro du masque déjà fait pour cette personne (même point de départ), ou -1.
+  int _personMaskIndex(VisionPerson p) {
+    for (int k = 0; k < _masks.length; k++) {
+      final Map<String, dynamic>? c = mainComp(_masks[k]);
+      if (c == null || '${c['kind']}' != kBitmap) continue;
+      final Object? ai = c['ai'];
+      if (ai is! Map<String, dynamic> || ai['what'] != 'person') continue;
+      final Object? pts = ai['points'];
+      if (pts is! List<dynamic> || pts.isEmpty || pts.first is! List<dynamic>) continue;
+      final List<dynamic> q = pts.first as List<dynamic>;
+      if (q.length >= 2 && q[0] is num && q[1] is num && ((q[0] as num) - p.px).abs() < 1e-4 && ((q[1] as num) - p.py).abs() < 1e-4) {
+        return k;
+      }
+    }
+    return -1;
+  }
+
+  /// Une pastille touchée : le masque de cette personne est choisi s'il existe, sinon il est créé (plusieurs personnes = plusieurs masques).
+  void _pickPerson(int i) {
+    final VisionPerson p = _persons[i];
+    final int at = _personMaskIndex(p);
+    if (at < 0) {
+      _maskAi('person', fx: p.px, fy: p.py, base: 'Personne');
+      return;
+    }
+    setState(() {
+      _maskSel = at;
+      _compSel = 0;
+      _maskDraw = null;
+      _maskAttach = false;
+      _maskPick = false;
+      _brushTool = null;
+      _maskZone = true;
+    });
+    _refresh();
+  }
+
   /// Rangée de pastilles dans le panneau : une par personne repérée, plus « Toutes ».
-  /// Toucher une pastille avec un masque « Personne » choisi change la personne de ce masque ; sinon elle crée un masque.
+  /// Toucher une pastille choisit le masque de cette personne, ou le crée.
   List<Widget> _personTiles(TextStyle title, TextStyle hint) {
     return <Widget>[
       Padding(padding: const EdgeInsets.only(top: 10, bottom: 4), child: Text('PERSONNES REPÉRÉES', style: title)),
@@ -1284,20 +1321,27 @@ class _DevelopPageState extends State<DevelopPage> {
                 padding: const EdgeInsets.only(right: 8),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(8),
-                  onTap: _aiBusy
-                      ? null
-                      : () => _maskAi('person', fx: _persons[i].px, fy: _persons[i].py, base: 'Personne', switchPerson: true),
+                  onTap: _aiBusy ? null : () => _pickPerson(i),
                   child: Column(
                     children: <Widget>[
-                      SizedBox(
-                        height: 88,
+                      Container(
+                        height: 92,
+                        padding: const EdgeInsets.all(2),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                              color: _personMaskIndex(_persons[i]) >= 0 && _personMaskIndex(_persons[i]) == _maskSel
+                                  ? const Color(0xFFF2A33A)
+                                  : Colors.transparent,
+                              width: 2),
+                        ),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(8),
                           child: RawImage(image: _personImgs[i], fit: BoxFit.contain),
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text('Personne ${i + 1}', style: hint),
+                      const SizedBox(height: 2),
+                      Text('Personne ${i + 1}${_personMaskIndex(_persons[i]) >= 0 ? ' ✓' : ''}', style: hint),
                     ],
                   ),
                 ),
@@ -1347,7 +1391,7 @@ class _DevelopPageState extends State<DevelopPage> {
   }
 
   /// Masque d'IA par Vision (iPadOS) : le sujet, l'arrière-plan (le sujet inversé) ou les personnes.
-  Future<void> _maskAi(String what, {double? fx, double? fy, String? base, bool switchPerson = false}) async {
+  Future<void> _maskAi(String what, {double? fx, double? fy, String? base}) async {
     final Uint8List? rgba = _srcRgba;
     if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
     setState(() => _aiBusy = true);
@@ -1380,24 +1424,16 @@ class _DevelopPageState extends State<DevelopPage> {
         what: what,
         invert: what == 'background',
       );
-      // une pastille de personne touchée avec un masque « Personne » choisi : on change la personne de ce masque
-      final MaskMap? cur = _maskSelected;
-      final Map<String, dynamic>? curMain = cur == null ? null : mainComp(cur);
-      final Object? curAi = curMain?['ai'];
-      final bool swap = switchPerson &&
-          cur != null &&
-          '${curMain?['kind']}' == kBitmap &&
-          curAi is Map<String, dynamic> &&
-          curAi['what'] == 'person' &&
-          '${cur['name']}'.startsWith('Personne ');
+      if (fx != null && fy != null) {
+        // on garde le point de la personne : sa pastille retrouve ainsi son masque
+        final Map<String, dynamic> c0 = (m['comps'] as List<dynamic>).first as Map<String, dynamic>;
+        (c0['ai'] as Map<String, dynamic>)['points'] = <dynamic>[
+          <double>[fx, fy]
+        ];
+      }
       setState(() {
-        if (swap) {
-          final MaskMap swapped = <String, dynamic>{...cur!, 'comps': m['comps']};
-          _masks = <MaskMap>[for (int k = 0; k < _masks.length; k++) k == _maskSel ? swapped : _masks[k]];
-        } else {
-          _masks = <MaskMap>[..._masks, m];
-          _maskSel = _masks.length - 1;
-        }
+        _masks = <MaskMap>[..._masks, m];
+        _maskSel = _masks.length - 1;
         _compSel = 0;
         _maskDraw = null;
         _maskAttach = false;
