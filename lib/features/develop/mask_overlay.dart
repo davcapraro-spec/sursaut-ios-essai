@@ -5,7 +5,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../../domain/mask_tools.dart';
-import '../../domain/masks.dart';
 
 const Color _kAmber = Color(0xFFF2A33A);
 
@@ -19,9 +18,12 @@ class MaskOverlay extends StatefulWidget {
   const MaskOverlay({
     super.key,
     required this.image,
-    required this.mask,
+    required this.comp,
+    required this.invert,
     required this.drawKind,
     required this.showArea,
+    required this.pickMode,
+    required this.onPick,
     required this.onDraw,
     required this.onEdit,
     required this.onEditEnd,
@@ -29,10 +31,17 @@ class MaskOverlay extends StatefulWidget {
 
   final ui.Image image;
 
-  /// Le masque choisi (dégradé linéaire ou radial), ou null.
-  final MaskMap? mask;
+  /// La composante choisie du masque choisi (dégradé linéaire, radial, plage…), ou null.
+  final Map<String, dynamic>? comp;
+
+  /// Le masque choisi est inversé.
+  final bool invert;
   final String? drawKind;
   final bool showArea;
+
+  /// Pipette : un toucher sur la photo appelle [onPick] (fractions de la photo) au lieu de déplacer quoi que ce soit.
+  final bool pickMode;
+  final void Function(double fx, double fy) onPick;
 
   /// Fin d'un tracé : type, point de départ, point d'arrivée (fractions de la photo).
   final void Function(String kind, double ax, double ay, double bx, double by) onDraw;
@@ -52,6 +61,7 @@ class _MaskOverlayState extends State<MaskOverlay> {
   bool _moved = false;
   Offset? _a, _b; // tracé en cours (pixels de l'écran)
   Offset _downAt = Offset.zero;
+  Offset _last = Offset.zero;
   Map<String, dynamic> _comp0 = <String, dynamic>{};
 
   Rect _fit(Size box) {
@@ -88,6 +98,7 @@ class _MaskOverlayState extends State<MaskOverlay> {
 
   void _down(Rect img, Offset p) {
     _downAt = p;
+    _last = p;
     _moved = false;
     _drag = null;
     _a = _b = null;
@@ -96,9 +107,9 @@ class _MaskOverlayState extends State<MaskOverlay> {
       _a = _b = p;
       return;
     }
-    final MaskMap? m = widget.mask;
-    final Map<String, dynamic>? c = m == null ? null : mainComp(m);
-    if (m == null || c == null) return;
+    if (widget.pickMode) return;
+    final Map<String, dynamic>? c = widget.comp;
+    if (c == null) return;
     _comp0 = Map<String, dynamic>.of(c);
     if ('${c['kind']}' == kLinear) {
       final Offset a = _px(img, _d(c, 'x0', 0.5), _d(c, 'y0', 0.3)), b = _px(img, _d(c, 'x1', 0.5), _d(c, 'y1', 0.7));
@@ -128,6 +139,7 @@ class _MaskOverlayState extends State<MaskOverlay> {
   }
 
   void _update(Rect img, Offset p) {
+    _last = p;
     if (!_moved && (p - _downAt).distance < 6) return;
     _moved = true;
     if (_drag == 'create') {
@@ -203,7 +215,13 @@ class _MaskOverlayState extends State<MaskOverlay> {
         behavior: HitTestBehavior.opaque,
         onPanDown: (DragDownDetails d) => _down(img, d.localPosition),
         onPanUpdate: (DragUpdateDetails d) => _update(img, d.localPosition),
-        onPanEnd: (DragEndDetails d) => _up(img, d.localPosition),
+        onTapUp: (TapUpDetails d) {
+          if (widget.pickMode) {
+            final List<double> f = _frac(img, d.localPosition);
+            widget.onPick(f[0], f[1]);
+          }
+        },
+        onPanEnd: (DragEndDetails d) => _up(img, _last),
         onPanCancel: () {
           if (_drag != null && _drag != 'create' && _moved) widget.onEditEnd();
           setState(() {
@@ -216,8 +234,8 @@ class _MaskOverlayState extends State<MaskOverlay> {
           painter: _MaskPainter(
             image: widget.image,
             rect: img,
-            comp: widget.mask == null ? null : mainComp(widget.mask!),
-            invert: widget.mask?['invert'] == true,
+            comp: widget.comp,
+            invert: widget.invert,
             showArea: widget.showArea,
             drawKind: widget.drawKind,
             a: _a,
@@ -277,7 +295,7 @@ class _MaskPainter extends CustomPainter {
     paintImage(canvas: canvas, rect: rect, image: image, fit: BoxFit.fill, filterQuality: FilterQuality.medium);
     canvas.save();
     canvas.clipRect(rect);
-    final Color tint = _kAmber.withValues(alpha: 0.42);
+    final Color tint = _kAmber.withAlpha(107);
     const Color none = Color(0x00F2A33A);
     // tracé en cours
     if (a != null && b != null) {

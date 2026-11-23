@@ -121,8 +121,12 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Onglet « Masques » : masque choisi (indice dans `_masks`), type en cours de tracé, zone teintée sur la photo.
   int _maskSel = -1;
+  int _compSel = 0; // composante choisie du masque choisi
   String? _maskDraw;
-  bool _maskShowArea = true;
+  bool _maskAttach = false; // le tracé en cours s'ajoute au masque choisi au lieu d'en créer un
+  bool _maskPick = false; // pipette : le prochain toucher sur la photo choisit la couleur
+  bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
+  String _newOp = 'add'; // comment la prochaine composante se combine : add | subtract | intersect
 
   bool _cropMode = false;
   double? _aspect; // largeur/hauteur imposée ; null = cadre libre
@@ -218,7 +222,10 @@ class _DevelopPageState extends State<DevelopPage> {
       _syncEyesStrength();
       _spotSel = -1;
       _maskSel = -1;
+      _compSel = 0;
       _maskDraw = null;
+      _maskAttach = false;
+      _maskPick = false;
       _dust = null;
       _srcRgba = rgba;
       _w = w;
@@ -293,7 +300,10 @@ class _DevelopPageState extends State<DevelopPage> {
       _syncEyesStrength();
       _spotSel = -1;
       _maskSel = -1;
+      _compSel = 0;
       _maskDraw = null;
+      _maskAttach = false;
+      _maskPick = false;
       for (final String k in _values.keys.toList()) {
         _values[k] = v[k] ?? defaultOf(k);
       }
@@ -576,6 +586,8 @@ class _DevelopPageState extends State<DevelopPage> {
 
   String _recipeJson() => jsonEncode(<String, dynamic>{
         ..._recipeMap(),
+        // « Voir la zone du masque » : le masque choisi est montré en rouge (jamais enregistré ni exporté).
+        if (_tool == 'masks' && _maskZone && _maskSelected != null) 'masks': _zoneMasks(),
         // En mode recadrage, on voit toute l'image (déjà redressée) sous le cadre.
         if (_cropMode) ...kCropDefaults,
         // Onglet « Supprimer » : photo entière et droite, pour que les positions touchées soient celles de la source.
@@ -1017,10 +1029,15 @@ class _DevelopPageState extends State<DevelopPage> {
   bool _uncropped(String t) => t == 'spots' || t == 'masks';
 
   void _setTool(String t) {
-    final bool redo = _uncropped(t) != _uncropped(_tool);
+    final bool redo = _uncropped(t) != _uncropped(_tool) || (_maskZone && t != 'masks');
     setState(() {
       _tool = t;
-      if (t != 'masks') _maskDraw = null;
+      if (t != 'masks') {
+        _maskDraw = null;
+        _maskAttach = false;
+        _maskPick = false;
+        _maskZone = false;
+      }
     });
     if (redo) _refresh();
   }
@@ -1037,34 +1054,140 @@ class _DevelopPageState extends State<DevelopPage> {
     });
   }
 
-  /// Un doigt a tracé un nouveau masque sur la photo.
+  /// Un doigt a tracé un dégradé sur la photo : un nouveau masque, ou une composante de plus du masque choisi.
   void _maskDrawn(String kind, double ax, double ay, double bx, double by) {
     final double aspect = _h == 0 ? 1 : _w / _h;
+    final MaskMap? base = _maskAttach ? _maskSelected : null;
     final String name = nextMaskName(_masks, kMaskKindNames[kind]!);
-    final MaskMap m = kind == kLinear
+    final MaskMap shape = kind == kLinear
         ? linearFromDrag(name, ax, ay, bx, by, aspect)
         : radialFromDrag(name, ax, ay, bx, by, aspect);
+    if (base != null) {
+      final MaskMap grown = addComp(base, <String, dynamic>{...?mainComp(shape), 'op': _newOp});
+      _maskSet(_maskSel, grown);
+      setState(() {
+        _compSel = compsOf(grown).length - 1;
+        _maskDraw = null;
+        _maskAttach = false;
+      });
+      _commit();
+      _refresh();
+      return;
+    }
     setState(() {
-      _masks = <MaskMap>[..._masks, m];
+      _masks = <MaskMap>[..._masks, shape];
       _maskSel = _masks.length - 1;
+      _compSel = 0;
       _maskDraw = null;
+      _maskAttach = false;
       _before = false;
     });
     _commit();
   }
 
+  /// Un nouveau masque : les dégradés se tracent au doigt, les plages se créent tout de suite.
+  void _maskNew(String kind) {
+    if (kind == kLinear || kind == kRadial) {
+      setState(() {
+        final bool on = _maskDraw == kind && !_maskAttach;
+        _maskDraw = on ? null : kind;
+        _maskAttach = false;
+        _maskPick = false;
+      });
+      return;
+    }
+    final MaskMap m = rangeMask(nextMaskName(_masks, kMaskKindNames[kind]!), kind);
+    setState(() {
+      _masks = <MaskMap>[..._masks, m];
+      _maskSel = _masks.length - 1;
+      _compSel = 0;
+      _maskDraw = null;
+      _maskAttach = false;
+      _maskPick = kind == kColor;
+      _before = false;
+    });
+    _commit();
+  }
+
+  /// Une composante de plus pour le masque choisi, combinée selon [_newOp].
+  void _maskAddComp(String kind) {
+    final MaskMap? m = _maskSelected;
+    if (m == null) return;
+    if (kind == kLinear || kind == kRadial) {
+      setState(() {
+        _maskDraw = kind;
+        _maskAttach = true;
+        _maskPick = false;
+      });
+      return;
+    }
+    final MaskMap grown = addComp(m, defaultComp(kind, op: _newOp));
+    _maskSet(_maskSel, grown);
+    setState(() {
+      _compSel = compsOf(grown).length - 1;
+      _maskDraw = null;
+      _maskAttach = false;
+      _maskPick = kind == kColor;
+    });
+    _commit();
+    _refresh();
+  }
+
+  void _maskCompOp(int i, String op) {
+    final MaskMap? m = _maskSelected;
+    if (m == null) return;
+    _maskSet(_maskSel, withCompAt(m, i, <String, dynamic>{'op': op}));
+    _commit();
+    _refresh();
+  }
+
+  void _maskCompDelete(int i) {
+    final MaskMap? m = _maskSelected;
+    if (m == null) return;
+    _maskSet(_maskSel, removeCompAt(m, i));
+    setState(() {
+      _compSel = 0;
+      _maskPick = false;
+    });
+    _commit();
+    _refresh();
+  }
+
+  /// Pipette : la teinte (et une saturation minimale) de la couleur touchée sur la photo.
+  void _maskPicked(double fx, double fy) {
+    final Uint8List? rgba = _srcRgba;
+    final MaskMap? m = _maskSelected;
+    final Map<String, dynamic>? c = m == null ? null : compAt(m, _compSel);
+    if (rgba == null || m == null || c == null || '${c['kind']}' != kColor) return;
+    final (double hue, double sat) = hueSatAt(rgba, _w, _h, fx, fy);
+    _maskSet(
+        _maskSel,
+        withCompAt(m, _compSel, <String, dynamic>{
+          'hue': hue,
+          'sat_min': (sat * 0.5).clamp(0.02, 0.5).toDouble(),
+        }));
+    setState(() => _maskPick = false);
+    _commit();
+    _refresh();
+  }
+
+  /// Les masques tels qu'ils sont rendus quand on demande à voir la zone du masque choisi.
+  List<MaskMap> _zoneMasks() => <MaskMap>[
+        for (int i = 0; i < _masks.length; i++) i == _maskSel ? zoneView(_masks[i]) : _masks[i],
+      ];
+
   /// Une poignée du masque choisi est déplacée.
   void _maskEdit(Map<String, dynamic> changes) {
     final MaskMap? m = _maskSelected;
     if (m == null) return;
-    _maskSet(_maskSel, withComp(m, changes));
-    if (!maskIsNeutral(m)) _refresh();
+    _maskSet(_maskSel, withCompAt(m, _compSel, changes));
+    if (!maskIsNeutral(m) || _maskZone) _refresh();
   }
 
   void _maskEditEnd() {
     _commit();
     final MaskMap? m = _maskSelected;
-    if (m != null && !maskIsNeutral(m)) _refresh();
+    if (m != null && (!maskIsNeutral(m) || _maskZone)) _refresh();
   }
 
   void _maskAdj(String key, double v) {
@@ -1099,6 +1222,7 @@ class _DevelopPageState extends State<DevelopPage> {
     setState(() {
       _masks = <MaskMap>[for (int k = 0; k < _masks.length; k++) if (k != i) _masks[k]];
       _maskSel = -1;
+      _compSel = 0;
       _before = false;
     });
     _commit();
@@ -1112,6 +1236,7 @@ class _DevelopPageState extends State<DevelopPage> {
     setState(() {
       _masks = <MaskMap>[..._masks.sublist(0, at), duplicateMask(m), ..._masks.sublist(at)];
       _maskSel = at;
+      _compSel = 0;
       _before = false;
     });
     _commit();
@@ -1169,17 +1294,32 @@ class _DevelopPageState extends State<DevelopPage> {
     );
   }
 
+  static const Map<String, String> _kindShort = <String, String>{
+    kLinear: 'Linéaire',
+    kRadial: 'Radial',
+    kLuminance: 'Luminosité',
+    kColor: 'Couleur',
+  };
+
+  static IconData _kindIcon(String kind) => kind == kRadial
+      ? Icons.radio_button_unchecked
+      : kind == kLuminance
+          ? Icons.brightness_6_outlined
+          : kind == kColor
+              ? Icons.colorize
+              : Icons.gradient;
+
   Widget _maskKindButton(String kind, bool ready) {
-    final bool on = _maskDraw == kind;
+    final bool on = (_maskDraw == kind && !_maskAttach) || (kind == kColor && _maskPick && _maskSelected == null);
     return OutlinedButton.icon(
       style: OutlinedButton.styleFrom(
         backgroundColor: on ? const Color(0xFF33291A) : null,
         side: BorderSide(color: on ? const Color(0xFFF2A33A) : Colors.white24),
         minimumSize: const Size(48, 48),
       ),
-      onPressed: ready ? () => setState(() => _maskDraw = on ? null : kind) : null,
-      icon: Icon(kind == kLinear ? Icons.gradient : Icons.radio_button_unchecked, size: 20),
-      label: Text(kind == kLinear ? 'Linéaire' : 'Radial'),
+      onPressed: ready ? () => _maskNew(kind) : null,
+      icon: Icon(_kindIcon(kind), size: 20),
+      label: Text(_kindShort[kind]!),
     );
   }
 
@@ -1189,12 +1329,24 @@ class _DevelopPageState extends State<DevelopPage> {
         if (isManualMask(_masks[i])) i,
     ];
     final MaskMap? sel = _maskSelected;
-    final Map<String, dynamic>? comp = sel == null ? null : mainComp(sel);
+    final List<Map<String, dynamic>> comps = sel == null ? const <Map<String, dynamic>>[] : compsOf(sel);
+    final int cs = comps.isEmpty ? 0 : _compSel.clamp(0, comps.length - 1).toInt();
+    final Map<String, dynamic>? comp = comps.isEmpty ? null : comps[cs];
+    final String ckind = comp == null ? '' : '${comp['kind']}';
+    double num0(String k, double d) => comp != null && comp[k] is num ? (comp[k] as num).toDouble() : d;
     const TextStyle hint = TextStyle(fontSize: 12, color: Colors.white60);
+    const TextStyle title =
+        TextStyle(fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: Colors.white60);
+    final String guide = _maskPick
+        ? 'Touchez sur la photo la couleur à cibler.'
+        : _maskDraw == kLinear
+            ? 'Posez le doigt là où l\'effet est plein, glissez jusqu\'où il s\'arrête, puis levez le doigt.'
+            : _maskDraw == kRadial
+                ? 'Posez le doigt au centre, glissez jusqu\'au bord, puis levez le doigt.'
+                : 'Touchez un type : les dégradés se tracent au doigt, les plages se règlent avec des curseurs.';
     return <Widget>[
       const SizedBox(height: 8),
-      const Text('NOUVEAU MASQUE',
-          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: Colors.white60)),
+      const Text('NOUVEAU MASQUE', style: title),
       const SizedBox(height: 6),
       Row(
         children: <Widget>[
@@ -1203,30 +1355,24 @@ class _DevelopPageState extends State<DevelopPage> {
           Expanded(child: _maskKindButton(kRadial, ready)),
         ],
       ),
-      Padding(
-        padding: const EdgeInsets.only(top: 6),
-        child: Text(
-          _maskDraw == kLinear
-              ? 'Posez le doigt là où l\'effet est plein, glissez jusqu\'où il s\'arrête, puis levez le doigt.'
-              : _maskDraw == kRadial
-                  ? 'Posez le doigt au centre, glissez jusqu\'au bord, puis levez le doigt.'
-                  : 'Touchez un type, puis tracez-le avec le doigt sur la photo.',
-          style: hint,
-        ),
+      const SizedBox(height: 8),
+      Row(
+        children: <Widget>[
+          Expanded(child: _maskKindButton(kLuminance, ready)),
+          const SizedBox(width: 8),
+          Expanded(child: _maskKindButton(kColor, ready)),
+        ],
       ),
+      Padding(padding: const EdgeInsets.only(top: 6), child: Text(guide, style: hint)),
       if (idx.isNotEmpty) ...<Widget>[
-        const Padding(
-          padding: EdgeInsets.only(top: 14, bottom: 2),
-          child: Text('MASQUES',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: Colors.white60)),
-        ),
+        const Padding(padding: EdgeInsets.only(top: 14, bottom: 2), child: Text('MASQUES', style: title)),
         for (final int i in idx)
           ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
             selected: i == _maskSel,
             selectedColor: const Color(0xFFF2A33A),
-            leading: Icon(maskKind(_masks[i]) == kRadial ? Icons.radio_button_unchecked : Icons.gradient),
+            leading: Icon(_kindIcon(maskKind(_masks[i]))),
             title: Text('${_masks[i]['name'] ?? ''}',
                 style: TextStyle(color: _masks[i]['enabled'] == false ? Colors.white38 : null)),
             trailing: IconButton(
@@ -1240,7 +1386,10 @@ class _DevelopPageState extends State<DevelopPage> {
             ),
             onTap: () => setState(() {
               _maskSel = i;
+              _compSel = 0;
               _maskDraw = null;
+              _maskAttach = false;
+              _maskPick = false;
             }),
           ),
       ],
@@ -1267,25 +1416,135 @@ class _DevelopPageState extends State<DevelopPage> {
         SwitchListTile(
           dense: true,
           contentPadding: EdgeInsets.zero,
-          title: const Text('Montrer la zone sur la photo'),
-          value: _maskShowArea,
-          onChanged: (bool v) => setState(() => _maskShowArea = v),
+          title: const Text('Voir la zone du masque'),
+          subtitle: const Text('Rouge clair = zone touchée ; les réglages sont mis de côté pendant ce temps.', style: hint),
+          value: _maskZone,
+          onChanged: (bool v) {
+            setState(() => _maskZone = v);
+            _refresh();
+          },
         ),
         _maskSlider('Opacité', ((sel['amount'] as num?) ?? 100).toDouble(), 0, 100, 0,
             (double v) => _maskField('amount', v), onEnd: _commit, reset: 100),
-        if ('${comp['kind']}' == kRadial) ...<Widget>[
-          _maskSlider('Contour progressif', (((comp['feather'] as num?) ?? 0.5).toDouble()) * 100, 0, 100, 0,
+        const Padding(padding: EdgeInsets.only(top: 14, bottom: 2), child: Text('COMPOSANTES', style: title)),
+        for (int i = 0; i < comps.length; i++)
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            selected: i == cs,
+            selectedColor: const Color(0xFFF2A33A),
+            leading: Icon(_kindIcon('${comps[i]['kind']}')),
+            title: Text(kMaskKindNames['${comps[i]['kind']}'] ?? '${comps[i]['kind']}'),
+            subtitle: i == 0 ? null : Text(kOpNames['${comps[i]['op']}'] ?? 'Ajouter'),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                if (i > 0)
+                  PopupMenuButton<String>(
+                    tooltip: 'Façon de combiner',
+                    icon: const Icon(Icons.swap_vert),
+                    onSelected: (String op) => _maskCompOp(i, op),
+                    itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                      for (final MapEntry<String, String> e in kOpNames.entries)
+                        PopupMenuItem<String>(value: e.key, child: Text(e.value)),
+                    ],
+                  ),
+                if (comps.length > 1)
+                  IconButton(
+                    tooltip: 'Retirer cette composante',
+                    icon: const Icon(Icons.close),
+                    onPressed: () => _maskCompDelete(i),
+                  ),
+              ],
+            ),
+            onTap: () => setState(() {
+              _compSel = i;
+              _maskPick = false;
+              _maskDraw = null;
+              _maskAttach = false;
+            }),
+          ),
+        const SizedBox(height: 6),
+        const Text('Ajouter une composante', style: hint),
+        const SizedBox(height: 4),
+        SegmentedButton<String>(
+          showSelectedIcon: false,
+          segments: <ButtonSegment<String>>[
+            for (final MapEntry<String, String> e in kOpNames.entries)
+              ButtonSegment<String>(value: e.key, label: Text(e.value)),
+          ],
+          selected: <String>{_newOp},
+          onSelectionChanged: (Set<String> v) => setState(() => _newOp = v.first),
+        ),
+        Wrap(
+          spacing: 8,
+          children: <Widget>[
+            for (final String k in <String>[kLinear, kRadial, kLuminance, kColor])
+              ActionChip(
+                avatar: Icon(_kindIcon(k), size: 18),
+                label: Text(_kindShort[k]!),
+                onPressed: ready ? () => _maskAddComp(k) : null,
+              ),
+          ],
+        ),
+        if (ckind == kRadial) ...<Widget>[
+          const SizedBox(height: 6),
+          _maskSlider('Contour progressif', num0('feather', 0.5) * 100, 0, 100, 0,
               (double v) => _maskEdit(<String, dynamic>{'feather': v / 100}), onEnd: _maskEditEnd, reset: 50),
-          _maskSlider('Angle', ((comp['angle'] as num?) ?? 0).toDouble(), -90, 90, 0,
+          _maskSlider('Angle', num0('angle', 0), -90, 90, 0,
               (double v) => _maskEdit(<String, dynamic>{'angle': v}), onEnd: _maskEditEnd),
         ],
+        if (ckind == kLuminance) ...<Widget>[
+          const SizedBox(height: 6),
+          _maskSlider('Tons les plus sombres', num0('lo', 0) * 100, 0, 100, 0,
+              (double v) => _maskEdit(<String, dynamic>{'lo': v / 100}), onEnd: _maskEditEnd),
+          _maskSlider('Tons les plus clairs', num0('hi', 1) * 100, 0, 100, 0,
+              (double v) => _maskEdit(<String, dynamic>{'hi': v / 100}), onEnd: _maskEditEnd, reset: 100),
+          _maskSlider('Lissage', num0('smooth', 0.3) * 100, 0, 100, 0,
+              (double v) => _maskEdit(<String, dynamic>{'smooth': v / 100}), onEnd: _maskEditEnd, reset: 30),
+        ],
+        if (ckind == kColor) ...<Widget>[
+          const SizedBox(height: 6),
+          Row(
+            children: <Widget>[
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: HSVColor.fromAHSV(1, num0('hue', 0).clamp(0, 360).toDouble(), 1, 1).toColor(),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.white24),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => setState(() {
+                    _maskPick = !_maskPick;
+                    _maskDraw = null;
+                    _maskAttach = false;
+                  }),
+                  icon: const Icon(Icons.colorize, size: 18),
+                  label: Text(_maskPick ? 'Touchez la couleur sur la photo' : 'Pipette : choisir sur la photo'),
+                ),
+              ),
+            ],
+          ),
+          _maskSlider('Teinte visée', num0('hue', 0), 0, 360, 0,
+              (double v) => _maskEdit(<String, dynamic>{'hue': v}), onEnd: _maskEditEnd),
+          _maskSlider('Étendue', num0('hue_range', 30), 5, 90, 0,
+              (double v) => _maskEdit(<String, dynamic>{'hue_range': v}), onEnd: _maskEditEnd, reset: 30),
+          _maskSlider('Saturation minimale', num0('sat_min', 0.1) * 100, 0, 100, 0,
+              (double v) => _maskEdit(<String, dynamic>{'sat_min': v / 100}), onEnd: _maskEditEnd, reset: 10),
+        ],
+        const Divider(height: 24),
         if (maskIsNeutral(sel))
           const Padding(
-            padding: EdgeInsets.only(top: 6),
+            padding: EdgeInsets.only(bottom: 6),
             child: Text('Tant que tous les réglages ci-dessous sont à zéro, le masque ne change rien à la photo.', style: hint),
           ),
-        for (final (String title, List<LocalParam> params) in kLocalGroups) ...<Widget>[
-          _groupTitle(title, () => _maskResetKeys(params.map((LocalParam p) => p.key))),
+        for (final (String gt, List<LocalParam> params) in kLocalGroups) ...<Widget>[
+          _groupTitle(gt, () => _maskResetKeys(params.map((LocalParam p) => p.key))),
           for (final LocalParam p in params)
             _maskSlider(p.label, adjOf(sel, p.key), p.min, p.max, p.decimals, (double v) => _maskAdj(p.key, v),
                 onEnd: _commit),
@@ -1849,9 +2108,12 @@ class _DevelopPageState extends State<DevelopPage> {
         padding: const EdgeInsets.all(12),
         child: MaskOverlay(
           image: _shown!,
-          mask: _maskSelected,
+          comp: _maskSelected == null ? null : compAt(_maskSelected!, _compSel),
+          invert: _maskSelected?['invert'] == true,
           drawKind: _maskDraw,
-          showArea: _maskShowArea,
+          showArea: !_maskZone,
+          pickMode: _maskPick,
+          onPick: _maskPicked,
           onDraw: _maskDrawn,
           onEdit: _maskEdit,
           onEditEnd: _maskEditEnd,

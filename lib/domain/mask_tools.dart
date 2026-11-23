@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'masks.dart';
 
@@ -10,11 +11,33 @@ import 'masks.dart';
 /// Types de masques proposés (le libellé sert de début de nom : « Dégradé linéaire 1 »).
 const String kLinear = 'linear';
 const String kRadial = 'radial';
+const String kLuminance = 'luminance';
+const String kColor = 'color';
 
 const Map<String, String> kMaskKindNames = <String, String>{
   kLinear: 'Dégradé linéaire',
   kRadial: 'Dégradé radial',
+  kLuminance: 'Plage de luminosité',
+  kColor: 'Plage de couleur',
 };
+
+/// Comment une composante se combine avec celles qui la précèdent (noms du PC).
+const Map<String, String> kOpNames = <String, String>{'add': 'Ajouter', 'subtract': 'Soustraire', 'intersect': 'Limiter à'};
+const Map<String, String> kOpSigns = <String, String>{'add': '＋', 'subtract': '－', 'intersect': '∩'};
+
+/// Plages : leur zone dépend des couleurs de la photo, pas d'une forme que l'on déplace.
+bool isRangeKind(String kind) => kind == kLuminance || kind == kColor;
+
+/// Composante neutre d'un type donné (mêmes valeurs que `default_component` du PC).
+Map<String, dynamic> defaultComp(String kind, {String op = 'add'}) {
+  final Map<String, dynamic> base = <String, dynamic>{'kind': kind, 'op': op, 'invert': false};
+  if (kind == kRadial) {
+    return <String, dynamic>{...base, 'x0': 0.5, 'y0': 0.5, 'rx': 0.25, 'ry': 0.18, 'angle': 0.0, 'feather': 0.5};
+  }
+  if (kind == kLuminance) return <String, dynamic>{...base, 'lo': 0.0, 'hi': 0.4, 'smooth': 0.3};
+  if (kind == kColor) return <String, dynamic>{...base, 'hue': 0.0, 'hue_range': 30.0, 'sat_min': 0.1};
+  return <String, dynamic>{...base, 'x0': 0.5, 'y0': 0.3, 'x1': 0.5, 'y1': 0.7};
+}
 
 /// Un réglage local (clé du moteur, libellé, bornes, pas d'affichage) : mêmes bornes que `LOCAL_LABELS` du PC.
 class LocalParam {
@@ -132,6 +155,91 @@ Map<String, dynamic>? mainComp(MaskMap m) {
   }
   return null;
 }
+
+/// Toutes les composantes du masque, dans l'ordre.
+List<Map<String, dynamic>> compsOf(MaskMap m) {
+  final Object? comps = m['comps'];
+  return <Map<String, dynamic>>[
+    if (comps is List<dynamic>)
+      for (final Object? e in comps)
+        if (e is Map<String, dynamic>) e,
+  ];
+}
+
+/// La composante d'indice [i], ou null.
+Map<String, dynamic>? compAt(MaskMap m, int i) {
+  final List<Map<String, dynamic>> l = compsOf(m);
+  return i >= 0 && i < l.length ? l[i] : null;
+}
+
+/// Copie du masque avec des valeurs changées dans la composante d'indice [i].
+MaskMap withCompAt(MaskMap m, int i, Map<String, dynamic> changes) {
+  final List<Map<String, dynamic>> l = compsOf(m);
+  if (i < 0 || i >= l.length) return m;
+  l[i] = <String, dynamic>{...l[i], ...changes};
+  return <String, dynamic>{...m, 'comps': l};
+}
+
+/// Copie du masque avec une composante de plus à la fin.
+MaskMap addComp(MaskMap m, Map<String, dynamic> comp) =>
+    <String, dynamic>{...m, 'comps': <Map<String, dynamic>>[...compsOf(m), comp]};
+
+/// Copie du masque sans la composante [i] (un masque garde toujours au moins une composante).
+MaskMap removeCompAt(MaskMap m, int i) {
+  final List<Map<String, dynamic>> l = compsOf(m);
+  if (l.length <= 1 || i < 0 || i >= l.length) return m;
+  l.removeAt(i);
+  return <String, dynamic>{...m, 'comps': l};
+}
+
+/// Masque d'une plage (luminosité ou couleur) sur toute la photo.
+MaskMap rangeMask(String name, String kind) => <String, dynamic>{
+      'name': name,
+      'enabled': true,
+      'invert': false,
+      'amount': 100.0,
+      'comps': <Map<String, dynamic>>[defaultComp(kind)],
+      'adj': _blankAdj(),
+    };
+
+/// Teinte (degrés, 0..360) et saturation (0..1) de la couleur moyenne d'un petit carré de [rgba] autour du point
+/// (fx, fy) (fractions de la photo) : la pipette. Même calcul que le moteur (teinte et saturation HSV).
+(double, double) hueSatAt(Uint8List rgba, int w, int h, double fx, double fy, {int half = 3}) {
+  if (w <= 0 || h <= 0 || rgba.length < w * h * 4) return (0, 0);
+  final int cx = (fx * (w - 1)).round().clamp(0, w - 1).toInt(), cy = (fy * (h - 1)).round().clamp(0, h - 1).toInt();
+  double r = 0, g = 0, b = 0;
+  int n = 0;
+  for (int y = math.max(0, cy - half); y <= math.min(h - 1, cy + half); y++) {
+    for (int x = math.max(0, cx - half); x <= math.min(w - 1, cx + half); x++) {
+      final int i = (y * w + x) * 4;
+      r += rgba[i];
+      g += rgba[i + 1];
+      b += rgba[i + 2];
+      n++;
+    }
+  }
+  if (n == 0) return (0, 0);
+  r /= n * 255;
+  g /= n * 255;
+  b /= n * 255;
+  final double mx = math.max(r, math.max(g, b)), mn = math.min(r, math.min(g, b));
+  final double chroma = mx - mn;
+  if (chroma < 1e-6) return (0, 0);
+  final double hue = mx == r
+      ? 60 * (((g - b) / chroma) % 6)
+      : mx == g
+          ? 60 * ((b - r) / chroma + 2)
+          : 60 * ((r - g) / chroma + 4);
+  return (((hue % 360) + 360) % 360, chroma / mx);
+}
+
+/// Le même masque, dessiné pour être vu : la zone ressort en rouge clair (et les réglages du masque ne s'appliquent plus).
+/// Sert à « Voir la zone du masque » ; jamais enregistré.
+MaskMap zoneView(MaskMap m) => <String, dynamic>{
+      ...m,
+      'enabled': true,
+      'adj': <String, dynamic>{for (final String k in kLocalKeys) k: 0.0, 'exposure': 0.6, 'temperature': 100.0, 'tint': 100.0},
+    };
 
 /// Type de la première composante (`linear`, `radial`, …) ou ''.
 String maskKind(MaskMap m) => '${mainComp(m)?['kind'] ?? ''}';

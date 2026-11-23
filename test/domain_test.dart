@@ -457,4 +457,47 @@ void main() {
     h.redo();
     expect(adjOf(h.currentMasks.first, 'exposure'), 1.5);
   });
+  test('masques manuels : plages, composantes, pipette et vue de la zone', () {
+    final MaskMap lum = rangeMask('Lum', kLuminance);
+    expect(maskKind(lum), kLuminance);
+    expect(mainComp(lum)!['hi'], 0.4);
+    expect(maskIsNeutral(lum), isTrue);
+    final MaskMap col = rangeMask('Col', kColor);
+    expect(mainComp(col)!['hue_range'], 30.0);
+    expect(isRangeKind(kColor), isTrue);
+    expect(isRangeKind(kLinear), isFalse);
+
+    // composantes : ajouter, changer, retirer (une au moins reste)
+    final MaskMap two = addComp(lum, defaultComp(kRadial, op: 'subtract'));
+    expect(compsOf(two).length, 2);
+    expect(compAt(two, 1)!['op'], 'subtract');
+    expect(compAt(two, 5), isNull);
+    final MaskMap moved = withCompAt(two, 1, <String, dynamic>{'x0': 0.2});
+    expect(compAt(moved, 1)!['x0'], 0.2);
+    expect(compAt(two, 1)!['x0'], 0.5); // l'original n'a pas bougé
+    expect(compsOf(removeCompAt(moved, 1)).length, 1);
+    expect(compsOf(removeCompAt(lum, 0)).length, 1);
+
+    // pipette : un carré rouge pur -> teinte 0, saturation 1 ; un gris -> saturation 0
+    final Uint8List px = Uint8List(4 * 4 * 4);
+    for (int i = 0; i < 16; i++) {
+      px[i * 4] = i < 8 ? 255 : 128;
+      px[i * 4 + 1] = i < 8 ? 0 : 128;
+      px[i * 4 + 2] = i < 8 ? 0 : 128;
+      px[i * 4 + 3] = 255;
+    }
+    final (double hue, double sat) = hueSatAt(px, 4, 4, 0.5, 0.0, half: 0);
+    expect(hue, closeTo(0, 1e-6));
+    expect(sat, closeTo(1, 1e-6));
+    final (double _, double sat2) = hueSatAt(px, 4, 4, 0.5, 1.0, half: 0);
+    expect(sat2, closeTo(0, 1e-6));
+    final Uint8List green = Uint8List.fromList(<int>[0, 255, 0, 255]);
+    expect(hueSatAt(green, 1, 1, 0.5, 0.5).$1, closeTo(120, 1e-6));
+
+    // vue de la zone : réglages remplacés, zone rougie ; l'original est intact
+    final MaskMap zone = zoneView(withAdj(lum, 'contrast', 40));
+    expect(adjOf(zone, 'exposure'), 0.6);
+    expect(adjOf(zone, 'contrast'), 0);
+    expect(adjOf(lum, 'exposure'), 0);
+  });
 }

@@ -503,6 +503,90 @@ mod tests {
         assert!(maxdiff(&neutre, e.output()) <= 1);
     }
 
+
+    fn aplat(w: usize, h: usize, left: [u8; 3], right: [u8; 3]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(w * h * 4);
+        for _ in 0..h {
+            for x in 0..w {
+                let c = if x < w / 2 { left } else { right };
+                v.extend_from_slice(&[c[0], c[1], c[2], 255]);
+            }
+        }
+        v
+    }
+
+    fn canal(rgba: &[u8], w: usize, x0: usize, x1: usize, c: usize) -> f64 {
+        let mut s = 0u64;
+        let mut n = 0u64;
+        for y in 0..(rgba.len() / 4 / w) {
+            for x in x0..x1 {
+                s += rgba[(y * w + x) * 4 + c] as u64;
+                n += 1;
+            }
+        }
+        s as f64 / n as f64
+    }
+
+    #[test]
+    fn la_plage_de_luminosite_ne_touche_que_les_tons_sombres() {
+        let (w, h) = (96usize, 96usize);
+        let src = photo(w, h);
+        let mut e = Engine::open_rgba8(&src, w, h).unwrap();
+        let lum = r#"{"kind":"luminance","op":"add","invert":false,"lo":0.0,"hi":0.4,"smooth":0.3}"#;
+        e.render(&masque(lum, 2.0)).unwrap();
+        let out = e.output().to_vec();
+        let (d_in, d_out) = (lum_zone(&src, w, 0, 12, 0, 12), lum_zone(&out, w, 0, 12, 0, 12));
+        let (c_in, c_out) = (lum_zone(&src, w, 84, 96, 84, 96), lum_zone(&out, w, 84, 96, 84, 96));
+        assert!(d_out > d_in + 20.0, "les tons sombres doivent s'éclaircir : {d_in} -> {d_out}");
+        assert!((c_out - c_in).abs() < 2.0, "les tons clairs ne doivent pas bouger : {c_in} -> {c_out}");
+    }
+
+    #[test]
+    fn la_plage_de_couleur_ne_touche_que_la_teinte_visee() {
+        let (w, h) = (64usize, 32usize);
+        let src = aplat(w, h, [200, 30, 30], [30, 200, 30]);
+        let mut e = Engine::open_rgba8(&src, w, h).unwrap();
+        let col = r#"{"kind":"color","op":"add","invert":false,"hue":0.0,"hue_range":40.0,"sat_min":0.3}"#;
+        e.render(&masque(col, -2.0)).unwrap();
+        let out = e.output().to_vec();
+        assert!(canal(&out, w, 0, 28, 0) < canal(&src, w, 0, 28, 0) - 40.0, "le rouge doit s'assombrir");
+        assert!((canal(&out, w, 36, 64, 1) - canal(&src, w, 36, 64, 1)).abs() < 2.0, "le vert ne doit pas bouger");
+    }
+
+    #[test]
+    fn limiter_a_et_soustraire_combinent_les_composantes() {
+        let (w, h) = (96usize, 96usize);
+        let src = photo(w, h);
+        let mut e = Engine::open_rgba8(&src, w, h).unwrap();
+        let lin = r#"{"kind":"radial","op":"add","invert":false,"x0":0.5,"y0":0.5,"rx":5.0,"ry":5.0,"angle":0.0,"feather":0.5}"#;
+        let lum = r#"{"kind":"luminance","op":"intersect","invert":false,"lo":0.0,"hi":0.4,"smooth":0.3}"#;
+        // une forme qui couvre toute la photo, limitée aux tons sombres : seul le coin sombre bouge
+        e.render(&masque(&format!("{lin},{lum}"), 2.0)).unwrap();
+        let out = e.output().to_vec();
+        assert!(lum_zone(&out, w, 0, 12, 0, 12) > lum_zone(&src, w, 0, 12, 0, 12) + 15.0);
+        assert!((lum_zone(&out, w, 84, 96, 84, 96) - lum_zone(&src, w, 84, 96, 84, 96)).abs() < 2.0);
+        // la même forme moins les tons sombres : l'inverse
+        let sous = lum.replace("intersect", "subtract");
+        e.render(&masque(&format!("{lin},{sous}"), 2.0)).unwrap();
+        let out2 = e.output().to_vec();
+        assert!((lum_zone(&out2, w, 0, 12, 0, 12) - lum_zone(&src, w, 0, 12, 0, 12)).abs() < 2.0);
+    }
+
+    #[test]
+    fn la_vue_de_la_zone_rougit_ce_que_le_masque_couvre() {
+        let (w, h) = (64usize, 32usize);
+        let src = aplat(w, h, [120, 120, 120], [120, 120, 120]);
+        let mut e = Engine::open_rgba8(&src, w, h).unwrap();
+        let lum = r#"{"kind":"luminance","op":"add","invert":false,"lo":0.0,"hi":1.0,"smooth":0.3}"#;
+        let json = format!(
+            r#"{{"masks":[{{"name":"Zone","enabled":true,"invert":false,"amount":100.0,"comps":[{lum}],"adj":{{"exposure":0.6,"temperature":100.0,"tint":100.0,"contrast":0.0,"highlights":0.0,"shadows":0.0,"vibrance":0.0,"saturation":0.0,"clarity":0.0,"texture":0.0,"sharpen":0.0,"denoise":0.0}}}}]}}"#
+        );
+        e.render(&json).unwrap();
+        let out = e.output().to_vec();
+        let (r, g, b) = (canal(&out, w, 0, w, 0), canal(&out, w, 0, w, 1), canal(&out, w, 0, w, 2));
+        assert!(r > g + 25.0 && r > b + 25.0, "la zone doit dominer en rouge : {r} {g} {b}");
+    }
+
     #[test]
     fn version_et_erreur_vide() {
         let v = unsafe { CStr::from_ptr(sursaut_engine_version()) }.to_str().unwrap();
