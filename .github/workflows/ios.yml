@@ -53,6 +53,20 @@ jobs:
           cp -R /tmp/sauvegarde/lib /tmp/sauvegarde/test ./
           cp /tmp/sauvegarde/pubspec.yaml /tmp/sauvegarde/analysis_options.yaml ./
 
+      # MediaPipe (maillage du visage à 478 points, Google, Apache 2.0) : demande iOS 15 au minimum, et le modèle
+      # « face_landmarker.task » est téléchargé ici puis mis dans l'application (il n'est pas dans le dépôt).
+      - name: MediaPipe (iOS 15 et modèle du visage)
+        run: |
+          sed -i '' -E "s/^#? *platform :ios, .*/platform :ios, '15.0'/" ios/Podfile
+          grep -n "^platform :ios, '15.0'" ios/Podfile
+          sed -i '' -E 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 15.0;/g' ios/Runner.xcodeproj/project.pbxproj
+          plutil -replace MinimumOSVersion -string "15.0" ios/Flutter/AppFrameworkInfo.plist
+          mkdir -p packages/pencil_bridge/ios/Assets
+          curl -fL --retry 3 -o packages/pencil_bridge/ios/Assets/face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+          ls -l packages/pencil_bridge/ios/Assets/face_landmarker.task
+          shasum -a 256 packages/pencil_bridge/ios/Assets/face_landmarker.task
+          test "$(head -c 2 packages/pencil_bridge/ios/Assets/face_landmarker.task)" = "PK"
+
       # Logo de Sursaut : on remplace l'icône Flutter par assets/app_icon_1024.png (carré, sans transparence,
       # comme l'exige iOS) en fabriquant toutes les tailles listées par le modèle Flutter.
       - name: Icône de l'application

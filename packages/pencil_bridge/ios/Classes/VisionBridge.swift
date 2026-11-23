@@ -2,6 +2,9 @@ import Flutter
 import UIKit
 import Vision
 import CoreVideo
+#if canImport(MediaPipeTasksVision)
+import MediaPipeTasksVision
+#endif
 
 /// Détourage par Vision (Apple) : sujet principal ou personnes, sans fichier de modèle.
 ///
@@ -120,6 +123,17 @@ final class VisionBridge {
     guard let image = makeImage(rgba, width, height) else {
       return ["error": "Image illisible pour le repérage des visages."]
     }
+    // d'abord MediaPipe (478 points, contours fins) ; sinon repli sur Vision (76 points) avec la raison du repli
+    var fineNote = ""
+    #if canImport(MediaPipeTasksVision)
+    let fine = fineFaces(image: image)
+    if let list = fine.faces, !list.isEmpty {
+      return ["faces": list, "source": "mediapipe"]
+    }
+    fineNote = fine.note ?? "MediaPipe n'a trouvé aucun visage."
+    #else
+    fineNote = "MediaPipe n'est pas dans cette version de l'application."
+    #endif
     let handler = VNImageRequestHandler(cgImage: image, options: [:])
     let request = VNDetectFaceLandmarksRequest()
     do {
@@ -160,8 +174,86 @@ final class VisionBridge {
     if faces.isEmpty {
       return ["error": "Aucun visage exploitable."]
     }
-    return ["faces": faces]
+    return ["faces": faces, "source": "vision", "note": fineNote]
   }
+
+  /// Le fichier du modèle MediaPipe « face_landmarker.task » (mis dans l'application par le workflow), ou nil.
+  private static func faceModelPath() -> String? {
+    for b in [Bundle(for: VisionBridge.self), Bundle.main] {
+      if let p = b.path(forResource: "face_landmarker", ofType: "task") { return p }
+    }
+    return nil
+  }
+
+  #if canImport(MediaPipeTasksVision)
+  /// Les contours du maillage à 478 points de MediaPipe, dans l'ordre du tour (numéros de points connus du Face Mesh).
+  private static let meshRings: [(String, [Int])] = [
+    ("rightEye", [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7]),
+    ("leftEye", [263, 466, 388, 387, 386, 385, 384, 398, 362, 382, 381, 380, 374, 373, 390, 249]),
+    ("rightBrow", [70, 63, 105, 66, 107, 55, 65, 52, 53, 46]),
+    ("leftBrow", [300, 293, 334, 296, 336, 285, 295, 282, 283, 276]),
+    ("outerLips", [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146]),
+    ("innerLips", [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95]),
+    ("contour", [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109]),
+  ]
+
+  /// Les visages vus par MediaPipe : mêmes clés que Vision (suites x, y en fractions de la photo) plus « fine ».
+  private static func fineFaces(image: CGImage) -> (faces: [[String: Any]]?, note: String?) {
+    guard let path = faceModelPath() else {
+      return (nil, "Le modèle MediaPipe du visage n'est pas dans l'application.")
+    }
+    // photo réduite à 1536 px au plus : plus rapide, et les repères sont en fractions donc indépendants de la taille
+    var work = image
+    let longSide = max(image.width, image.height)
+    if longSide > 1536 {
+      let scale = 1536.0 / Double(longSide)
+      let nw = max(1, Int(Double(image.width) * scale))
+      let nh = max(1, Int(Double(image.height) * scale))
+      if let ctx = CGContext(
+        data: nil, width: nw, height: nh, bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+      {
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: nw, height: nh))
+        if let small = ctx.makeImage() { work = small }
+      }
+    }
+    do {
+      let options = FaceLandmarkerOptions()
+      options.baseOptions.modelAssetPath = path
+      options.runningMode = .image
+      options.numFaces = 10
+      let landmarker = try FaceLandmarker(options: options)
+      let mpImage = try MPImage(uiImage: UIImage(cgImage: work))
+      let result = try landmarker.detect(image: mpImage)
+      var faces: [[String: Any]] = []
+      for marks in result.faceLandmarks {
+        if marks.count < 468 { continue }
+        var x0 = 1.0, y0 = 1.0, x1 = 0.0, y1 = 0.0
+        for m in marks {
+          x0 = min(x0, Double(m.x))
+          y0 = min(y0, Double(m.y))
+          x1 = max(x1, Double(m.x))
+          y1 = max(y1, Double(m.y))
+        }
+        var face: [String: Any] = ["x0": x0, "y0": y0, "x1": x1, "y1": y1, "fine": true]
+        for (name, ring) in meshRings {
+          var values: [Double] = []
+          for i in ring {
+            values.append(Double(marks[i].x))
+            values.append(Double(marks[i].y))
+          }
+          face[name] = values
+        }
+        faces.append(face)
+      }
+      if faces.isEmpty { return (nil, "MediaPipe n'a trouvé aucun visage.") }
+      return (faces, nil)
+    } catch {
+      return (nil, "MediaPipe a échoué : \(error.localizedDescription)")
+    }
+  }
+  #endif
 
   /// Les personnes repérées : pour chacune son cadre et un point à l'intérieur de sa silhouette (fractions de la photo).
   static func listPersons(rgba: Data, width: Int, height: Int) -> [String: Any] {

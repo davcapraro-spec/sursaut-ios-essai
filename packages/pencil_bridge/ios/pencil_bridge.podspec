@@ -14,7 +14,10 @@ Pod::Spec.new do |s|
   # LibRaw est du C++ : la bibliothèque standard du C++ doit être liée à l'application.
   s.libraries = 'c++'
   s.dependency 'Flutter'
-  s.platform         = :ios, '13.0'
+  # Maillage du visage à 478 points (Google, Apache 2.0). Le modèle « face_landmarker.task » est mis dans Assets/ par le workflow.
+  s.dependency 'MediaPipeTasksVision'
+  s.resources        = ['Assets/*.task']
+  s.platform         = :ios, '15.0'
   s.swift_version    = '5.0'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
 end

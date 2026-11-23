@@ -1348,7 +1348,7 @@ class _DevelopPageState extends State<DevelopPage> {
       Padding(
         padding: const EdgeInsets.only(top: 4),
         child: Text(
-          _targetPerson == null ? 'Touchez d\'abord la pastille d\'une personne.' : 'Pour la personne choisie (zones calculées par iPadOS).',
+          _targetPerson == null ? 'Touchez d\'abord la pastille d\'une personne.' : 'Pour la personne choisie (repérage MediaPipe si disponible, sinon iPadOS).',
           style: hint,
         ),
       ),
@@ -1415,6 +1415,7 @@ class _DevelopPageState extends State<DevelopPage> {
       final Map<String, List<double>> marks = <String, List<double>>{
         ...face.parts,
         'box': <double>[face.x0, face.y0, face.x1, face.y1],
+        if (face.fine) 'fine': <double>[1],
       };
       final PartShape? shape = partShape(marks, part);
       if (shape == null) {
@@ -1457,6 +1458,7 @@ class _DevelopPageState extends State<DevelopPage> {
       });
       _commit();
       _refresh();
+      _say(face.fine ? 'Repérage MediaPipe (478 points).' : 'Repérage iPadOS (76 points) — ${found.note}');
     } catch (e) {
       _say('Sélection impossible : $e');
     } finally {

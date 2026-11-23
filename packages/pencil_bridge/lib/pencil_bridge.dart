@@ -140,9 +140,12 @@ class VisionPersons {
 
 /// Un visage repéré : son cadre (x0, y0, x1, y1) et ses repères, chacun une suite x, y, x, y… en fractions de la photo.
 class VisionFace {
-  const VisionFace(this.x0, this.y0, this.x1, this.y1, this.parts);
+  const VisionFace(this.x0, this.y0, this.x1, this.y1, this.parts, {this.fine = false});
 
   final double x0, y0, x1, y1;
+
+  /// Vrai si les repères viennent de MediaPipe (478 points, contours fins), faux pour Vision (76 points).
+  final bool fine;
 
   /// `leftEye`, `rightEye`, `leftBrow`, `rightBrow`, `outerLips`, `innerLips`, `contour` (certains peuvent manquer).
   final Map<String, List<double>> parts;
@@ -150,10 +153,13 @@ class VisionFace {
 
 /// Les visages repérés par Vision, ou un message d'erreur.
 class VisionFaces {
-  const VisionFaces({this.faces = const <VisionFace>[], this.error});
+  const VisionFaces({this.faces = const <VisionFace>[], this.error, this.note = ''});
 
   final List<VisionFace> faces;
   final String? error;
+
+  /// Pourquoi MediaPipe n'a pas servi (repli sur Vision), sinon vide.
+  final String note;
 }
 
 /// Détourage par Vision (Apple) : sujet principal ou personnes, sans fichier de modèle (iPadOS 17 ou plus).
@@ -186,9 +192,9 @@ class VisionBridge {
             parts[k] = <double>[for (final Object? n in raw) if (n is num) n.toDouble()];
           }
         }
-        out.add(VisionFace(v('x0'), v('y0'), v('x1'), v('y1'), parts));
+        out.add(VisionFace(v('x0'), v('y0'), v('x1'), v('y1'), parts, fine: e['fine'] == true));
       }
-      return VisionFaces(faces: out);
+      return VisionFaces(faces: out, note: '${r['note'] ?? ''}');
     } on MissingPluginException {
       return const VisionFaces(error: 'Repérage des visages indisponible (pas un iPad).');
     } on PlatformException catch (e) {

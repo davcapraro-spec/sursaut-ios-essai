@@ -626,5 +626,27 @@ void main() {
     expect(yeux, isNotNull);
     expect(yeux!.add.length, 2);
     expect(kFacePartNames.keys, containsAll(<String>['skin', 'eyes', 'brows', 'lips']));
+    // repères fins (MediaPipe) : la zone suit le contour fermé, sans trait épaissi
+    const List<double> oeil = <double>[0.3, 0.3, 0.35, 0.28, 0.4, 0.3, 0.35, 0.32];
+    final PartShape? fin = partShape(<String, List<double>>{
+      'box': <double>[0.2, 0.2, 0.6, 0.7],
+      'fine': <double>[1],
+      'leftEye': oeil,
+      'rightEye': <double>[0.45, 0.3, 0.5, 0.28, 0.55, 0.3, 0.5, 0.32],
+      'leftBrow': <double>[0.3, 0.25, 0.4, 0.24, 0.4, 0.26, 0.3, 0.27],
+      'contour': <double>[0.2, 0.2, 0.6, 0.2, 0.6, 0.7, 0.2, 0.7],
+      'outerLips': <double>[0.3, 0.55, 0.5, 0.55, 0.4, 0.6],
+      'innerLips': <double>[0.35, 0.56, 0.45, 0.56, 0.4, 0.58],
+    }, 'skin');
+    expect(fin, isNotNull);
+    expect(fin!.add.length, 1);
+    expect(fin.sub.length, 4);
+    final PartShape? sourcil = partShape(<String, List<double>>{
+      'box': <double>[0.2, 0.2, 0.6, 0.7],
+      'fine': <double>[1],
+      'leftBrow': <double>[0.3, 0.25, 0.4, 0.24, 0.4, 0.26, 0.3, 0.27],
+    }, 'brows');
+    expect(sourcil, isNotNull);
+    expect(sourcil!.add.length, 1);
   });
 }
