@@ -17,6 +17,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
 import '../../domain/ai_masks.dart';
+import '../../common/app_version.dart';
 import '../../domain/crop_math.dart';
 import '../../domain/face_parts.dart';
 import '../../domain/curves.dart';
@@ -2747,7 +2748,7 @@ class _DevelopPageState extends State<DevelopPage> {
                   ? 'Moteur Rust ABSENT : ${_info.error}'
                   : _loading.isNotEmpty
                       ? _loading
-                      : 'Moteur Rust chargé : ${_info.version}',
+                      : 'Version $kAppVersion · Moteur Rust chargé : ${_info.version}',
           style: TextStyle(color: bad ? Colors.redAccent : Colors.greenAccent),
         ),
       ),

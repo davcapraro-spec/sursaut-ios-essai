@@ -57,7 +57,7 @@ class HomePage extends StatelessWidget {
                               textAlign: TextAlign.center,
                             ),
                             const SizedBox(height: 6),
-                            const Text('Version $kAppVersion', style: TextStyle(fontSize: 12, color: Colors.white54)),
+                            const Text('Version $kAppVersion', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.white70)),
                           ],
                         ),
                       ],

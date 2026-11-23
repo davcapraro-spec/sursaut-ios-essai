@@ -1,7 +1,7 @@
 name: sursaut_essai
 description: "Sursaut iPad : application d'essai de l'étape 0 (chaîne de compilation et d'installation)."
 publish_to: "none"
-version: 0.20.3+62
+version: 0.20.4+63
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
