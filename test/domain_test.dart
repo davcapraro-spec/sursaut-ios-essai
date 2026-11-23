@@ -3,8 +3,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sursaut_essai/domain/crop_math.dart';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:sursaut_essai/domain/curves.dart';
+import 'package:sursaut_essai/domain/histogram.dart';
 import 'package:sursaut_essai/domain/lens_profiles.dart';
 import 'package:sursaut_essai/domain/masks.dart';
 import 'package:sursaut_essai/domain/develop_params.dart';
@@ -318,5 +320,42 @@ void main() {
     expect(h.currentMasks, isEmpty);
     h.redo();
     expect(h.currentMasks.length, 2);
+  });
+
+  test('histogramme : classes, écrêtage et échantillonnage', () {
+    // image 4×2 : deux pixels noirs, deux blancs, quatre gris moyen
+    final Uint8List px = Uint8List.fromList(<int>[
+      0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, //
+      128, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255,
+    ]);
+    final Histogram h = Histogram.of(px, 4, 2);
+    expect(h.count, 8);
+    expect(h.r[0], 2);
+    expect(h.r[255], 2);
+    expect(h.g[128], 4);
+    expect(h.l[128], 4);
+    expect(h.shadowClip, closeTo(0.25, 1e-9));
+    expect(h.highlightClip, closeTo(0.25, 1e-9));
+    expect(h.shadowsClipped, isTrue);
+    expect(h.highlightsClipped, isTrue);
+
+    // une image sans extrêmes n'allume aucune alerte
+    final Histogram mid = Histogram.of(Uint8List.fromList(<int>[100, 110, 120, 255, 90, 95, 99, 255]), 2, 1);
+    expect(mid.shadowsClipped, isFalse);
+    expect(mid.highlightsClipped, isFalse);
+
+    // grande image : l'échantillonnage borne le nombre de pixels lus
+    final Histogram big = Histogram.of(Uint8List(2000 * 1500 * 4), 2000, 1500, maxSamples: 10000);
+    expect(big.count, lessThanOrEqualTo(12000));
+    expect(big.count, greaterThan(2000));
+
+    // données incomplètes : histogramme vide, sans erreur
+    expect(Histogram.of(Uint8List(4), 10, 10).count, 0);
+
+    // courbe : hauteurs entre 0 et 1, référence jamais nulle
+    final List<double> c = Histogram.curve(h.l, Histogram.reference(h.l));
+    expect(c.length, 256);
+    expect(c.every((double v) => v >= 0 && v <= 1), isTrue);
+    expect(Histogram.reference(List<int>.filled(256, 0)), 1.0);
   });
 }

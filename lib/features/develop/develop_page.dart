@@ -16,6 +16,7 @@ import '../../engine/engine.dart';
 import '../../domain/crop_math.dart';
 import '../../domain/curves.dart';
 import '../../domain/develop_params.dart';
+import '../../domain/histogram.dart';
 import '../../domain/lens_profiles.dart';
 import '../../domain/masks.dart';
 import '../../domain/shoot_info.dart';
@@ -25,6 +26,7 @@ import '../../domain/spots.dart';
 import '../../domain/sidecar.dart';
 import 'crop_overlay.dart';
 import 'curve_editor.dart';
+import 'histogram_view.dart';
 import 'spot_overlay.dart';
 
 /// Écran Développement : aperçu rendu par le moteur Rust, curseurs, recadrage,
@@ -126,12 +128,62 @@ class _DevelopPageState extends State<DevelopPage> {
   bool _busy = false;
   bool _dirty = false;
   int _renderMs = -1;
+
+  /// Histogramme de l'image affichée (petit encart sur la photo) ; choix mémorisés dans preferences.json.
+  Histogram? _hist;
+  bool _histVisible = true;
+  bool _histLum = false;
   int _imageMs = -1;
 
   @override
   void initState() {
     super.initState();
     _info = EngineInfo.probe();
+    _loadPrefs();
+  }
+
+  Future<File> _prefsFile() async {
+    final Directory base = await getApplicationDocumentsDirectory();
+    return File('${base.path}/preferences.json');
+  }
+
+  Future<void> _loadPrefs() async {
+    try {
+      final File f = await _prefsFile();
+      if (!await f.exists()) return;
+      final Object? j = jsonDecode(await f.readAsString());
+      if (j is Map<String, dynamic> && mounted) {
+        setState(() {
+          _histVisible = j['histogram_visible'] != false;
+          _histLum = j['histogram_mode'] == 'lum';
+        });
+        if (_histVisible) _refresh();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _savePrefs() async {
+    try {
+      final File f = await _prefsFile();
+      await f.writeAsString(jsonEncode(<String, dynamic>{
+        'histogram_visible': _histVisible,
+        'histogram_mode': _histLum ? 'lum' : 'rgb',
+      }));
+    } catch (_) {}
+  }
+
+  void _setHistVisible(bool v) {
+    setState(() {
+      _histVisible = v;
+      if (!v) _hist = null;
+    });
+    _savePrefs();
+    if (v) _refresh();
+  }
+
+  void _setHistMode(bool lum) {
+    setState(() => _histLum = lum);
+    _savePrefs();
   }
 
   Future<void> _useRgba(Uint8List rgba, int w, int h, String name) async {
@@ -626,6 +678,7 @@ class _DevelopPageState extends State<DevelopPage> {
           h = r.height;
         }
         final int renderMs = sw.elapsedMilliseconds;
+        final Histogram? hist = _histVisible ? Histogram.of(out, w, h) : null;
         sw.reset();
         final Completer<ui.Image> done = Completer<ui.Image>();
         ui.decodeImageFromPixels(out, w, h, ui.PixelFormat.rgba8888, done.complete);
@@ -635,6 +688,7 @@ class _DevelopPageState extends State<DevelopPage> {
         final ui.Image? old = _shown;
         setState(() {
           _shown = img;
+          _hist = hist;
           _renderMs = renderMs;
           _imageMs = imageMs;
           _error = null;
@@ -1435,6 +1489,24 @@ class _DevelopPageState extends State<DevelopPage> {
         _toolButton('crop', Icons.crop, 'Recadrer', onTap: ready && !_cropMode ? _enterCrop : null),
       ];
 
+  /// La photo, avec l'histogramme en haut à droite (ou sa pastille quand il est masqué).
+  Widget _photoStack() {
+    final Widget area = _photoArea();
+    if (_shown == null || _cropMode) return area;
+    return Stack(
+      children: <Widget>[
+        Positioned.fill(child: area),
+        Positioned(
+          top: 12,
+          right: 12,
+          child: _histVisible
+              ? HistogramView(data: _hist, luminosity: _histLum, onMode: _setHistMode, onHide: () => _setHistVisible(false))
+              : HistogramChip(onShow: () => _setHistVisible(true)),
+        ),
+      ],
+    );
+  }
+
   Widget _photoArea() {
     if (_shown == null) {
       return const Center(child: Text('Touchez « Image d\'essai » ou « Ouvrir ».'));
@@ -1576,7 +1648,7 @@ class _DevelopPageState extends State<DevelopPage> {
                 child: Column(
                   children: <Widget>[
                     _banner(),
-                    Expanded(child: _photoArea()),
+                    Expanded(child: _photoStack()),
                   ],
                 ),
               ),
@@ -1597,7 +1669,7 @@ class _DevelopPageState extends State<DevelopPage> {
         : Column(
             children: <Widget>[
               _banner(),
-              Expanded(child: _photoArea()),
+              Expanded(child: _photoStack()),
               Container(
                 color: Theme.of(context).colorScheme.surface,
                 padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
