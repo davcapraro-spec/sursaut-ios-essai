@@ -23,5 +23,8 @@ Pod::Spec.new do |s|
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'OTHER_LDFLAGS' => '$(inherited) -ObjC -framework MediaPipeTasksVision -framework MediaPipeTasksCommon',
+    # Le moteur de MediaPipe (TensorFlow Lite, abseil) est dans ce fichier à part : MediaPipe demande de le charger en entier.
+    'OTHER_LDFLAGS[sdk=iphoneos*]' => '$(inherited) -force_load "$(PODS_ROOT)/MediaPipeTasksCommon/frameworks/graph_libraries/libMediaPipeTasksCommon_device_graph.a"',
+    'OTHER_LDFLAGS[sdk=iphonesimulator*]' => '$(inherited) -force_load "$(PODS_ROOT)/MediaPipeTasksCommon/frameworks/graph_libraries/libMediaPipeTasksCommon_simulator_graph.a"',
   }
 end
