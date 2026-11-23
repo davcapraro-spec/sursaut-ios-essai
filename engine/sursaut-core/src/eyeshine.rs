@@ -248,12 +248,41 @@ pub fn find_eyeshine(rgb: &[u8], w0: usize, h0: usize, max_eyes: usize) -> Vec<E
         let mut bv: Vec<f32> = pix.iter().map(|&p| bb[p]).collect();
         let mut cv: Vec<f32> = pix.iter().map(|&p| chroma[p]).collect();
         let (ma, mb, mc) = (median(&mut av), median(&mut bv), median(&mut cv));
+        // une vraie pupille baigne dans la peau et le blanc de l'œil ; un morceau de rouge enfermé dans un logo ou une lettre baigne dans une grande zone de la même couleur
+        let hue = hue_name(ma, mb);
+        let far = (((r * 7.0) as usize) | 1).max(ks + 2);
+        let fhalf = far / 2;
+        let (hx0, hy0) = (x0.saturating_sub(fhalf + 1), y0.saturating_sub(fhalf + 1));
+        let (hx1, hy1) = ((x1 + fhalf + 2).min(w), (y1 + fhalf + 2).min(h));
+        let (hw, hh) = (hx1 - hx0, hy1 - hy0);
+        let mut m2 = vec![false; hw * hh];
+        for &p in &pix {
+            m2[(p / w - hy0) * hw + (p % w - hx0)] = true;
+        }
+        let wide = dilate_square(&m2, hw, hh, fhalf);
+        let near = dilate_square(&m2, hw, hh, half);
+        let (mut same, mut total) = (0usize, 0usize);
+        for gy in 0..hh {
+            for gx in 0..hw {
+                let g = gy * hw + gx;
+                if wide[g] && !near[g] {
+                    total += 1;
+                    let q = (gy + hy0) * w + gx + hx0;
+                    if chroma[q] >= 0.8 * mc && hue_name(aa[q], bb[q]) == hue {
+                        same += 1;
+                    }
+                }
+            }
+        }
+        if total >= 16 && same as f32 > 0.15 * total as f32 {
+            continue;
+        }
         let score = (mc / 60.0).clamp(0.0, 1.0) * 0.4 + dark * 0.4 + pop * 0.2;
         found.push(Eye {
             x: sx / area as f64 / w as f64,
             y: sy / area as f64 / h as f64,
             r: (r * k / w0.max(h0) as f32) as f64,
-            hue: hue_name(ma, mb),
+            hue,
             score: score as f64,
             chroma: mc as f64,
         });
@@ -323,6 +352,32 @@ mod tests {
         assert_eq!(eyes[0].hue, "vert");
     }
 
+    /// Un pull rouge avec un logo noir : les petits morceaux de rouge entre les lettres ne sont pas des pupilles.
+    #[test]
+    fn ignore_le_rouge_enferme_dans_un_logo() {
+        let (w, h) = (600usize, 400usize);
+        let mut v = vec![0u8; w * h * 3];
+        for p in v.chunks_mut(3) {
+            p.copy_from_slice(&[170, 25, 25]); // pull rouge
+        }
+        // lettres noires avec de petits trous ronds de rouge
+        for &(cx, cy) in &[(150usize, 200usize), (260, 205), (370, 198), (480, 202)] {
+            for y in 0..h {
+                for x in 0..w {
+                    let d = (((x as f32 - cx as f32).powi(2) + (y as f32 - cy as f32).powi(2))).sqrt();
+                    let i = (y * w + x) * 3;
+                    if d <= 6.0 {
+                        v[i..i + 3].copy_from_slice(&[170, 25, 25]);
+                    } else if d <= 22.0 {
+                        v[i..i + 3].copy_from_slice(&[15, 12, 40]);
+                    }
+                }
+            }
+        }
+        let eyes = find_eyeshine(&v, w, h, 8);
+        assert!(eyes.is_empty(), "{eyes:?}");
+    }
+
     #[test]
     fn rien_dans_une_photo_sans_reflet() {
         let img = picture(500, 400, &[]);
@@ -338,5 +393,50 @@ mod tests {
         assert!(find_eyeshine(&big, 500, 400, 4).is_empty());
         // entrée trop petite ou tronquée : liste vide, pas de panique
         assert!(find_eyeshine(&[0u8; 12], 2, 2, 4).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod correction {
+    use super::*;
+    use crate::{Pipeline, Recipe};
+
+    /// Le masque d'œil (celui que fabrique l'application) retire bien la couleur de la pupille et laisse le reste.
+    #[test]
+    fn le_masque_d_oeil_corrige_la_pupille() {
+        let (w, h) = (400usize, 300usize);
+        let mut px = vec![0u8; w * h * 3];
+        for p in px.chunks_mut(3) {
+            p.copy_from_slice(&[200, 150, 130]); // peau
+        }
+        for y in 0..h {
+            for x in 0..w {
+                let d = (((x as f32 - 200.0).powi(2) + (y as f32 - 150.0).powi(2))).sqrt();
+                let i = (y * w + x) * 3;
+                if d <= 8.0 {
+                    px[i..i + 3].copy_from_slice(&[210, 40, 40]);
+                } else if d <= 20.0 {
+                    px[i..i + 3].copy_from_slice(&[18, 14, 12]);
+                }
+            }
+        }
+        let eyes = find_eyeshine(&px, w, h, 4);
+        assert_eq!(eyes.len(), 1, "{eyes:?}");
+        let e = &eyes[0];
+        let reach = e.r.max(0.002) * 1.6;
+        let json = format!(
+            r#"{{"masks":[{{"name":"Yeux · rouge","amount":100,"comps":[{{"kind":"radial","op":"add","x0":{},"y0":{},"rx":{reach},"ry":{reach},"feather":0.6}},{{"kind":"color","op":"intersect","hue":0,"hue_range":80,"sat_min":0.3}}],"adj":{{"saturation":-100,"exposure":-1.6}}}}]}}"#,
+            e.x, e.y
+        );
+        let r: Recipe = serde_json::from_str(&json).expect("recette valide");
+        let (ow, _oh, out) = Pipeline::from_u8(w, h, &px, false).render_u8(&r);
+        let at = |x: usize, y: usize| {
+            let i = (y * ow + x) * 3;
+            (out[i] as i32, out[i + 1] as i32, out[i + 2] as i32)
+        };
+        let (pr, pg, pb) = at(200, 150);
+        assert!(pr - pg.max(pb) < 25, "la pupille est encore rouge : {pr} {pg} {pb}");
+        assert!(pr < 150, "la pupille n'est pas assombrie : {pr}");
+        assert_eq!(at(20, 20), (200, 150, 130), "la peau ne doit pas bouger");
     }
 }
