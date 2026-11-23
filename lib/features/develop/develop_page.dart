@@ -1377,7 +1377,11 @@ class _DevelopPageState extends State<DevelopPage> {
       Uint8List? body;
       int bw = 0, bh = 0;
       final int at = _personMaskIndex(who);
-      final Object? bodyPng = at >= 0 ? mainComp(_masks[at])?['png'] : null;
+      Object? bodyPng;
+      if (at >= 0) {
+        final Map<String, dynamic>? bodyComp = mainComp(_masks[at]);
+        if (bodyComp != null) bodyPng = bodyComp['png'];
+      }
       if (bodyPng is String && bodyPng.isNotEmpty) {
         final (Uint8List, int, int)? d = pngToPlane(base64Decode(bodyPng));
         if (d != null) {
