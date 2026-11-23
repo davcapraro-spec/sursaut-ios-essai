@@ -8,9 +8,10 @@ import '../../domain/spots.dart';
 /// Photo entière (sans recadrage) avec les retouches de taches dessinées dessus.
 ///
 /// Toutes les positions sont des fractions de la photo. Gestes :
-/// - outil « Clic » : toucher une zone vide ajoute une retouche ; toucher un cercle le choisit ;
+/// - un doigt, outil « Toucher » : toucher une zone vide ajoute une retouche ; toucher un cercle le choisit ;
 ///   glisser le cercle de la retouche choisie la déplace, glisser son petit cercle « source » change la zone copiée ;
-/// - outil « Pinceau » : glisser sur la photo trace une seule retouche qui suit le trait.
+/// - un doigt, outil « Pinceau » : glisser sur la photo trace une seule retouche qui suit le trait ;
+/// - deux doigts : pincer pour zoomer, glisser pour déplacer la photo (ou boutons + / − en bas à droite).
 class SpotOverlay extends StatefulWidget {
   const SpotOverlay({
     super.key,
@@ -49,6 +50,7 @@ class SpotOverlay extends StatefulWidget {
 
 class _SpotOverlayState extends State<SpotOverlay> {
   static const double _grab = 34;
+  static const double _maxZoom = 10;
 
   String? _drag; // 'target' | 'source' | 'stroke'
   int _dragIndex = -1;
@@ -56,22 +58,61 @@ class _SpotOverlayState extends State<SpotOverlay> {
   bool _moved = false;
   final List<List<double>> _stroke = <List<double>>[];
 
+  // Zoom : la photo affichée est la photo « ajustée » agrandie de _zoom, centrée sur le centre de la zone + _pan.
+  double _zoom = 1;
+  Offset _pan = Offset.zero;
+  Size _box = Size.zero;
+  Rect _fitRect = Rect.zero;
+  final Map<int, Offset> _pointers = <int, Offset>{};
+  bool _pinching = false; // deux doigts posés : zoom et déplacement
+  bool _blocked = false; // après un pincement, le doigt restant est ignoré jusqu'à ce que tout soit levé
+  double _pinchD0 = 1;
+  Offset _pinchM0 = Offset.zero;
+  double _pinchZoom0 = 1;
+  Offset _pinchPan0 = Offset.zero;
+
   Rect _fit(Size box) {
     final double iw = widget.image.width.toDouble(), ih = widget.image.height.toDouble();
     final double s = math.min(box.width / iw, box.height / ih);
     return Rect.fromLTWH((box.width - iw * s) / 2, (box.height - ih * s) / 2, iw * s, ih * s);
   }
 
+  /// Rectangle de la photo à l'écran, zoom et déplacement compris.
+  Rect _view() => Rect.fromCenter(
+        center: Offset(_box.width / 2, _box.height / 2) + _pan,
+        width: _fitRect.width * _zoom,
+        height: _fitRect.height * _zoom,
+      );
+
+  Offset _clampPan(Offset pan, double zoom) {
+    final double mx = math.max(0.0, (_fitRect.width * zoom - _box.width) / 2);
+    final double my = math.max(0.0, (_fitRect.height * zoom - _box.height) / 2);
+    return Offset(pan.dx.clamp(-mx, mx).toDouble(), pan.dy.clamp(-my, my).toDouble());
+  }
+
+  void _zoomBy(double factor) {
+    final double z = (_zoom * factor).clamp(1.0, _maxZoom).toDouble();
+    setState(() {
+      _pan = _clampPan(_pan * (z / _zoom), z);
+      _zoom = z;
+    });
+  }
+
+  void _zoomReset() => setState(() {
+        _zoom = 1;
+        _pan = Offset.zero;
+      });
+
   List<double> _frac(Rect img, Offset p) => <double>[
-        ((p.dx - img.left) / img.width).clamp(0.0, 1.0),
-        ((p.dy - img.top) / img.height).clamp(0.0, 1.0),
+        ((p.dx - img.left) / img.width).clamp(0.0, 1.0).toDouble(),
+        ((p.dy - img.top) / img.height).clamp(0.0, 1.0).toDouble(),
       ];
 
   Offset _px(Rect img, double fx, double fy) => Offset(img.left + fx * img.width, img.top + fy * img.height);
 
   double _radiusPx(Rect img, double r) => math.max(r * math.max(img.width, img.height), 6);
 
-  /// Rétouche touchée à la position p (la plus proche), ou -1.
+  /// Retouche touchée à la position p (la plus proche), ou -1.
   int _hitSpot(Rect img, Offset p) {
     int best = -1;
     double bestD = double.infinity;
@@ -136,7 +177,7 @@ class _SpotOverlayState extends State<SpotOverlay> {
       setState(_stroke.clear);
       if (_moved && pts.length > 1) {
         widget.onStroke(pts);
-      } else {
+      } else if (pts.isNotEmpty) {
         widget.onAdd(pts.first[0], pts.first[1]); // simple appui avec le pinceau : une retouche ronde
       }
     } else if (_drag != null && _moved) {
@@ -153,28 +194,131 @@ class _SpotOverlayState extends State<SpotOverlay> {
     _drag = null;
   }
 
+  /// Un second doigt arrive : le geste d'un doigt en cours est abandonné (un déplacement déjà fait est validé).
+  void _cancelSingle() {
+    if (_drag != null && _drag != 'stroke' && _moved) widget.onMoveEnd();
+    _drag = null;
+    if (_stroke.isNotEmpty) setState(_stroke.clear);
+  }
+
+  void _onDown(PointerDownEvent e) {
+    _pointers[e.pointer] = e.localPosition;
+    if (_pointers.length == 2) {
+      _cancelSingle();
+      _pinching = true;
+      _blocked = true;
+      final List<Offset> pts = _pointers.values.toList();
+      _pinchD0 = math.max((pts[0] - pts[1]).distance, 1);
+      _pinchM0 = (pts[0] + pts[1]) / 2;
+      _pinchZoom0 = _zoom;
+      _pinchPan0 = _pan;
+      return;
+    }
+    if (_pointers.length > 2 || _blocked) return;
+    _down(_view(), e.localPosition);
+  }
+
+  void _onMove(PointerMoveEvent e) {
+    if (!_pointers.containsKey(e.pointer)) return;
+    _pointers[e.pointer] = e.localPosition;
+    if (_pinching && _pointers.length >= 2) {
+      final List<Offset> pts = _pointers.values.toList();
+      final double d = math.max((pts[0] - pts[1]).distance, 1);
+      final Offset m = (pts[0] + pts[1]) / 2;
+      final double z = (_pinchZoom0 * d / _pinchD0).clamp(1.0, _maxZoom).toDouble();
+      final Offset center = Offset(_box.width / 2, _box.height / 2);
+      final Offset q = (_pinchM0 - center - _pinchPan0) / _pinchZoom0; // point de la photo sous les doigts au départ
+      setState(() {
+        _zoom = z;
+        _pan = _clampPan(m - center - q * z, z);
+      });
+      return;
+    }
+    if (_blocked || _pointers.length != 1) return;
+    _update(_view(), e.localPosition);
+  }
+
+  void _onUp(PointerUpEvent e) {
+    if (_pointers.remove(e.pointer) == null) return;
+    if (_pinching) {
+      if (_pointers.length < 2) _pinching = false;
+      if (_pointers.isEmpty) _blocked = false;
+      return;
+    }
+    if (_blocked) {
+      if (_pointers.isEmpty) _blocked = false;
+      return;
+    }
+    _up(_view(), e.localPosition);
+  }
+
+  void _onCancel(PointerCancelEvent e) {
+    _pointers.remove(e.pointer);
+    _cancelSingle();
+    if (_pointers.isEmpty) {
+      _pinching = false;
+      _blocked = false;
+    }
+  }
+
+  Widget _zoomBar() {
+    return Material(
+      color: const Color(0xE61E1E21),
+      borderRadius: BorderRadius.circular(14),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          IconButton(
+            tooltip: 'Zoom arrière',
+            onPressed: _zoom > 1 ? () => _zoomBy(1 / 1.5) : null,
+            icon: const Icon(Icons.remove),
+          ),
+          TextButton(
+            onPressed: _zoom > 1 ? _zoomReset : null,
+            child: Text(_zoom > 1 ? '×${_zoom.toStringAsFixed(1).replaceAll('.', ',')}' : 'Ajusté'),
+          ),
+          IconButton(
+            tooltip: 'Zoom avant',
+            onPressed: _zoom < _maxZoom ? () => _zoomBy(1.5) : null,
+            icon: const Icon(Icons.add),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (BuildContext context, BoxConstraints c) {
-      final Size box = Size(c.maxWidth, c.maxHeight);
-      final Rect img = _fit(box);
-      return Listener(
-        behavior: HitTestBehavior.opaque,
-        onPointerDown: (PointerDownEvent e) => _down(img, e.localPosition),
-        onPointerMove: (PointerMoveEvent e) => _update(img, e.localPosition),
-        onPointerUp: (PointerUpEvent e) => _up(img, e.localPosition),
-        child: CustomPaint(
-          size: box,
-          painter: _SpotPainter(
-            image: widget.image,
-            img: img,
-            spots: widget.spots,
-            selected: widget.selected,
-            dust: widget.dust,
-            stroke: List<List<double>>.of(_stroke),
-            brushRadius: widget.brushRadius,
+      _box = Size(c.maxWidth, c.maxHeight);
+      _fitRect = _fit(_box);
+      _pan = _clampPan(_pan, _zoom);
+      final Rect view = _view();
+      return Stack(
+        children: <Widget>[
+          Positioned.fill(
+            child: Listener(
+              behavior: HitTestBehavior.opaque,
+              onPointerDown: _onDown,
+              onPointerMove: _onMove,
+              onPointerUp: _onUp,
+              onPointerCancel: _onCancel,
+              child: CustomPaint(
+                size: _box,
+                painter: _SpotPainter(
+                  image: widget.image,
+                  img: view,
+                  spots: widget.spots,
+                  selected: widget.selected,
+                  dust: widget.dust,
+                  stroke: List<List<double>>.of(_stroke),
+                  brushRadius: widget.brushRadius,
+                ),
+              ),
+            ),
           ),
-        ),
+          Positioned(right: 12, bottom: 12, child: _zoomBar()),
+        ],
       );
     });
   }
@@ -204,6 +348,7 @@ class _SpotPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    canvas.clipRect(Offset.zero & size);
     canvas.drawImageRect(
       image,
       Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),

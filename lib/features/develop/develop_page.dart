@@ -1106,6 +1106,11 @@ class _DevelopPageState extends State<DevelopPage> {
                 '${sel != null ? ' · une est choisie : glissez le cercle ou la zone copiée' : ''}',
         style: const TextStyle(fontSize: 12, color: Colors.white70),
       ),
+      const SizedBox(height: 4),
+      const Text(
+        'Pincez avec deux doigts pour zoomer et déplacer la photo (ou boutons + / − sur la photo).',
+        style: TextStyle(fontSize: 11, color: Colors.white54),
+      ),
       const SizedBox(height: 8),
       SegmentedButton<bool>(
         showSelectedIcon: false,
