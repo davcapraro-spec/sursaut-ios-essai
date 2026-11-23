@@ -555,36 +555,6 @@ class _DevelopPageState extends State<DevelopPage> {
         data.buffer.asUint8List(), frame.image.width, frame.image.height, name);
   }
 
-  /// Image d'essai sans fichier : dégradés et pastilles de couleur.
-  Future<void> _useTestImage() async {
-    _dropRaw();
-    const int w = 1600, h = 1000;
-    final Uint8List px = Uint8List(w * h * 4);
-    for (int y = 0; y < h; y++) {
-      for (int x = 0; x < w; x++) {
-        final int i = (y * w + x) * 4;
-        final bool patch = y > 700;
-        if (patch) {
-          final int k = x * 8 ~/ w;
-          const List<List<int>> cols = <List<int>>[
-            <int>[200, 50, 40], <int>[230, 140, 40], <int>[230, 210, 60],
-            <int>[70, 160, 70], <int>[60, 160, 200], <int>[60, 70, 190],
-            <int>[150, 70, 170], <int>[128, 128, 128],
-          ];
-          px[i] = cols[k][0];
-          px[i + 1] = cols[k][1];
-          px[i + 2] = cols[k][2];
-        } else {
-          px[i] = x * 255 ~/ w;
-          px[i + 1] = y * 255 ~/ 700;
-          px[i + 2] = 255 - x * 255 ~/ w;
-        }
-        px[i + 3] = 255;
-      }
-    }
-    await _useRgba(px, w, h, 'Image d\'essai');
-  }
-
   /// Recette complète : clés inconnues du fichier, courbes, réglages.
   Map<String, dynamic> _recipeMap() => <String, dynamic>{
         ..._sidecar.extra,
@@ -2414,7 +2384,7 @@ class _DevelopPageState extends State<DevelopPage> {
 
   Widget _photoArea() {
     if (_shown == null) {
-      return const Center(child: Text('Touchez « Image d\'essai » ou « Ouvrir ».'));
+      return const Center(child: Text('Touchez « Ouvrir » pour choisir une photo.'));
     }
     if (_cropMode) {
       return Padding(
@@ -2632,7 +2602,6 @@ class _DevelopPageState extends State<DevelopPage> {
               tooltip: 'Rétablir',
               onPressed: ready && _history.canRedo ? () => _applyHistory(_history.redo()) : null,
               icon: const Icon(Icons.redo)),
-          TextButton(onPressed: _useTestImage, child: const Text('Image d\'essai')),
           PopupMenuButton<String>(
             tooltip: 'Ouvrir une photo',
             onSelected: (String v) => v == 'photos' ? _choose() : _chooseFile(),
