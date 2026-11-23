@@ -1273,7 +1273,7 @@ class _DevelopPageState extends State<DevelopPage> {
   /// Toucher une pastille avec un masque « Personne » choisi change la personne de ce masque ; sinon elle crée un masque.
   List<Widget> _personTiles(TextStyle title, TextStyle hint) {
     return <Widget>[
-      const Padding(padding: EdgeInsets.only(top: 10, bottom: 4), child: Text('PERSONNES REPÉRÉES', style: title)),
+      Padding(padding: const EdgeInsets.only(top: 10, bottom: 4), child: Text('PERSONNES REPÉRÉES', style: title)),
       SizedBox(
         height: 112,
         child: ListView(
@@ -1392,7 +1392,7 @@ class _DevelopPageState extends State<DevelopPage> {
           '${cur['name']}'.startsWith('Personne ');
       setState(() {
         if (swap) {
-          final MaskMap swapped = <String, dynamic>{...cur, 'comps': m['comps']};
+          final MaskMap swapped = <String, dynamic>{...cur!, 'comps': m['comps']};
           _masks = <MaskMap>[for (int k = 0; k < _masks.length; k++) k == _maskSel ? swapped : _masks[k]];
         } else {
           _masks = <MaskMap>[..._masks, m];
