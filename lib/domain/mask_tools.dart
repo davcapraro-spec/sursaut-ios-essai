@@ -11,12 +11,14 @@ import 'masks.dart';
 /// Types de masques proposés (le libellé sert de début de nom : « Dégradé linéaire 1 »).
 const String kLinear = 'linear';
 const String kRadial = 'radial';
+const String kBrush = 'brush';
 const String kLuminance = 'luminance';
 const String kColor = 'color';
 
 const Map<String, String> kMaskKindNames = <String, String>{
   kLinear: 'Dégradé linéaire',
   kRadial: 'Dégradé radial',
+  kBrush: 'Pinceau',
   kLuminance: 'Plage de luminosité',
   kColor: 'Plage de couleur',
 };
@@ -24,6 +26,11 @@ const Map<String, String> kMaskKindNames = <String, String>{
 /// Comment une composante se combine avec celles qui la précèdent (noms du PC).
 const Map<String, String> kOpNames = <String, String>{'add': 'Ajouter', 'subtract': 'Soustraire', 'intersect': 'Limiter à'};
 const Map<String, String> kOpSigns = <String, String>{'add': '＋', 'subtract': '－', 'intersect': '∩'};
+
+/// Taille du pinceau (fraction du grand côté) : bornes et valeur de départ, comme sur le PC.
+const double kBrushMinR = 0.001;
+const double kBrushMaxR = 0.1;
+const double kBrushDefaultR = 0.03;
 
 /// Plages : leur zone dépend des couleurs de la photo, pas d'une forme que l'on déplace.
 bool isRangeKind(String kind) => kind == kLuminance || kind == kColor;
@@ -33,6 +40,9 @@ Map<String, dynamic> defaultComp(String kind, {String op = 'add'}) {
   final Map<String, dynamic> base = <String, dynamic>{'kind': kind, 'op': op, 'invert': false};
   if (kind == kRadial) {
     return <String, dynamic>{...base, 'x0': 0.5, 'y0': 0.5, 'rx': 0.25, 'ry': 0.18, 'angle': 0.0, 'feather': 0.5};
+  }
+  if (kind == kBrush) {
+    return <String, dynamic>{...base, 'stroke': <List<double>>[], 'r': kBrushDefaultR, 'feather': 0.5, 'grow': 0.0};
   }
   if (kind == kLuminance) return <String, dynamic>{...base, 'lo': 0.0, 'hi': 0.4, 'smooth': 0.3};
   if (kind == kColor) return <String, dynamic>{...base, 'hue': 0.0, 'hue_range': 30.0, 'sat_min': 0.1};
@@ -190,6 +200,50 @@ MaskMap removeCompAt(MaskMap m, int i) {
   if (l.length <= 1 || i < 0 || i >= l.length) return m;
   l.removeAt(i);
   return <String, dynamic>{...m, 'comps': l};
+}
+
+/// Masque pinceau vide (le tracé vient ensuite, au doigt).
+MaskMap brushMask(String name) => <String, dynamic>{
+      'name': name,
+      'enabled': true,
+      'invert': false,
+      'amount': 100.0,
+      'comps': <Map<String, dynamic>>[defaultComp(kBrush)],
+      'adj': _blankAdj(),
+    };
+
+/// Points d'un trait du doigt complétés pour qu'il reste continu : un point tous les 35 % du rayon (comme le PC).
+/// [aspect] = largeur / hauteur de la photo, [r] = rayon en fraction du grand côté.
+List<List<double>> densifyStroke(List<List<double>> pts, double aspect, double r) {
+  if (pts.isEmpty) return <List<double>>[];
+  final double long = math.max(aspect, 1.0); // grand côté, en unités de hauteur
+  final double step = math.max(r * long * 0.35, 0.0005);
+  final List<List<double>> out = <List<double>>[<double>[pts.first[0], pts.first[1]]];
+  for (int i = 1; i < pts.length; i++) {
+    final List<double> a = out.last, b = pts[i];
+    final double dx = (b[0] - a[0]) * aspect, dy = b[1] - a[1];
+    final double dist = math.sqrt(dx * dx + dy * dy);
+    if (dist < step) continue;
+    final int n = (dist / step).floor();
+    for (int k = 1; k <= n; k++) {
+      out.add(<double>[a[0] + (b[0] - a[0]) * k * step / dist, a[1] + (b[1] - a[1]) * k * step / dist]);
+    }
+  }
+  return out;
+}
+
+/// Copie du masque dont la composante pinceau [i] a reçu les points [pts] en plus.
+MaskMap addStrokePoints(MaskMap m, int i, List<List<double>> pts) {
+  final Map<String, dynamic>? c = compAt(m, i);
+  if (c == null || '${c['kind']}' != kBrush) return m;
+  final Object? old = c['stroke'];
+  final List<List<double>> all = <List<double>>[
+    if (old is List<dynamic>)
+      for (final Object? p in old)
+        if (p is List<dynamic> && p.length >= 2) <double>[(p[0] as num).toDouble(), (p[1] as num).toDouble()],
+    for (final List<double> p in pts) <double>[p[0], p[1]],
+  ];
+  return withCompAt(m, i, <String, dynamic>{'stroke': all});
 }
 
 /// Masque d'une plage (luminosité ou couleur) sur toute la photo.

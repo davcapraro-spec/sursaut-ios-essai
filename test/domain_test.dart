@@ -500,4 +500,31 @@ void main() {
     expect(adjOf(zone, 'contrast'), 0);
     expect(adjOf(lum, 'exposure'), 0);
   });
+  test('masques manuels : pinceau, trait continu', () {
+    final MaskMap b = brushMask('Pinceau 1');
+    expect(maskKind(b), kBrush);
+    expect((mainComp(b)!['stroke'] as List<dynamic>), isEmpty);
+    expect(mainComp(b)!['r'], kBrushDefaultR);
+    expect(kMaskKindNames[kBrush], 'Pinceau');
+
+    // un trait rapide (deux points éloignés) est complété : un point tous les 35 % du rayon
+    final List<List<double>> dense = densifyStroke(<List<double>>[<double>[0.1, 0.5], <double>[0.5, 0.5]], 1.0, 0.1);
+    expect(dense.first, <double>[0.1, 0.5]);
+    expect(dense.length, greaterThan(8));
+    for (int k = 1; k < dense.length; k++) {
+      expect((dense[k][0] - dense[k - 1][0]).abs(), lessThanOrEqualTo(0.1 * 0.35 + 1e-9));
+    }
+    // un seul appui : un seul point
+    expect(densifyStroke(<List<double>>[<double>[0.3, 0.3]], 1.5, 0.05).length, 1);
+    expect(densifyStroke(<List<double>>[], 1.5, 0.05), isEmpty);
+
+    // les points s'ajoutent à la composante, sans toucher l'original
+    final MaskMap t1 = addStrokePoints(b, 0, dense);
+    final MaskMap t2 = addStrokePoints(t1, 0, <List<double>>[<double>[0.9, 0.9]]);
+    expect((mainComp(t2)!['stroke'] as List<dynamic>).length, dense.length + 1);
+    expect((mainComp(b)!['stroke'] as List<dynamic>), isEmpty);
+    // pas un pinceau : rien ne change
+    final MaskMap lin = linearMask('L');
+    expect(addStrokePoints(lin, 0, dense), same(lin));
+  });
 }

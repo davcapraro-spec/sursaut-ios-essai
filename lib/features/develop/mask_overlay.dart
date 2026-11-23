@@ -24,6 +24,9 @@ class MaskOverlay extends StatefulWidget {
     required this.showArea,
     required this.pickMode,
     required this.onPick,
+    required this.paintKind,
+    required this.brushR,
+    required this.onStroke,
     required this.onDraw,
     required this.onEdit,
     required this.onEditEnd,
@@ -42,6 +45,13 @@ class MaskOverlay extends StatefulWidget {
   /// Pipette : un toucher sur la photo appelle [onPick] (fractions de la photo) au lieu de déplacer quoi que ce soit.
   final bool pickMode;
   final void Function(double fx, double fy) onPick;
+
+  /// Pinceau : 'paint' (peindre) ou 'erase' (gommer) ; null = les poignées se déplacent. [brushR] : rayon, fraction du grand côté.
+  final String? paintKind;
+  final double brushR;
+
+  /// Fin d'un trait du doigt : ses points (fractions de la photo), à compléter par l'appelant.
+  final ValueChanged<List<List<double>>> onStroke;
 
   /// Fin d'un tracé : type, point de départ, point d'arrivée (fractions de la photo).
   final void Function(String kind, double ax, double ay, double bx, double by) onDraw;
@@ -62,6 +72,8 @@ class _MaskOverlayState extends State<MaskOverlay> {
   Offset? _a, _b; // tracé en cours (pixels de l'écran)
   Offset _downAt = Offset.zero;
   Offset _last = Offset.zero;
+  final List<List<double>> _paint = <List<double>>[]; // trait de pinceau en cours
+  Offset? _cursor;
   Map<String, dynamic> _comp0 = <String, dynamic>{};
 
   Rect _fit(Size box) {
@@ -108,6 +120,14 @@ class _MaskOverlayState extends State<MaskOverlay> {
       return;
     }
     if (widget.pickMode) return;
+    if (widget.paintKind != null) {
+      _drag = 'paint';
+      _paint
+        ..clear()
+        ..add(_frac(img, p));
+      setState(() => _cursor = p);
+      return;
+    }
     final Map<String, dynamic>? c = widget.comp;
     if (c == null) return;
     _comp0 = Map<String, dynamic>.of(c);
@@ -140,6 +160,13 @@ class _MaskOverlayState extends State<MaskOverlay> {
 
   void _update(Rect img, Offset p) {
     _last = p;
+    if (_drag == 'paint') {
+      _moved = true;
+      final List<double> f = _frac(img, p), prev = _paint.last;
+      if ((f[0] - prev[0]).abs() * img.width + (f[1] - prev[1]).abs() * img.height > 2) _paint.add(f);
+      setState(() => _cursor = p);
+      return;
+    }
     if (!_moved && (p - _downAt).distance < 6) return;
     _moved = true;
     if (_drag == 'create') {
@@ -193,6 +220,14 @@ class _MaskOverlayState extends State<MaskOverlay> {
   }
 
   void _up(Rect img, Offset p) {
+    if (_drag == 'paint') {
+      final List<List<double>> pts = List<List<double>>.of(_paint);
+      _paint.clear();
+      setState(() => _cursor = null);
+      _drag = null;
+      if (pts.isNotEmpty) widget.onStroke(pts);
+      return;
+    }
     if (_drag == 'create') {
       final Offset? a = _a;
       final String? kind = widget.drawKind;
@@ -216,6 +251,9 @@ class _MaskOverlayState extends State<MaskOverlay> {
         onPanDown: (DragDownDetails d) => _down(img, d.localPosition),
         onPanUpdate: (DragUpdateDetails d) => _update(img, d.localPosition),
         onTapUp: (TapUpDetails d) {
+          if (widget.paintKind != null && !widget.pickMode) {
+            widget.onStroke(<List<double>>[_frac(img, d.localPosition)]);
+          }
           if (widget.pickMode) {
             final List<double> f = _frac(img, d.localPosition);
             widget.onPick(f[0], f[1]);
@@ -223,10 +261,12 @@ class _MaskOverlayState extends State<MaskOverlay> {
         },
         onPanEnd: (DragEndDetails d) => _up(img, _last),
         onPanCancel: () {
-          if (_drag != null && _drag != 'create' && _moved) widget.onEditEnd();
+          if (_drag != null && _drag != 'create' && _drag != 'paint' && _moved) widget.onEditEnd();
+          _paint.clear();
           setState(() {
             _drag = null;
             _a = _b = null;
+            _cursor = null;
           });
         },
         child: CustomPaint(
@@ -240,6 +280,10 @@ class _MaskOverlayState extends State<MaskOverlay> {
             drawKind: widget.drawKind,
             a: _a,
             b: _b,
+            paintKind: widget.paintKind,
+            paintPts: List<List<double>>.of(_paint),
+            brushR: widget.brushR,
+            cursor: _cursor,
           ),
         ),
       );
@@ -257,6 +301,10 @@ class _MaskPainter extends CustomPainter {
     required this.drawKind,
     required this.a,
     required this.b,
+    required this.paintKind,
+    required this.paintPts,
+    required this.brushR,
+    required this.cursor,
   });
 
   final ui.Image image;
@@ -266,6 +314,10 @@ class _MaskPainter extends CustomPainter {
   final bool showArea;
   final String? drawKind;
   final Offset? a, b;
+  final String? paintKind;
+  final List<List<double>> paintPts;
+  final double brushR;
+  final Offset? cursor;
 
   double _d(Map<String, dynamic> c, String k, double fallback) => c[k] is num ? (c[k] as num).toDouble() : fallback;
 
@@ -313,9 +365,42 @@ class _MaskPainter extends CustomPainter {
         _paintLinear(canvas, _px(_d(c, 'x0', 0.5), _d(c, 'y0', 0.3)), _px(_d(c, 'x1', 0.5), _d(c, 'y1', 0.7)), invert, tint, none, showArea);
       } else if ('${c['kind']}' == kRadial) {
         _paintRadial(canvas, c, tint, none);
+      } else if ('${c['kind']}' == kBrush && showArea) {
+        final bool erase = '${c['op']}' == 'subtract';
+        final Object? st = c['stroke'];
+        _paintDabs(
+          canvas,
+          <Offset>[
+            if (st is List<dynamic>)
+              for (final Object? q in st)
+                if (q is List<dynamic> && q.length >= 2) _px((q[0] as num).toDouble(), (q[1] as num).toDouble()),
+          ],
+          _d(c, 'r', kBrushDefaultR),
+          erase ? const Color(0x66FF5050) : tint,
+        );
       }
     }
+    if (paintPts.isNotEmpty) {
+      _paintDabs(canvas, <Offset>[for (final List<double> q in paintPts) _px(q[0], q[1])], brushR,
+          paintKind == 'erase' ? const Color(0x66FF5050) : tint);
+    }
+    if (cursor != null && paintKind != null) {
+      final double rad = math.max(brushR * math.max(rect.width, rect.height), 3);
+      canvas.drawCircle(cursor!, rad, _shadow);
+      canvas.drawCircle(cursor!, rad, _line);
+    }
     canvas.restore();
+  }
+
+  /// Les points d'un pinceau d'un seul aplat (la transparence ne s'additionne pas là où les disques se recouvrent).
+  void _paintDabs(Canvas canvas, List<Offset> pts, double r, Color color) {
+    if (pts.isEmpty) return;
+    final double rad = math.max(r * math.max(rect.width, rect.height), 1.5);
+    final Path path = Path();
+    for (final Offset o in pts) {
+      path.addOval(Rect.fromCircle(center: o, radius: rad));
+    }
+    canvas.drawPath(path, Paint()..color = color);
   }
 
   void _paintLinear(Canvas canvas, Offset p0, Offset p1, bool inv, Color tint, Color none, bool fill) {

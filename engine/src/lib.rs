@@ -588,6 +588,26 @@ mod tests {
     }
 
     #[test]
+    fn le_pinceau_ne_touche_que_le_trait_et_la_gomme_l_enleve() {
+        let (w, h) = (64usize, 64usize);
+        let src = aplat(w, h, [100, 100, 100], [100, 100, 100]);
+        let mut e = Engine::open_rgba8(&src, w, h).unwrap();
+        let pts: Vec<String> = (0..12).map(|i| format!("[{:.3},0.5]", 0.15 + 0.01 * i as f64)).collect();
+        let pinceau = format!(r#"{{"kind":"brush","op":"add","invert":false,"stroke":[{}],"r":0.1,"feather":0.3,"grow":0.0}}"#, pts.join(","));
+        e.render(&masque(&pinceau, 2.0)).unwrap();
+        let out = e.output().to_vec();
+        let (sous, loin) = (lum_zone(&out, w, 10, 20, 28, 36), lum_zone(&out, w, 50, 62, 28, 36));
+        assert!(sous > 100.0 * 1.0 + 25.0, "sous le trait la photo doit s'éclaircir : {sous}");
+        assert!((loin - 100.0).abs() < 2.0, "loin du trait rien ne doit bouger : {loin}");
+        // la gomme : même trait en « soustraire » -> plus rien
+        let gomme = pinceau.replacen(r#""op":"add""#, r#""op":"subtract""#, 1);
+        let json = masque(&format!("{pinceau},{gomme}"), 2.0);
+        e.render(&json).unwrap();
+        let apres = lum_zone(e.output(), w, 10, 20, 28, 36);
+        assert!((apres - 100.0).abs() < 2.0, "la gomme doit annuler le trait : {apres}");
+    }
+
+    #[test]
     fn version_et_erreur_vide() {
         let v = unsafe { CStr::from_ptr(sursaut_engine_version()) }.to_str().unwrap();
         assert!(v.starts_with("sursaut_engine 0.6.0"));

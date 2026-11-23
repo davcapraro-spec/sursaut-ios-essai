@@ -124,6 +124,8 @@ class _DevelopPageState extends State<DevelopPage> {
   int _compSel = 0; // composante choisie du masque choisi
   String? _maskDraw;
   bool _maskAttach = false; // le tracé en cours s'ajoute au masque choisi au lieu d'en créer un
+  String? _brushTool; // pinceau actif : 'paint' (peindre), 'erase' (gommer) ou null (déplacer les poignées)
+  double _brushR = kBrushDefaultR; // taille du pinceau pour un nouveau masque ou une nouvelle composante
   bool _maskPickNew = false; // la pipette sert à créer un nouveau masque de couleur (rien n'existe avant le toucher)
   bool _maskPick = false; // pipette : le prochain toucher sur la photo choisit la couleur
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
@@ -227,6 +229,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _maskDraw = null;
       _maskAttach = false;
       _maskPick = false;
+      _brushTool = null;
       _dust = null;
       _srcRgba = rgba;
       _w = w;
@@ -305,6 +308,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _maskDraw = null;
       _maskAttach = false;
       _maskPick = false;
+      _brushTool = null;
       for (final String k in _values.keys.toList()) {
         _values[k] = v[k] ?? defaultOf(k);
       }
@@ -1037,6 +1041,7 @@ class _DevelopPageState extends State<DevelopPage> {
         _maskDraw = null;
         _maskAttach = false;
         _maskPick = false;
+        _brushTool = null;
         _maskZone = false;
       }
     });
@@ -1094,8 +1099,25 @@ class _DevelopPageState extends State<DevelopPage> {
         _maskDraw = on ? null : kind;
         _maskAttach = false;
         _maskPick = false;
+        _brushTool = null;
         _maskPickNew = false;
       });
+      return;
+    }
+    if (kind == kBrush) {
+      final MaskMap b = withCompAt(brushMask(nextMaskName(_masks, kMaskKindNames[kBrush]!)), 0, <String, dynamic>{'r': _brushR});
+      setState(() {
+        _masks = <MaskMap>[..._masks, b];
+        _maskSel = _masks.length - 1;
+        _compSel = 0;
+        _maskDraw = null;
+        _maskAttach = false;
+        _maskPick = false;
+        _maskPickNew = false;
+        _brushTool = 'paint';
+        _before = false;
+      });
+      _commit();
       return;
     }
     if (kind == kColor) {
@@ -1116,6 +1138,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _maskDraw = null;
       _maskAttach = false;
       _maskPick = false;
+      _brushTool = null;
       _maskPickNew = false;
       _before = false;
     });
@@ -1131,6 +1154,7 @@ class _DevelopPageState extends State<DevelopPage> {
         _maskDraw = kind;
         _maskAttach = true;
         _maskPick = false;
+        _brushTool = null;
       });
       return;
     }
@@ -1142,6 +1166,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _maskAttach = false;
       _maskPick = kind == kColor;
       _maskPickNew = false;
+      _brushTool = kind == kBrush ? (_newOp == 'subtract' ? 'erase' : 'paint') : null;
     });
     _commit();
     _refresh();
@@ -1162,6 +1187,7 @@ class _DevelopPageState extends State<DevelopPage> {
     setState(() {
       _compSel = 0;
       _maskPick = false;
+      _brushTool = null;
     });
     _commit();
     _refresh();
@@ -1182,6 +1208,7 @@ class _DevelopPageState extends State<DevelopPage> {
         _maskSel = _masks.length - 1;
         _compSel = 0;
         _maskPick = false;
+        _brushTool = null;
         _maskPickNew = false;
         _before = false;
       });
@@ -1198,6 +1225,67 @@ class _DevelopPageState extends State<DevelopPage> {
           'sat_min': (sat * 0.5).clamp(0.02, 0.5).toDouble(),
         }));
     setState(() => _maskPick = false);
+    _commit();
+    _refresh();
+  }
+
+  /// Rayon du pinceau montré à l'écran : celui de la composante pinceau choisie, sinon celui de départ.
+  double get _effBrushR {
+    final MaskMap? m = _maskSelected;
+    final Map<String, dynamic>? c = m == null ? null : compAt(m, _compSel);
+    if (c != null && '${c['kind']}' == kBrush && c['r'] is num) return (c['r'] as num).toDouble();
+    return _brushR;
+  }
+
+  /// Un trait de pinceau (peindre ou gommer) : va dans la composante pinceau choisie, sinon dans une nouvelle.
+  void _maskStroke(List<List<double>> raw) {
+    final String? tool = _brushTool;
+    if (tool == null || raw.isEmpty) return;
+    final bool erase = tool == 'erase';
+    final String op = erase ? 'subtract' : 'add';
+    final double aspect = _h == 0 ? 1 : _w / _h;
+    final MaskMap? sel = _maskSelected;
+    MaskMap base;
+    int ci = 0;
+    final bool fresh = sel == null;
+    if (sel == null) {
+      if (erase) {
+        _say('Choisissez d\'abord le masque à gommer.');
+        return;
+      }
+      base = withCompAt(brushMask(nextMaskName(_masks, kMaskKindNames[kBrush]!)), 0, <String, dynamic>{'r': _brushR});
+    } else {
+      base = sel;
+      final Map<String, dynamic>? c = compAt(sel, _compSel);
+      final String cop = c == null ? '' : '${c['op']}';
+      final bool fits = c != null && '${c['kind']}' == kBrush && (erase ? cop == 'subtract' : (cop == 'add' || cop == 'intersect'));
+      if (fits) {
+        ci = _compSel;
+      } else {
+        // même taille que le dernier pinceau du masque
+        Map<String, dynamic>? last;
+        for (final Map<String, dynamic> cc in compsOf(sel)) {
+          if ('${cc['kind']}' == kBrush) last = cc;
+        }
+        final Map<String, dynamic> nc = defaultComp(kBrush, op: op);
+        nc['r'] = last != null && last['r'] is num ? last['r'] : _brushR;
+        if (last != null && last['feather'] is num) nc['feather'] = last['feather'];
+        base = addComp(sel, nc);
+        ci = compsOf(base).length - 1;
+      }
+    }
+    final double r = ((compAt(base, ci)?['r'] as num?) ?? _brushR).toDouble();
+    final MaskMap done = addStrokePoints(base, ci, densifyStroke(raw, aspect, r));
+    setState(() {
+      if (fresh) {
+        _masks = <MaskMap>[..._masks, done];
+        _maskSel = _masks.length - 1;
+      } else {
+        _masks = <MaskMap>[for (int k = 0; k < _masks.length; k++) k == _maskSel ? done : _masks[k]];
+      }
+      _compSel = ci;
+      _before = false;
+    });
     _commit();
     _refresh();
   }
@@ -1330,9 +1418,12 @@ class _DevelopPageState extends State<DevelopPage> {
     kRadial: 'Radial',
     kLuminance: 'Luminosité',
     kColor: 'Couleur',
+    kBrush: 'Pinceau',
   };
 
-  static IconData _kindIcon(String kind) => kind == kRadial
+  static IconData _kindIcon(String kind) => kind == kBrush
+      ? Icons.brush
+      : kind == kRadial
       ? Icons.radio_button_unchecked
       : kind == kLuminance
           ? Icons.brightness_6_outlined
@@ -1341,7 +1432,7 @@ class _DevelopPageState extends State<DevelopPage> {
               : Icons.gradient;
 
   Widget _maskKindButton(String kind, bool ready) {
-    final bool on = (_maskDraw == kind && !_maskAttach) || (kind == kColor && _maskPick && _maskPickNew);
+    final bool on = (kind == kBrush && _brushTool != null) || (_maskDraw == kind && !_maskAttach) || (kind == kColor && _maskPick && _maskPickNew);
     return OutlinedButton.icon(
       style: OutlinedButton.styleFrom(
         backgroundColor: on ? const Color(0xFF33291A) : null,
@@ -1368,7 +1459,11 @@ class _DevelopPageState extends State<DevelopPage> {
     const TextStyle hint = TextStyle(fontSize: 12, color: Colors.white60);
     const TextStyle title =
         TextStyle(fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: Colors.white60);
-    final String guide = _maskPick
+    final String guide = _brushTool != null
+        ? (_brushTool == 'erase'
+            ? 'Passez le doigt sur la photo pour effacer une partie du masque.'
+            : 'Passez le doigt sur la photo pour peindre la zone à retoucher.')
+        : _maskPick
         ? (_maskPickNew
             ? 'Touchez sur la photo la couleur à cibler : le masque sera créé à cet endroit.'
             : 'Touchez sur la photo la couleur à cibler.')
@@ -1394,6 +1489,14 @@ class _DevelopPageState extends State<DevelopPage> {
           Expanded(child: _maskKindButton(kLuminance, ready)),
           const SizedBox(width: 8),
           Expanded(child: _maskKindButton(kColor, ready)),
+        ],
+      ),
+      const SizedBox(height: 8),
+      Row(
+        children: <Widget>[
+          Expanded(child: _maskKindButton(kBrush, ready)),
+          const SizedBox(width: 8),
+          const Expanded(child: SizedBox()),
         ],
       ),
       Padding(padding: const EdgeInsets.only(top: 6), child: Text(guide, style: hint)),
@@ -1423,6 +1526,7 @@ class _DevelopPageState extends State<DevelopPage> {
               _maskDraw = null;
               _maskAttach = false;
               _maskPick = false;
+              _brushTool = null;
             }),
           ),
       ],
@@ -1435,6 +1539,22 @@ class _DevelopPageState extends State<DevelopPage> {
             TextButton.icon(onPressed: _maskDuplicate, icon: const Icon(Icons.copy_outlined, size: 18), label: const Text('Dupliquer')),
             TextButton.icon(onPressed: _maskDelete, icon: const Icon(Icons.delete_outline, size: 18), label: const Text('Supprimer')),
           ],
+        ),
+        const SizedBox(height: 6),
+        SegmentedButton<String>(
+          showSelectedIcon: false,
+          segments: const <ButtonSegment<String>>[
+            ButtonSegment<String>(value: '', label: Text('Déplacer'), icon: Icon(Icons.open_with)),
+            ButtonSegment<String>(value: 'paint', label: Text('Peindre'), icon: Icon(Icons.brush)),
+            ButtonSegment<String>(value: 'erase', label: Text('Gommer'), icon: Icon(Icons.cleaning_services_outlined)),
+          ],
+          selected: <String>{_brushTool ?? ''},
+          onSelectionChanged: (Set<String> v) => setState(() {
+            _brushTool = v.first.isEmpty ? null : v.first;
+            _maskDraw = null;
+            _maskAttach = false;
+            _maskPick = false;
+          }),
         ),
         SwitchListTile(
           dense: true,
@@ -1493,6 +1613,7 @@ class _DevelopPageState extends State<DevelopPage> {
             onTap: () => setState(() {
               _compSel = i;
               _maskPick = false;
+              _brushTool = null;
               _maskDraw = null;
               _maskAttach = false;
             }),
@@ -1512,7 +1633,7 @@ class _DevelopPageState extends State<DevelopPage> {
         Wrap(
           spacing: 8,
           children: <Widget>[
-            for (final String k in <String>[kLinear, kRadial, kLuminance, kColor])
+            for (final String k in <String>[kLinear, kRadial, kBrush, kLuminance, kColor])
               ActionChip(
                 avatar: Icon(_kindIcon(k), size: 18),
                 label: Text(_kindShort[k]!),
@@ -1526,6 +1647,29 @@ class _DevelopPageState extends State<DevelopPage> {
               (double v) => _maskEdit(<String, dynamic>{'feather': v / 100}), onEnd: _maskEditEnd, reset: 50),
           _maskSlider('Angle', num0('angle', 0), -90, 90, 0,
               (double v) => _maskEdit(<String, dynamic>{'angle': v}), onEnd: _maskEditEnd),
+        ],
+        if (ckind == kBrush) ...<Widget>[
+          const SizedBox(height: 6),
+          _maskSlider('Taille', num0('r', kBrushDefaultR) * 1000, 1, 100, 0, (double v) {
+            _brushR = v / 1000;
+            _maskEdit(<String, dynamic>{'r': v / 1000});
+          }, onEnd: _maskEditEnd, reset: kBrushDefaultR * 1000),
+          _maskSlider('Contour progressif', num0('feather', 0.5) * 100, 0, 100, 0,
+              (double v) => _maskEdit(<String, dynamic>{'feather': v / 100}), onEnd: _maskEditEnd, reset: 50),
+          _maskSlider('Agrandir / réduire', num0('grow', 0) * 100, -100, 100, 0,
+              (double v) => _maskEdit(<String, dynamic>{'grow': v / 100}), onEnd: _maskEditEnd),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () {
+                _maskEdit(<String, dynamic>{'stroke': <List<double>>[]});
+                _commit();
+                _refresh();
+              },
+              icon: const Icon(Icons.layers_clear_outlined, size: 18),
+              label: const Text('Effacer le tracé de cette composante'),
+            ),
+          ),
         ],
         if (ckind == kLuminance) ...<Widget>[
           const SizedBox(height: 6),
@@ -2148,6 +2292,9 @@ class _DevelopPageState extends State<DevelopPage> {
           showArea: !_maskZone,
           pickMode: _maskPick,
           onPick: _maskPicked,
+          paintKind: _brushTool,
+          brushR: _effBrushR,
+          onStroke: _maskStroke,
           onDraw: _maskDrawn,
           onEdit: _maskEdit,
           onEditEnd: _maskEditEnd,
