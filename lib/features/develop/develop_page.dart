@@ -1628,22 +1628,26 @@ class _DevelopPageState extends State<DevelopPage> {
             TextButton.icon(onPressed: _maskDelete, icon: const Icon(Icons.delete_outline, size: 18), label: const Text('Supprimer')),
           ],
         ),
-        const SizedBox(height: 6),
-        SegmentedButton<String>(
-          showSelectedIcon: false,
-          segments: const <ButtonSegment<String>>[
-            ButtonSegment<String>(value: '', label: Text('Déplacer'), icon: Icon(Icons.open_with)),
-            ButtonSegment<String>(value: 'paint', label: Text('Peindre'), icon: Icon(Icons.brush)),
-            ButtonSegment<String>(value: 'erase', label: Text('Gommer'), icon: Icon(Icons.cleaning_services_outlined)),
-          ],
-          selected: <String>{_brushTool ?? ''},
-          onSelectionChanged: (Set<String> v) => setState(() {
-            _brushTool = v.first.isEmpty ? null : v.first;
-            _maskDraw = null;
-            _maskAttach = false;
-            _maskPick = false;
-          }),
-        ),
+        // Peindre / Gommer : seulement pour un masque pinceau ou d'IA (les poignées d'un dégradé se déplacent toutes seules ;
+        // pour peindre sur un autre masque, on ajoute une composante « Pinceau »).
+        if (comps.any((Map<String, dynamic> c) => '${c['kind']}' == kBrush || '${c['kind']}' == kBitmap)) ...<Widget>[
+          const SizedBox(height: 6),
+          SegmentedButton<String>(
+            showSelectedIcon: false,
+            emptySelectionAllowed: true,
+            segments: const <ButtonSegment<String>>[
+              ButtonSegment<String>(value: 'paint', label: Text('Peindre'), icon: Icon(Icons.brush)),
+              ButtonSegment<String>(value: 'erase', label: Text('Gommer'), icon: Icon(Icons.cleaning_services_outlined)),
+            ],
+            selected: <String>{if (_brushTool != null) _brushTool!},
+            onSelectionChanged: (Set<String> v) => setState(() {
+              _brushTool = v.isEmpty ? null : v.first;
+              _maskDraw = null;
+              _maskAttach = false;
+              _maskPick = false;
+            }),
+          ),
+        ],
         SwitchListTile(
           dense: true,
           contentPadding: EdgeInsets.zero,
