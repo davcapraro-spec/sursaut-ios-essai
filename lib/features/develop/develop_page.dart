@@ -131,6 +131,9 @@ class _DevelopPageState extends State<DevelopPage> {
   double _brushR = kBrushDefaultR; // taille du pinceau pour un nouveau masque ou une nouvelle composante
   bool _maskPickNew = false; // la pipette sert à créer un nouveau masque de couleur (rien n'existe avant le toucher)
   bool _maskPick = false; // pipette : le prochain toucher sur la photo choisit la couleur
+  List<VisionPerson> _persons = <VisionPerson>[]; // personnes repérées (pastilles du panneau Masques)
+  List<ui.Image> _personImgs = <ui.Image>[];
+  Uint8List? _personsFor; // la photo pour laquelle on les a cherchées
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
   String _newOp = 'add'; // comment la prochaine composante se combine : add | subtract | intersect
 
@@ -1253,65 +1256,63 @@ class _DevelopPageState extends State<DevelopPage> {
       await _maskAi('person');
       return;
     }
-    _say('${list.length} personnes repérées.');
     final List<ui.Image> thumbs = await _personThumbs(rgba, list);
     if (!mounted) return;
-    final int? pick = await showModalBottomSheet<int>(
-      context: context,
-      builder: (BuildContext sheet) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+    setState(() {
+      _persons = list;
+      _personImgs = thumbs;
+      _personsFor = rgba;
+    });
+    _say('${list.length} personnes repérées : touchez une pastille.');
+  }
+
+  /// Les pastilles des personnes repérées sont-elles à montrer (même photo que celle où on les a cherchées) ?
+  bool get _personsShown => _persons.isNotEmpty && identical(_personsFor, _srcRgba);
+
+  /// Rangée de pastilles dans le panneau : une par personne repérée, plus « Toutes ».
+  /// Toucher une pastille avec un masque « Personne » choisi change la personne de ce masque ; sinon elle crée un masque.
+  List<Widget> _personTiles(TextStyle title, TextStyle hint) {
+    return <Widget>[
+      const Padding(padding: EdgeInsets.only(top: 10, bottom: 4), child: Text('PERSONNES REPÉRÉES', style: title)),
+      SizedBox(
+        height: 112,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
           children: <Widget>[
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 14, 16, 0),
-              child: Text('Quelle personne ?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-            ),
-            SizedBox(
-              height: 170,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.all(12),
-                children: <Widget>[
-                  for (int i = 0; i < list.length; i++)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 12),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(8),
-                        onTap: () => Navigator.pop(sheet, i),
-                        child: Column(
-                          children: <Widget>[
-                            Expanded(
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: RawImage(image: thumbs[i], fit: BoxFit.contain),
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text('Personne ${i + 1}'),
-                          ],
+            for (int i = 0; i < _persons.length; i++)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: _aiBusy
+                      ? null
+                      : () => _maskAi('person', fx: _persons[i].px, fy: _persons[i].py, base: 'Personne', switchPerson: true),
+                  child: Column(
+                    children: <Widget>[
+                      SizedBox(
+                        height: 88,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: RawImage(image: _personImgs[i], fit: BoxFit.contain),
                         ),
                       ),
-                    ),
-                ],
+                      const SizedBox(height: 4),
+                      Text('Personne ${i + 1}', style: hint),
+                    ],
+                  ),
+                ),
               ),
-            ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              padding: const EdgeInsets.only(right: 8),
               child: OutlinedButton(
-                onPressed: () => Navigator.pop(sheet, -1),
-                child: const Text('Toutes les personnes'),
+                onPressed: _aiBusy ? null : () => _maskAi('person'),
+                child: const Text('Toutes'),
               ),
             ),
           ],
         ),
       ),
-    );
-    if (pick == null || !mounted) return;
-    if (pick < 0) {
-      await _maskAi('person');
-    } else {
-      await _maskAi('person', fx: list[pick].px, fy: list[pick].py, base: 'Personne');
-    }
+    ];
   }
 
   /// Petites images (120 px de haut) de chaque personne : la photo recadrée sur son cadre, un peu élargi.
@@ -1346,7 +1347,7 @@ class _DevelopPageState extends State<DevelopPage> {
   }
 
   /// Masque d'IA par Vision (iPadOS) : le sujet, l'arrière-plan (le sujet inversé) ou les personnes.
-  Future<void> _maskAi(String what, {double? fx, double? fy, String? base}) async {
+  Future<void> _maskAi(String what, {double? fx, double? fy, String? base, bool switchPerson = false}) async {
     final Uint8List? rgba = _srcRgba;
     if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
     setState(() => _aiBusy = true);
@@ -1379,9 +1380,24 @@ class _DevelopPageState extends State<DevelopPage> {
         what: what,
         invert: what == 'background',
       );
+      // une pastille de personne touchée avec un masque « Personne » choisi : on change la personne de ce masque
+      final MaskMap? cur = _maskSelected;
+      final Map<String, dynamic>? curMain = cur == null ? null : mainComp(cur);
+      final Object? curAi = curMain?['ai'];
+      final bool swap = switchPerson &&
+          cur != null &&
+          '${curMain?['kind']}' == kBitmap &&
+          curAi is Map<String, dynamic> &&
+          curAi['what'] == 'person' &&
+          '${cur['name']}'.startsWith('Personne ');
       setState(() {
-        _masks = <MaskMap>[..._masks, m];
-        _maskSel = _masks.length - 1;
+        if (swap) {
+          final MaskMap swapped = <String, dynamic>{...cur, 'comps': m['comps']};
+          _masks = <MaskMap>[for (int k = 0; k < _masks.length; k++) k == _maskSel ? swapped : _masks[k]];
+        } else {
+          _masks = <MaskMap>[..._masks, m];
+          _maskSel = _masks.length - 1;
+        }
         _compSel = 0;
         _maskDraw = null;
         _maskAttach = false;
@@ -1691,6 +1707,7 @@ class _DevelopPageState extends State<DevelopPage> {
           Expanded(child: _aiButton('person', Icons.groups_outlined, ready)),
         ],
       ),
+      if (_personsShown) ..._personTiles(title, hint),
       Padding(padding: const EdgeInsets.only(top: 6), child: Text(guide, style: hint)),
       if (idx.isNotEmpty) ...<Widget>[
         const Padding(padding: EdgeInsets.only(top: 14, bottom: 2), child: Text('MASQUES', style: title)),
