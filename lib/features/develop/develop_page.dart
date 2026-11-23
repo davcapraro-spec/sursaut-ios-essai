@@ -1450,7 +1450,8 @@ class _DevelopPageState extends State<DevelopPage> {
                 child: Column(
                   children: <Widget>[
                     _infoRow(ready),
-                    Expanded(child: SingleChildScrollView(child: Column(children: _panelBody(ready)))),
+                    Expanded(child: SingleChildScrollView(
+                        child: Material(type: MaterialType.transparency, child: Column(children: _panelBody(ready))))),
                   ],
                 ),
               ),
@@ -1472,7 +1473,8 @@ class _DevelopPageState extends State<DevelopPage> {
                       child: Row(children: _tools(ready)),
                     ),
                     _infoRow(ready),
-                    Flexible(child: SingleChildScrollView(child: Column(children: _panelBody(ready)))),
+                    Flexible(child: SingleChildScrollView(
+                        child: Material(type: MaterialType.transparency, child: Column(children: _panelBody(ready))))),
                   ],
                 ),
               ),
