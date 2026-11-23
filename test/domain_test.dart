@@ -576,9 +576,9 @@ void main() {
     expect(mainComp(propre.first as Map<String, dynamic>)!.containsKey('png'), isFalse);
     expect(mainComp(propre.first as Map<String, dynamic>)!['key'], key);
     expect(mainComp(m)!.containsKey('png'), isTrue);
-    // un masque sans image est laissé tel quel
+    // un masque sans image garde le même contenu
     final MaskMap lin = linearMask('L');
-    expect(withoutPngs(<dynamic>[lin]).first, same(lin));
+    expect(withoutPngs(<dynamic>[lin]).first, equals(lin));
     // copie et enregistrement : le PNG suit
     expect(mainComp(duplicateMask(m))!['png'], mainComp(m)!['png']);
   });
