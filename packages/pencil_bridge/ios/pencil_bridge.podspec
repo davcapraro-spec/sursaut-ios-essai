@@ -7,7 +7,7 @@ Pod::Spec.new do |s|
   s.license          = { :type => 'Proprietary' }
   s.author           = { 'Sursaut' => 'noreply@example.com' }
   s.source           = { :path => '.' }
-  s.frameworks = 'ImageCaptureCore', 'Vision'
+  s.frameworks = 'ImageCaptureCore', 'Vision', 'Accelerate', 'AVFoundation', 'CoreGraphics', 'CoreImage', 'CoreMedia', 'CoreVideo', 'Metal', 'QuartzCore', 'UIKit'
   s.source_files     = 'Classes/**/*'
   # Moteur Rust (étape 1) : fabriqué par le workflow, copié ici avant la compilation.
   s.vendored_libraries = 'libsursaut_engine.a'
@@ -19,5 +19,9 @@ Pod::Spec.new do |s|
   s.resources        = ['Assets/*.task']
   s.platform         = :ios, '15.0'
   s.swift_version    = '5.0'
-  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
+  # MediaPipe est une bibliothèque statique : on la lie explicitement dans ce plugin (sinon « Undefined symbol: MPPFaceLandmarker »).
+  s.pod_target_xcconfig = {
+    'DEFINES_MODULE' => 'YES',
+    'OTHER_LDFLAGS' => '$(inherited) -ObjC -framework MediaPipeTasksVision -framework MediaPipeTasksCommon',
+  }
 end
