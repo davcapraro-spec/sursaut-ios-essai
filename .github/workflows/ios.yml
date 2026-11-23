@@ -65,7 +65,8 @@ jobs:
           curl -fL --retry 3 -o packages/pencil_bridge/ios/Assets/face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
           ls -l packages/pencil_bridge/ios/Assets/face_landmarker.task
           shasum -a 256 packages/pencil_bridge/ios/Assets/face_landmarker.task
-          test "$(head -c 2 packages/pencil_bridge/ios/Assets/face_landmarker.task)" = "PK"
+          # taille exacte du fichier vu au premier essai (3 758 596 octets) : un autre fichier est refusé
+          test "$(stat -f %z packages/pencil_bridge/ios/Assets/face_landmarker.task)" = "3758596"
 
       # Logo de Sursaut : on remplace l'icône Flutter par assets/app_icon_1024.png (carré, sans transparence,
       # comme l'exige iOS) en fabriquant toutes les tailles listées par le modèle Flutter.
