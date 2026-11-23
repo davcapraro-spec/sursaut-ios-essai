@@ -131,6 +131,8 @@ class _DevelopPageState extends State<DevelopPage> {
   double _brushR = kBrushDefaultR; // taille du pinceau pour un nouveau masque ou une nouvelle composante
   bool _maskPickNew = false; // la pipette sert à créer un nouveau masque de couleur (rien n'existe avant le toucher)
   bool _maskPick = false; // pipette : le prochain toucher sur la photo choisit la couleur
+  ui.Image? _area; // zone rouge du masque d'IA choisi, montrée sur la photo
+  String _areaKey = '';
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
   String _newOp = 'add'; // comment la prochaine composante se combine : add | subtract | intersect
 
@@ -1364,6 +1366,41 @@ class _DevelopPageState extends State<DevelopPage> {
     _refresh();
   }
 
+  /// Image rouge transparente de la zone du masque d'IA choisi (refaite quand le masque ou son inversion change).
+  void _syncArea() {
+    final MaskMap? m = _tool == 'masks' ? _maskSelected : null;
+    final Map<String, dynamic>? c = m == null ? null : compAt(m, _compSel);
+    final bool ok = m != null && m['enabled'] != false && c != null && '${c['kind']}' == kBitmap && c['png'] is String;
+    final String key = ok ? '${c['key']}|${m['invert'] == true}' : '';
+    if (key == _areaKey) return;
+    _areaKey = key;
+    _area = null;
+    if (!ok) return;
+    final String png = c['png'] as String;
+    final bool inv = m['invert'] == true;
+    () async {
+      try {
+        final (Uint8List, int, int)? plane = pngToPlane(base64Decode(png));
+        if (plane == null) return;
+        final Uint8List rgba = Uint8List(plane.$1.length * 4);
+        for (int i = 0; i < plane.$1.length; i++) {
+          final int a = ((inv ? 255 - plane.$1[i] : plane.$1[i]) * 0.55).round();
+          rgba[i * 4] = a; // couleur pré-multipliée : rouge
+          rgba[i * 4 + 1] = (a * 40 / 255).round();
+          rgba[i * 4 + 2] = (a * 40 / 255).round();
+          rgba[i * 4 + 3] = a;
+        }
+        final Completer<ui.Image> done = Completer<ui.Image>();
+        ui.decodeImageFromPixels(rgba, plane.$2, plane.$3, ui.PixelFormat.rgba8888, done.complete);
+        final ui.Image im = await done.future;
+        if (!mounted || _areaKey != key) return;
+        setState(() => _area = im);
+      } catch (_) {
+        // pas de zone rouge : le masque reste utilisable
+      }
+    }();
+  }
+
   /// Les masques tels qu'ils sont rendus quand on demande à voir la zone du masque choisi.
   List<MaskMap> _zoneMasks() => <MaskMap>[
         for (int i = 0; i < _masks.length; i++) i == _maskSel ? zoneView(_masks[i]) : _masks[i],
@@ -2392,10 +2429,12 @@ class _DevelopPageState extends State<DevelopPage> {
       );
     }
     if (_tool == 'masks') {
+      _syncArea();
       return Padding(
         padding: const EdgeInsets.all(12),
         child: MaskOverlay(
           image: _shown!,
+          area: _area,
           comp: _maskSelected == null ? null : compAt(_maskSelected!, _compSel),
           invert: _maskSelected?['invert'] == true,
           drawKind: _maskDraw,

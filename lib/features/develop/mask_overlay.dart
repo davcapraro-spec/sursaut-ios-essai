@@ -30,9 +30,13 @@ class MaskOverlay extends StatefulWidget {
     required this.onDraw,
     required this.onEdit,
     required this.onEditEnd,
+    this.area,
   });
 
   final ui.Image image;
+
+  /// Zone du masque d'IA choisi, en rouge transparent (même repère que la photo), ou null.
+  final ui.Image? area;
 
   /// La composante choisie du masque choisi (dégradé linéaire, radial, plage…), ou null.
   final Map<String, dynamic>? comp;
@@ -75,6 +79,126 @@ class _MaskOverlayState extends State<MaskOverlay> {
   final List<List<double>> _paint = <List<double>>[]; // trait de pinceau en cours
   Offset? _cursor;
   Map<String, dynamic> _comp0 = <String, dynamic>{};
+
+  // Zoom : la photo affichée est la photo « ajustée » agrandie de _zoom, centrée dans la zone + _pan (comme dans « Supprimer »).
+  static const double _maxZoom = 10;
+  double _zoom = 1;
+  Offset _pan = Offset.zero;
+  Size _box = Size.zero;
+  Rect _fitRect = Rect.zero;
+  final Map<int, Offset> _pointers = <int, Offset>{};
+  bool _pinching = false; // deux doigts posés : zoom et déplacement
+  bool _blocked = false; // après un pincement, le doigt restant est ignoré jusqu'à ce que tout soit levé
+  DateTime _pinchEnd = DateTime.fromMillisecondsSinceEpoch(0);
+  double _pinchD0 = 1;
+  Offset _pinchM0 = Offset.zero;
+  double _pinchZoom0 = 1;
+  Offset _pinchPan0 = Offset.zero;
+
+  Rect _view() => Rect.fromCenter(
+        center: Offset(_box.width / 2, _box.height / 2) + _pan,
+        width: _fitRect.width * _zoom,
+        height: _fitRect.height * _zoom,
+      );
+
+  Offset _clampPan(Offset pan, double zoom) {
+    final double mx = math.max(0.0, (_fitRect.width * zoom - _box.width) / 2);
+    final double my = math.max(0.0, (_fitRect.height * zoom - _box.height) / 2);
+    return Offset(pan.dx.clamp(-mx, mx).toDouble(), pan.dy.clamp(-my, my).toDouble());
+  }
+
+  void _zoomBy(double factor) {
+    final double z = (_zoom * factor).clamp(1.0, _maxZoom).toDouble();
+    setState(() {
+      _pan = _clampPan(_pan * (z / _zoom), z);
+      _zoom = z;
+    });
+  }
+
+  void _zoomReset() => setState(() {
+        _zoom = 1;
+        _pan = Offset.zero;
+      });
+
+  /// Un second doigt arrive : le geste d'un doigt en cours est abandonné (un déplacement déjà fait est validé).
+  void _cancelSingle() {
+    if (_drag != null && _drag != 'create' && _drag != 'paint' && _moved) widget.onEditEnd();
+    _drag = null;
+    _paint.clear();
+    setState(() {
+      _a = _b = null;
+      _cursor = null;
+    });
+  }
+
+  void _onPtrDown(PointerDownEvent e) {
+    _pointers[e.pointer] = e.localPosition;
+    if (_pointers.length == 2) {
+      _cancelSingle();
+      _pinching = true;
+      _blocked = true;
+      final List<Offset> pts = _pointers.values.toList();
+      _pinchD0 = math.max((pts[0] - pts[1]).distance, 1);
+      _pinchM0 = (pts[0] + pts[1]) / 2;
+      _pinchZoom0 = _zoom;
+      _pinchPan0 = _pan;
+    }
+  }
+
+  void _onPtrMove(PointerMoveEvent e) {
+    if (!_pointers.containsKey(e.pointer)) return;
+    _pointers[e.pointer] = e.localPosition;
+    if (_pinching && _pointers.length >= 2) {
+      final List<Offset> pts = _pointers.values.toList();
+      final double d = math.max((pts[0] - pts[1]).distance, 1);
+      final Offset m = (pts[0] + pts[1]) / 2;
+      final double z = (_pinchZoom0 * d / _pinchD0).clamp(1.0, _maxZoom).toDouble();
+      final Offset center = Offset(_box.width / 2, _box.height / 2);
+      final Offset q = (_pinchM0 - center - _pinchPan0) / _pinchZoom0; // point de la photo sous les doigts au départ
+      setState(() {
+        _zoom = z;
+        _pan = _clampPan(m - center - q * z, z);
+      });
+    }
+  }
+
+  void _onPtrUp(PointerEvent e) {
+    if (_pointers.remove(e.pointer) == null) return;
+    if (_pinching && _pointers.length < 2) {
+      _pinching = false;
+      _pinchEnd = DateTime.now();
+    }
+    if (_pointers.isEmpty) _blocked = false;
+  }
+
+  bool get _gestureBlocked =>
+      _pinching || _blocked || _pointers.length > 1 || DateTime.now().difference(_pinchEnd).inMilliseconds < 300;
+
+  Widget _zoomBar() {
+    return Material(
+      color: const Color(0xE61E1E21),
+      borderRadius: BorderRadius.circular(14),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          IconButton(
+            tooltip: 'Zoom arrière',
+            onPressed: _zoom > 1 ? () => _zoomBy(1 / 1.5) : null,
+            icon: const Icon(Icons.remove),
+          ),
+          TextButton(
+            onPressed: _zoom > 1 ? _zoomReset : null,
+            child: Text(_zoom > 1 ? '×${_zoom.toStringAsFixed(1).replaceAll('.', ',')}' : 'Ajusté'),
+          ),
+          IconButton(
+            tooltip: 'Zoom avant',
+            onPressed: _zoom < _maxZoom ? () => _zoomBy(1.5) : null,
+            icon: const Icon(Icons.add),
+          ),
+        ],
+      ),
+    );
+  }
 
   Rect _fit(Size box) {
     final double iw = widget.image.width.toDouble(), ih = widget.image.height.toDouble();
@@ -245,47 +369,77 @@ class _MaskOverlayState extends State<MaskOverlay> {
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (BuildContext context, BoxConstraints box) {
-      final Rect img = _fit(Size(box.maxWidth, box.maxHeight));
-      return GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onPanDown: (DragDownDetails d) => _down(img, d.localPosition),
-        onPanUpdate: (DragUpdateDetails d) => _update(img, d.localPosition),
-        onTapUp: (TapUpDetails d) {
-          if (widget.paintKind != null && !widget.pickMode) {
-            widget.onStroke(<List<double>>[_frac(img, d.localPosition)]);
-          }
-          if (widget.pickMode) {
-            final List<double> f = _frac(img, d.localPosition);
-            widget.onPick(f[0], f[1]);
-          }
-        },
-        onPanEnd: (DragEndDetails d) => _up(img, _last),
-        onPanCancel: () {
-          if (_drag != null && _drag != 'create' && _drag != 'paint' && _moved) widget.onEditEnd();
-          _paint.clear();
-          setState(() {
-            _drag = null;
-            _a = _b = null;
-            _cursor = null;
-          });
-        },
-        child: CustomPaint(
-          size: Size(box.maxWidth, box.maxHeight),
-          painter: _MaskPainter(
-            image: widget.image,
-            rect: img,
-            comp: widget.comp,
-            invert: widget.invert,
-            showArea: widget.showArea,
-            drawKind: widget.drawKind,
-            a: _a,
-            b: _b,
-            paintKind: widget.paintKind,
-            paintPts: List<List<double>>.of(_paint),
-            brushR: widget.brushR,
-            cursor: _cursor,
+      _box = Size(box.maxWidth, box.maxHeight);
+      _fitRect = _fit(_box);
+      _pan = _clampPan(_pan, _zoom);
+      final Rect img = _view();
+      return Stack(
+        children: <Widget>[
+          Positioned.fill(
+            child: ClipRect(
+              child: Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: _onPtrDown,
+                onPointerMove: _onPtrMove,
+                onPointerUp: _onPtrUp,
+                onPointerCancel: _onPtrUp,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanDown: (DragDownDetails d) {
+                    if (_gestureBlocked) return;
+                    _down(img, d.localPosition);
+                  },
+                  onPanUpdate: (DragUpdateDetails d) {
+                    if (_gestureBlocked) return;
+                    _update(img, d.localPosition);
+                  },
+                  onTapUp: (TapUpDetails d) {
+                    if (_gestureBlocked) return;
+                    if (widget.paintKind != null && !widget.pickMode) {
+                      widget.onStroke(<List<double>>[_frac(img, d.localPosition)]);
+                    }
+                    if (widget.pickMode) {
+                      final List<double> f = _frac(img, d.localPosition);
+                      widget.onPick(f[0], f[1]);
+                    }
+                  },
+                  onPanEnd: (DragEndDetails d) {
+                    if (_gestureBlocked) return;
+                    _up(img, _last);
+                  },
+                  onPanCancel: () {
+                    if (_drag != null && _drag != 'create' && _drag != 'paint' && _moved) widget.onEditEnd();
+                    _paint.clear();
+                    setState(() {
+                      _drag = null;
+                      _a = _b = null;
+                      _cursor = null;
+                    });
+                  },
+                  child: CustomPaint(
+                    size: _box,
+                    painter: _MaskPainter(
+                      image: widget.image,
+                      area: widget.area,
+                      rect: img,
+                      comp: widget.comp,
+                      invert: widget.invert,
+                      showArea: widget.showArea,
+                      drawKind: widget.drawKind,
+                      a: _a,
+                      b: _b,
+                      paintKind: widget.paintKind,
+                      paintPts: List<List<double>>.of(_paint),
+                      brushR: widget.brushR,
+                      cursor: _cursor,
+                    ),
+                  ),
+                ),
+              ),
+            ),
           ),
-        ),
+          Positioned(right: 12, bottom: 12, child: _zoomBar()),
+        ],
       );
     });
   }
@@ -294,6 +448,7 @@ class _MaskOverlayState extends State<MaskOverlay> {
 class _MaskPainter extends CustomPainter {
   _MaskPainter({
     required this.image,
+    required this.area,
     required this.rect,
     required this.comp,
     required this.invert,
@@ -308,6 +463,7 @@ class _MaskPainter extends CustomPainter {
   });
 
   final ui.Image image;
+  final ui.Image? area;
   final Rect rect;
   final Map<String, dynamic>? comp;
   final bool invert;
@@ -345,6 +501,11 @@ class _MaskPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     paintImage(canvas: canvas, rect: rect, image: image, fit: BoxFit.fill, filterQuality: FilterQuality.medium);
+    final ui.Image? zone = area;
+    if (zone != null) {
+      canvas.drawImageRect(zone, Rect.fromLTWH(0, 0, zone.width.toDouble(), zone.height.toDouble()), rect,
+          Paint()..filterQuality = FilterQuality.medium);
+    }
     canvas.save();
     canvas.clipRect(rect);
     final Color tint = _kAmber.withAlpha(107);
