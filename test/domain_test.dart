@@ -268,8 +268,9 @@ void main() {
     expect(suggestDenoiseAmount(null), isNull);
     expect(suggestDenoiseAmount(100), 0);
     expect(suggestDenoiseAmount(400), 0);
-    expect(suggestDenoiseAmount(800), 28);
-    expect(suggestDenoiseAmount(4000), 93);
+    expect(suggestDenoiseAmount(800), 22);
+    expect(suggestDenoiseAmount(1600), 44);
+    expect(suggestDenoiseAmount(4000), 73);
     expect(suggestDenoiseAmount(25600), 100);
     expect(noiseAdvice(800), isNull);
     expect(noiseAdvice(4000), isNotNull);

@@ -49,10 +49,11 @@ List<String> shootLines(Map<String, dynamic> info) {
 const double kDenoiseColorRatio = 0.8;
 
 /// Quantité de réduction du bruit proposée d'après l'ISO (même courbe que le PC) : rien jusqu'à 400,
-/// puis +28 par cran (ISO ×2), plafonné à 100. Null si l'ISO est inconnu.
+/// puis +22 par cran (ISO ×2), plafonné à 100 (ISO 4000 : 73). Adoucie le 23/11/2026 (28 auparavant)
+/// à la demande de David, sur le PC et sur l'iPad. Null si l'ISO est inconnu.
 int? suggestDenoiseAmount(num? iso) {
   if (iso == null || iso <= 0) return null;
-  final double v = 28.0 * (math.log(iso / 400.0) / math.ln2);
+  final double v = 22.0 * (math.log(iso / 400.0) / math.ln2);
   return v.clamp(0.0, 100.0).round();
 }
 
