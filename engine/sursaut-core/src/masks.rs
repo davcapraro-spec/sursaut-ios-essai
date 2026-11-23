@@ -371,6 +371,12 @@ impl Adjust {
     }
 }
 
+/// Numéro du masque à montrer en rouge (clé `zone_view` de la recette), s'il y en a un.
+pub fn zone_view_index(recipe_json: &str) -> Option<usize> {
+    let v: serde_json::Value = serde_json::from_str(recipe_json).ok()?;
+    v.get("zone_view")?.as_u64().map(|n| n as usize)
+}
+
 /// Valeur (0..1) du masque `index` sur tout le cadre de sortie : sert à l'affichage de la superposition rouge.
 pub fn render_mask(img: &Image, r: &Recipe, index: usize) -> Vec<f32> {
     let (ow, oh) = (img.w, img.h);

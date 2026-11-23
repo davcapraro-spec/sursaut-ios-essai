@@ -63,10 +63,21 @@ impl Engine {
     pub fn render(&mut self, recipe_json: &str) -> Result<(usize, usize), String> {
         let recipe = if recipe_json.trim().is_empty() { Recipe::default() } else { Recipe::from_json(recipe_json)? };
         let (w, h, rgb) = self.pipe.render_u8(&recipe);
+        // « Voir la zone du masque » : la zone du masque `zone_view` est teintée en rouge par-dessus le rendu (jamais exportée).
+        let zone = sursaut_core::masks::zone_view_index(recipe_json)
+            .map(|i| self.pipe.render_mask(&recipe, i))
+            .filter(|(mw, mh, _)| *mw == w && *mh == h);
         self.out.clear();
         self.out.reserve(w * h * 4);
-        for p in rgb.chunks_exact(3) {
-            self.out.extend_from_slice(&[p[0], p[1], p[2], 255]);
+        for (n, p) in rgb.chunks_exact(3).enumerate() {
+            match &zone {
+                Some((_, _, plane)) => {
+                    let a = plane[n].clamp(0.0, 1.0) * 0.6;
+                    let mix = |c: u8, t: f32| (c as f32 * (1.0 - a) + t * a).round().clamp(0.0, 255.0) as u8;
+                    self.out.extend_from_slice(&[mix(p[0], 255.0), mix(p[1], 40.0), mix(p[2], 40.0), 255]);
+                }
+                None => self.out.extend_from_slice(&[p[0], p[1], p[2], 255]),
+            }
         }
         Ok((w, h))
     }
@@ -681,6 +692,25 @@ mod tests {
         assert!((canal(e.output(), w, 2, 22, 0) - 100.0).abs() < 2.0);
         // refus propres
         assert_eq!(unsafe { sursaut_set_bitmap(std::ptr::null(), 4, 4, plan.as_ptr()) }, 0);
+    }
+
+    #[test]
+    fn voir_la_zone_du_masque_teinte_en_rouge_sans_changer_le_reste() {
+        let (w, h) = (64usize, 32usize);
+        let src = aplat(w, h, [100, 100, 100], [100, 100, 100]);
+        let mut e = Engine::open_rgba8(&src, w, h).unwrap();
+        let comp = r#"{"kind":"luminance","op":"add","invert":false,"lo":0.0,"hi":1.0,"smooth":0.0}"#;
+        let json = masque(comp, 0.0);
+        e.render(&json).unwrap();
+        let (r0, g0) = (canal(e.output(), w, 2, 62, 0), canal(e.output(), w, 2, 62, 1));
+        assert!((r0 - g0).abs() < 2.0, "sans zone la photo reste grise : {r0} {g0}");
+        let avec = json.replacen('{', r#"{"zone_view":0,"#, 1);
+        e.render(&avec).unwrap();
+        let (r1, g1) = (canal(e.output(), w, 2, 62, 0), canal(e.output(), w, 2, 62, 1));
+        assert!(r1 > g1 + 50.0, "la zone doit être rouge : {r1} {g1}");
+        // un numéro de masque qui n'existe pas ne teinte rien
+        e.render(&json.replacen('{', r#"{"zone_view":5,"#, 1)).unwrap();
+        assert!((canal(e.output(), w, 2, 62, 0) - canal(e.output(), w, 2, 62, 1)).abs() < 2.0);
     }
 
     #[test]
