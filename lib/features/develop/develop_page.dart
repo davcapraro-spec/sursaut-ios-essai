@@ -1263,8 +1263,19 @@ class _DevelopPageState extends State<DevelopPage> {
         return;
       }
       final (Uint8List, int, int) fit = fitPlane(mask, r.width, r.height);
+      int covered = 0;
+      for (final int v in fit.$1) {
+        if (v > 127) covered++;
+      }
+      if (covered == 0) {
+        _say('Aucun sujet repéré par iPadOS.');
+        return;
+      }
       final String key = maskKey(fit.$1);
       MaskBitmaps.set(key, fit.$2, fit.$3, fit.$1);
+      final bool inEngine = MaskBitmaps.has(key);
+      final int pct = (covered * 100 / fit.$1.length).round();
+      _say(inEngine ? 'Zone repérée : $pct % de l\'image.' : 'Zone repérée ($pct % de l\'image) mais refusée par le moteur.');
       final MaskMap m = bitmapMask(
         name: nextMaskName(_masks, kAiNames[what]!),
         key: key,
