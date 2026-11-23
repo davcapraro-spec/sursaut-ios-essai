@@ -1249,9 +1249,11 @@ class _DevelopPageState extends State<DevelopPage> {
     }
     final List<VisionPerson> list = found.persons;
     if (list.length < 2) {
+      _say('iPadOS ne repère qu\'une personne (ou un groupe collé) : pas de choix possible.');
       await _maskAi('person');
       return;
     }
+    _say('${list.length} personnes repérées.');
     final List<ui.Image> thumbs = await _personThumbs(rgba, list);
     if (!mounted) return;
     final int? pick = await showModalBottomSheet<int>(
