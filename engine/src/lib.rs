@@ -11,6 +11,7 @@
 //!   sursaut_engine_close(moteur)                   libère
 //!   sursaut_spot_tool(rgba, w, h, op, x, y, r, sortie)  outils de retouche : source, repérage d'une tache ou d'un objet
 //!   sursaut_dust_detect(rgba, w, h)                poussière du capteur trouvée (JSON)
+//!   sursaut_eyes_detect(rgba, w, h)                reflets de pupille (yeux rouges, yeux d'animaux) trouvés (JSON)
 //!   sursaut_engine_keep()                          référence les fonctions (voir PencilBridgePlugin.swift)
 //!
 //! Lecture d'un RAW (étape 3a, LibRaw) :
@@ -29,7 +30,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Mutex;
 use sursaut_core::{Pipeline, Recipe};
 
-const VERSION: &[u8] = b"sursaut_engine 0.5.0 (moteur sursaut-core + LibRaw 0.21.3)\0";
+const VERSION: &[u8] = b"sursaut_engine 0.6.0 (moteur sursaut-core + LibRaw 0.21.3)\0";
 
 static LAST_ERROR: Mutex<Option<CString>> = Mutex::new(None);
 
@@ -263,6 +264,7 @@ pub unsafe extern "C" fn sursaut_raw_close(raw: *mut raw::RawFile) {
 }
 
 static DUST_TEXT: Mutex<Option<CString>> = Mutex::new(None);
+static EYES_TEXT: Mutex<Option<CString>> = Mutex::new(None);
 
 fn rgba_to_rgb(rgba: &[u8]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
@@ -355,11 +357,50 @@ pub unsafe extern "C" fn sursaut_dust_detect(rgba: *const u8, w: u32, h: u32) ->
     }
 }
 
+/// Reflets de pupille : liste JSON `[{"x":..,"y":..,"r":..,"hue":"rouge","score":..,"chroma":..}, ...]` (du plus sûr au moins sûr).
+/// Le texte reste valable jusqu'au prochain appel. Nul en cas d'erreur.
+///
+/// # Safety
+/// `rgba` pointe vers `w * h * 4` octets valides.
+#[no_mangle]
+pub unsafe extern "C" fn sursaut_eyes_detect(rgba: *const u8, w: u32, h: u32) -> *const c_char {
+    if rgba.is_null() {
+        set_error("image absente");
+        return std::ptr::null();
+    }
+    let (w, h) = (w as usize, h as usize);
+    let slice = std::slice::from_raw_parts(rgba, w * h * 4);
+    let res = catch_unwind(AssertUnwindSafe(|| {
+        let found = sursaut_core::eyeshine::find_eyeshine(&rgba_to_rgb(slice), w, h, 8);
+        let items: Vec<String> = found
+            .iter()
+            .map(|e| format!("{{\"x\":{},\"y\":{},\"r\":{},\"hue\":\"{}\",\"score\":{},\"chroma\":{}}}", e.x, e.y, e.r, e.hue, e.score, e.chroma))
+            .collect();
+        format!("[{}]", items.join(","))
+    }));
+    match res {
+        Ok(t) => {
+            let c = CString::new(t).unwrap_or_default();
+            match EYES_TEXT.lock() {
+                Ok(mut g) => {
+                    *g = Some(c);
+                    g.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null())
+                }
+                Err(_) => std::ptr::null(),
+            }
+        }
+        Err(_) => {
+            set_error("erreur interne dans la recherche des yeux");
+            std::ptr::null()
+        }
+    }
+}
+
 /// Référence toutes les fonctions exportées : l'éditeur de liens d'iOS retire sinon celles que
 /// seul Dart (dart:ffi) utilise. Appelée une fois par le code Swift. Renvoie leur nombre.
 #[no_mangle]
 pub extern "C" fn sursaut_engine_keep() -> u32 {
-    let table: [usize; 11] = [
+    let table: [usize; 12] = [
         sursaut_engine_version as *const () as usize,
         sursaut_engine_last_error as *const () as usize,
         sursaut_engine_open_rgba8 as *const () as usize,
@@ -371,6 +412,7 @@ pub extern "C" fn sursaut_engine_keep() -> u32 {
         sursaut_raw_close as *const () as usize,
         sursaut_spot_tool as *const () as usize,
         sursaut_dust_detect as *const () as usize,
+        sursaut_eyes_detect as *const () as usize,
     ];
     std::hint::black_box(&table);
     table.len() as u32
@@ -397,7 +439,7 @@ mod tests {
     #[test]
     fn version_et_erreur_vide() {
         let v = unsafe { CStr::from_ptr(sursaut_engine_version()) }.to_str().unwrap();
-        assert!(v.starts_with("sursaut_engine 0.5.0"));
+        assert!(v.starts_with("sursaut_engine 0.6.0"));
     }
 
     #[test]
@@ -463,7 +505,7 @@ mod tests {
 
     #[test]
     fn keep_compte_les_fonctions() {
-        assert_eq!(sursaut_engine_keep(), 11);
+        assert_eq!(sursaut_engine_keep(), 12);
     }
 
     #[test]
@@ -513,6 +555,11 @@ mod tests {
         assert!(txt.starts_with('['));
         // la qualité de détection est testée dans sursaut-core ; ici : l'appel rend une liste JSON valide
         assert!(txt.ends_with(']'), "{txt}");
+        // yeux : liste JSON valide (la qualité est testée dans sursaut-core)
+        let q = unsafe { sursaut_eyes_detect(img.as_ptr(), w as u32, h as u32) };
+        assert!(!q.is_null());
+        let et = unsafe { CStr::from_ptr(q) }.to_str().unwrap().to_string();
+        assert!(et.starts_with('[') && et.ends_with(']'), "{et}");
         // entrée absente : erreur propre
         assert_eq!(unsafe { sursaut_spot_tool(std::ptr::null(), 1, 1, 0, 0.0, 0.0, 0.01, out.as_mut_ptr()) }, -1);
     }

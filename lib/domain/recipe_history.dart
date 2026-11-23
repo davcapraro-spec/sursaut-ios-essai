@@ -1,4 +1,5 @@
 import 'curves.dart';
+import 'masks.dart';
 import 'spots.dart';
 
 /// Historique annuler/rétablir d'une recette : réglages numériques à plat + courbes de tonalité.
@@ -9,8 +10,9 @@ class RecipeHistory {
   RecipeHistory(Map<String, double> initial,
       {Map<String, CurvePoints> curves = const <String, CurvePoints>{},
       List<Spot> spots = const <Spot>[],
+      List<MaskMap> masks = const <MaskMap>[],
       this.limit = 200})
-      : _states = <_State>[_State(Map<String, double>.of(initial), _copyCurves(curves), copySpots(spots))];
+      : _states = <_State>[_State(Map<String, double>.of(initial), _copyCurves(curves), copySpots(spots), copyMasks(masks))];
 
   final int limit;
   final List<_State> _states;
@@ -19,17 +21,19 @@ class RecipeHistory {
   Map<String, double> get current => Map<String, double>.of(_states[_pos].values);
   Map<String, CurvePoints> get currentCurves => _copyCurves(_states[_pos].curves);
   List<Spot> get currentSpots => copySpots(_states[_pos].spots);
+  List<MaskMap> get currentMasks => copyMasks(_states[_pos].masks);
   bool get canUndo => _pos > 0;
   bool get canRedo => _pos < _states.length - 1;
 
   /// Enregistre un nouvel état. Sans effet s'il est identique à l'état courant.
   void commit(Map<String, double> values,
       {Map<String, CurvePoints> curves = const <String, CurvePoints>{},
-      List<Spot> spots = const <Spot>[]}) {
+      List<Spot> spots = const <Spot>[],
+      List<MaskMap> masks = const <MaskMap>[]}) {
     final _State s = _states[_pos];
-    if (_same(s.values, values) && curvesEqual(s.curves, curves) && spotsEqual(s.spots, spots)) return;
+    if (_same(s.values, values) && curvesEqual(s.curves, curves) && spotsEqual(s.spots, spots) && masksEqual(s.masks, masks)) return;
     _states.removeRange(_pos + 1, _states.length);
-    _states.add(_State(Map<String, double>.of(values), _copyCurves(curves), copySpots(spots)));
+    _states.add(_State(Map<String, double>.of(values), _copyCurves(curves), copySpots(spots), copyMasks(masks)));
     if (_states.length > limit) {
       _states.removeAt(0);
     }
@@ -63,8 +67,9 @@ class RecipeHistory {
 }
 
 class _State {
-  _State(this.values, this.curves, this.spots);
+  _State(this.values, this.curves, this.spots, this.masks);
   final Map<String, double> values;
   final Map<String, CurvePoints> curves;
   final List<Spot> spots;
+  final List<MaskMap> masks;
 }

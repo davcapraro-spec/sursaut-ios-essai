@@ -9,6 +9,7 @@ pub mod blur;
 pub mod color;
 pub mod curve;
 pub mod dust;
+pub mod eyeshine;
 pub mod image;
 pub mod layers;
 pub mod masks;

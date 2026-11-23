@@ -6,6 +6,7 @@ import 'dart:io';
 
 import 'package:sursaut_essai/domain/curves.dart';
 import 'package:sursaut_essai/domain/lens_profiles.dart';
+import 'package:sursaut_essai/domain/masks.dart';
 import 'package:sursaut_essai/domain/develop_params.dart';
 import 'package:sursaut_essai/domain/photo_key.dart';
 import 'package:sursaut_essai/domain/recipe_history.dart';
@@ -274,5 +275,48 @@ void main() {
     expect(suggestDenoiseAmount(25600), 100);
     expect(noiseAdvice(800), isNull);
     expect(noiseAdvice(4000), isNotNull);
+  });
+
+  test('yeux rouges : masque, doublons et historique', () {
+    final MaskMap m = eyeMask(<String, dynamic>{'x': 0.4, 'y': 0.3, 'r': 0.01, 'hue': 'vert'}, 0.5, '${kEyeMaskPrefix}vert 1');
+    expect(isEyeMask(m), isTrue);
+    expect(m['amount'], 50.0);
+    final List<dynamic> comps = m['comps'] as List<dynamic>;
+    expect((comps[0] as Map<String, dynamic>)['rx'], closeTo(0.016, 1e-9));
+    expect((comps[1] as Map<String, dynamic>)['hue'], 120.0);
+    expect(isEyeMask(<String, dynamic>{'name': 'Dégradé ciel'}), isFalse);
+
+    // le masque se range dans le fichier et en ressort intact, à côté des masques du PC
+    final Map<String, dynamic> extra = <String, dynamic>{
+      'masks': <dynamic>[m, <String, dynamic>{'name': 'Ciel', 'comps': <dynamic>[]}],
+      'autre': 1,
+    };
+    final (List<MaskMap> masks, Map<String, dynamic> rest) = splitMasks(extra);
+    expect(masks.length, 2);
+    expect(rest.containsKey('masks'), isFalse);
+    expect(rest['autre'], 1);
+    expect(masksEqual(masks, copyMasks(masks)), isTrue);
+
+    // un œil déjà corrigé n'est pas corrigé deux fois ; un reflet pâle est écarté
+    final List<Map<String, dynamic>> found = <Map<String, dynamic>>[
+      <String, dynamic>{'x': 0.4, 'y': 0.3, 'r': 0.01, 'hue': 'vert', 'score': 1.0, 'chroma': 70.0},
+      <String, dynamic>{'x': 0.6, 'y': 0.3, 'r': 0.01, 'hue': 'vert', 'score': 0.9, 'chroma': 66.0},
+      <String, dynamic>{'x': 0.8, 'y': 0.7, 'r': 0.01, 'hue': 'rouge', 'score': 0.4, 'chroma': 35.0},
+    ];
+    final (List<Map<String, dynamic>> fresh, int weak) = freshEyes(found, masks);
+    expect(fresh.length, 1);
+    expect(fresh.first['x'], 0.6);
+    expect(weak, 1);
+
+    // annuler / rétablir ramène les masques
+    final RecipeHistory h = RecipeHistory(<String, double>{'a': 0});
+    expect(h.currentMasks, isEmpty);
+    h.commit(<String, double>{'a': 0}, masks: masks);
+    expect(h.canUndo, isTrue);
+    expect(h.currentMasks.length, 2);
+    h.undo();
+    expect(h.currentMasks, isEmpty);
+    h.redo();
+    expect(h.currentMasks.length, 2);
   });
 }

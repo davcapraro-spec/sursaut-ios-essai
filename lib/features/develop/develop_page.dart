@@ -17,6 +17,7 @@ import '../../domain/crop_math.dart';
 import '../../domain/curves.dart';
 import '../../domain/develop_params.dart';
 import '../../domain/lens_profiles.dart';
+import '../../domain/masks.dart';
 import '../../domain/shoot_info.dart';
 import '../../domain/photo_key.dart';
 import '../../domain/recipe_history.dart';
@@ -108,6 +109,12 @@ class _DevelopPageState extends State<DevelopPage> {
   bool _dustShow = true;
   double _dustSens = 85;
 
+  /// Masques locaux de la recette ; l'onglet « Supprimer » y ajoute les corrections d'yeux rouges.
+  List<MaskMap> _masks = <MaskMap>[];
+  bool _eyesBusy = false;
+  String _eyesMsg = '';
+  double _eyesStrength = 100;
+
   bool _cropMode = false;
   double? _aspect; // largeur/hauteur imposée ; null = cadre libre
 
@@ -141,11 +148,15 @@ class _DevelopPageState extends State<DevelopPage> {
     _key = photoKey(rgba, w, h);
     final SidecarData read = await _readSidecar(_key);
     final (Map<String, CurvePoints> loadedCurves, Map<String, dynamic> rest0) = splitCurves(read.extra);
-    final (List<Spot> loadedSpots, Map<String, dynamic> rest) = splitSpots(rest0);
+    final (List<Spot> loadedSpots, Map<String, dynamic> rest1) = splitSpots(rest0);
+    final (List<MaskMap> loadedMasks, Map<String, dynamic> rest) = splitMasks(rest1);
     final SidecarData loaded = SidecarData(read.values, rest);
     setState(() {
       _curves = loadedCurves;
       _spots = loadedSpots;
+      _masks = loadedMasks;
+      _eyesMsg = '';
+      _syncEyesStrength();
       _spotSel = -1;
       _dust = null;
       _srcRgba = rgba;
@@ -158,8 +169,8 @@ class _DevelopPageState extends State<DevelopPage> {
       }
       _cropMode = false;
       _aspect = null;
-      _history = RecipeHistory(_values, curves: _curves, spots: _spots);
-      _saveInfo = loaded.values.isNotEmpty || loaded.extra.isNotEmpty || loadedCurves.isNotEmpty || loadedSpots.isNotEmpty
+      _history = RecipeHistory(_values, curves: _curves, spots: _spots, masks: _masks);
+      _saveInfo = loaded.values.isNotEmpty || loaded.extra.isNotEmpty || loadedCurves.isNotEmpty || loadedSpots.isNotEmpty || loadedMasks.isNotEmpty
           ? 'Réglages retrouvés'
           : '';
     });
@@ -196,6 +207,7 @@ class _DevelopPageState extends State<DevelopPage> {
         ..._sidecar.extra,
         ...curvesToJson(_curves),
         if (_spots.isNotEmpty) 'spots': _spots,
+        if (_masks.isNotEmpty) 'masks': _masks,
       });
       await f.writeAsString(out.encode(_values, _keys, defaults: kParamDefaults));
       if (mounted) setState(() => _saveInfo = 'Réglages enregistrés');
@@ -206,7 +218,7 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Valide l'état actuel : une étape d'annulation + sauvegarde du fichier.
   void _commit() {
-    _history.commit(_values, curves: _curves, spots: _spots);
+    _history.commit(_values, curves: _curves, spots: _spots, masks: _masks);
     _writeSidecar();
     setState(() {});
   }
@@ -216,6 +228,8 @@ class _DevelopPageState extends State<DevelopPage> {
     setState(() {
       _curves = _history.currentCurves;
       _spots = _history.currentSpots;
+      _masks = _history.currentMasks;
+      _syncEyesStrength();
       _spotSel = -1;
       for (final String k in _values.keys.toList()) {
         _values[k] = v[k] ?? defaultOf(k);
@@ -493,6 +507,7 @@ class _DevelopPageState extends State<DevelopPage> {
         ..._sidecar.extra,
         ...curvesToJson(_curves),
         if (_spots.isNotEmpty) 'spots': _spots,
+        if (_masks.isNotEmpty) 'masks': _masks,
         ..._values,
       };
 
@@ -1070,6 +1085,95 @@ class _DevelopPageState extends State<DevelopPage> {
     _spotsChanged();
   }
 
+  // -- Supprimer : yeux rouges et reflets d'animaux ---------------------------------------------
+  /// Le curseur « Force » reprend l'opacité des corrections d'yeux présentes (fichier ouvert, annuler/rétablir).
+  void _syncEyesStrength() {
+    final List<MaskMap> eyes = _eyeMasks;
+    _eyesStrength = eyes.isEmpty ? 100 : ((eyes.first['amount'] as num?)?.toDouble() ?? 100);
+  }
+
+  List<MaskMap> get _eyeMasks => <MaskMap>[
+        for (final MaskMap m in _masks)
+          if (isEyeMask(m)) m,
+      ];
+
+  Future<void> _eyesFix() async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _eyesBusy) return;
+    final int token = _rawToken;
+    final String key = _key;
+    setState(() {
+      _eyesBusy = true;
+      _eyesMsg = '';
+    });
+    try {
+      final List<Map<String, dynamic>> seen = await RetouchTools.detectEyes(rgba, _w, _h);
+      if (!mounted || key != _key || token != _rawToken) return;
+      final (List<Map<String, dynamic>> fresh, int weak) = freshEyes(seen, _masks);
+      if (fresh.isEmpty) {
+        final String pale = weak > 0 ? ' ($weak reflet${weak > 1 ? 's' : ''} trop pâle${weak > 1 ? 's' : ''} ignoré${weak > 1 ? 's' : ''})' : '';
+        setState(() {
+          _eyesMsg = seen.length > weak
+              ? 'Les yeux trouvés sont déjà corrigés.'
+              : weak > 0
+                  ? 'Aucune pupille nettement colorée trouvée$pale.'
+                  : 'Aucune pupille colorée trouvée.';
+        });
+        return;
+      }
+      final List<MaskMap> added = <MaskMap>[];
+      final int base = _eyeMasks.length;
+      for (final Map<String, dynamic> e in fresh) {
+        added.add(eyeMask(e, _eyesStrength / 100, '$kEyeMaskPrefix${e['hue']} ${base + added.length + 1}'));
+      }
+      final int n = added.length;
+      setState(() {
+        _masks = <MaskMap>[..._masks, ...added];
+        _before = false;
+        _eyesMsg = '$n œil${n > 1 ? 's' : ''} corrigé${n > 1 ? 's' : ''} : vérifiez sur la photo.';
+      });
+      _commit();
+      _refresh();
+    } catch (e) {
+      _say('La recherche des yeux a échoué : $e');
+    } finally {
+      if (mounted) setState(() => _eyesBusy = false);
+    }
+  }
+
+  /// Le curseur « Force » règle l'opacité de toutes les corrections d'yeux déjà faites.
+  void _eyesStrengthChanged(double v) {
+    setState(() {
+      _eyesStrength = v;
+      _masks = <MaskMap>[
+        for (final MaskMap m in _masks)
+          if (isEyeMask(m)) <String, dynamic>{...m, 'amount': v} else m,
+      ];
+      _before = false;
+    });
+    if (_eyeMasks.isNotEmpty) _refresh();
+  }
+
+  void _eyesStrengthEnd() {
+    if (_eyeMasks.isEmpty) return;
+    _commit();
+    _refresh();
+  }
+
+  void _eyesRemove() {
+    if (_eyeMasks.isEmpty) return;
+    setState(() {
+      _masks = <MaskMap>[
+        for (final MaskMap m in _masks)
+          if (!isEyeMask(m)) m,
+      ];
+      _eyesMsg = 'Corrections retirées.';
+      _before = false;
+    });
+    _commit();
+    _refresh();
+  }
+
   Widget _slideRow(String label, double value, double min, double max, String shown,
       ValueChanged<double> onChanged, VoidCallback onEnd, bool ready) {
     return Row(
@@ -1217,6 +1321,34 @@ class _DevelopPageState extends State<DevelopPage> {
             const SizedBox(width: 8),
             TextButton(onPressed: ready && autoCount > 0 ? _dustRemove : null, child: const Text('Retirer')),
           ],
+        ),
+      ],
+      _groupTitle('YEUX ROUGES ET REFLETS D\'ANIMAUX', null),
+      const Text(
+        'Cherche les pupilles colorées (rouges chez les personnes, vertes, jaunes ou bleues chez les animaux) et leur retire la couleur ; le petit reflet blanc reste.',
+        style: TextStyle(fontSize: 12, color: Colors.white70),
+      ),
+      const SizedBox(height: 6),
+      FilledButton.tonalIcon(
+        onPressed: ready && !_eyesBusy ? _eyesFix : null,
+        icon: _eyesBusy
+            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(Icons.remove_red_eye_outlined),
+        label: Text(_eyesBusy ? 'Recherche en cours…' : 'Corriger les yeux'),
+      ),
+      if (_eyesMsg.isNotEmpty) ...<Widget>[
+        const SizedBox(height: 6),
+        Text(_eyesMsg, style: const TextStyle(fontSize: 12, color: Colors.white70)),
+      ],
+      if (_eyeMasks.isNotEmpty) ...<Widget>[
+        _slideRow('Force', _eyesStrength, 0, 100, _eyesStrength.round().toString(), _eyesStrengthChanged, _eyesStrengthEnd, ready),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: ready ? _eyesRemove : null,
+            icon: const Icon(Icons.delete_outline),
+            label: Text('Retirer les ${_eyeMasks.length} correction${_eyeMasks.length > 1 ? 's' : ''}'),
+          ),
         ),
       ],
     ];

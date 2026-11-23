@@ -42,7 +42,8 @@ class _Bindings {
         rawDevelop = lib.lookupFunction<_RawDevelopC, _RawDevelopD>('sursaut_raw_develop'),
         rawClose = lib.lookupFunction<_CloseC, _CloseD>('sursaut_raw_close'),
         spotTool = lib.lookupFunction<_SpotToolC, _SpotToolD>('sursaut_spot_tool'),
-        dustDetect = lib.lookupFunction<_DustC, _DustD>('sursaut_dust_detect');
+        dustDetect = lib.lookupFunction<_DustC, _DustD>('sursaut_dust_detect'),
+        eyesDetect = lib.lookupFunction<_DustC, _DustD>('sursaut_eyes_detect');
 
   final _VersionC version;
   final _VersionC lastError;
@@ -55,6 +56,7 @@ class _Bindings {
   final _CloseD rawClose;
   final _SpotToolD spotTool;
   final _DustD dustDetect;
+  final _DustD eyesDetect;
 
   static DynamicLibrary _library() {
     if (Platform.isIOS) return DynamicLibrary.process();
@@ -274,6 +276,24 @@ class RetouchTools {
       final Pointer<Uint8> src = _copy(rgba);
       try {
         final Pointer<Utf8> p = b.dustDetect(src, w, h);
+        if (p == nullptr) throw StateError(b.error());
+        return (jsonDecode(p.toDartString()) as List<dynamic>)
+            .map((Object? e) => Map<String, dynamic>.of(e as Map<String, dynamic>))
+            .toList();
+      } finally {
+        calloc.free(src);
+      }
+    });
+  }
+
+  /// Reflets de pupille (yeux rouges, yeux d'animaux), du plus sûr au moins sûr :
+  /// `{x, y, r, hue, score, chroma}` (hue : rouge, vert, jaune ou bleu). Tourne dans un autre fil.
+  static Future<List<Map<String, dynamic>>> detectEyes(Uint8List rgba, int w, int h) {
+    return Isolate.run<List<Map<String, dynamic>>>(() {
+      final _Bindings b = _Bindings.load();
+      final Pointer<Uint8> src = _copy(rgba);
+      try {
+        final Pointer<Utf8> p = b.eyesDetect(src, w, h);
         if (p == nullptr) throw StateError(b.error());
         return (jsonDecode(p.toDartString()) as List<dynamic>)
             .map((Object? e) => Map<String, dynamic>.of(e as Map<String, dynamic>))
