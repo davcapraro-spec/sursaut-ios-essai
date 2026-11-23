@@ -14,7 +14,7 @@ void main() {
     await tester.pump();
     expect(tester.takeException(), isNull);
     expect(find.textContaining('Moteur Rust'), findsWidgets);
-    expect(find.text('Image d\'essai'), findsOneWidget);
+    expect(find.byTooltip('Ouvrir une photo'), findsOneWidget);
   });
 
   testWidgets('les panneaux Courbe et Couleur s\'affichent', (WidgetTester tester) async {
