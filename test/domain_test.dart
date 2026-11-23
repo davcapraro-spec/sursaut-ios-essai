@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:sursaut_essai/domain/ai_masks.dart';
+import 'package:sursaut_essai/domain/face_parts.dart';
 import 'package:sursaut_essai/domain/crop_math.dart';
 import 'dart:convert';
 import 'dart:io';
@@ -581,5 +582,42 @@ void main() {
     expect(withoutPngs(<dynamic>[lin]).first, equals(lin));
     // copie et enregistrement : le PNG suit
     expect(mainComp(duplicateMask(m))!['png'], mainComp(m)!['png']);
+  });
+
+  test('parties du visage : zones remplies à partir des repères', () {
+    // carré du quart au trois-quarts d'une image de 8 x 8 : 4 lignes x 4 colonnes
+    const List<double> carre = <double>[0.25, 0.25, 0.75, 0.25, 0.75, 0.75, 0.25, 0.75];
+    final Uint8List plein = fillShape(8, 8, const PartShape(<List<double>>[carre], <List<double>>[]));
+    expect(plein.where((int v) => v == 255).length, 16);
+    expect(plein[3 * 8 + 3], 255);
+    expect(plein[0], 0);
+    // un trou retiré au milieu : colonnes 3 et 4, lignes 3 et 4
+    const List<double> trou = <double>[0.375, 0.375, 0.625, 0.375, 0.625, 0.625, 0.375, 0.625];
+    final Uint8List perce = fillShape(8, 8, const PartShape(<List<double>>[carre], <List<double>>[trou]));
+    expect(perce.where((int v) => v == 255).length, 12);
+    expect(perce[3 * 8 + 3], 0);
+    // agrandi deux fois autour de son centre
+    final List<double> grand = scalePoly(carre, 2);
+    expect(grand[0], closeTo(0.0, 1e-9));
+    expect(grand[2], closeTo(1.0, 1e-9));
+    // un trait devient un polygone de 2 x n points
+    expect(thickLine(<double>[0.1, 0.5, 0.2, 0.5, 0.3, 0.5], 0.02).length, 12);
+    expect(thickLine(<double>[0.1, 0.5], 0.02), isEmpty);
+    // un flou ne change pas une zone uniforme
+    final Uint8List fond = Uint8List(40)..fillRange(0, 40, 100);
+    expect(blurPlane(fond, 8, 5, 2).every((int v) => v == 100), isTrue);
+    // il adoucit un bord : la valeur de la frontière passe entre 0 et 255
+    final Uint8List doux = blurPlane(plein, 8, 8, 1);
+    expect(doux[3 * 8 + 1] > 0 && doux[3 * 8 + 1] < 255, isTrue);
+    // sans repères, pas de zone
+    expect(partShape(<String, List<double>>{}, 'eyes'), isNull);
+    final PartShape? yeux = partShape(<String, List<double>>{
+      'box': <double>[0.2, 0.2, 0.6, 0.7],
+      'leftEye': <double>[0.3, 0.3, 0.35, 0.28, 0.4, 0.3, 0.35, 0.32],
+      'rightEye': <double>[0.45, 0.3, 0.5, 0.28, 0.55, 0.3, 0.5, 0.32],
+    }, 'eyes');
+    expect(yeux, isNotNull);
+    expect(yeux!.add.length, 2);
+    expect(kFacePartNames.keys, containsAll(<String>['skin', 'eyes', 'brows', 'lips']));
   });
 }

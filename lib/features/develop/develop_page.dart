@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -10,12 +11,14 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:file_picker/file_picker.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
-import 'package:pencil_bridge/pencil_bridge.dart' show VisionBridge, VisionMaskResult, VisionPerson, VisionPersons;
+import 'package:pencil_bridge/pencil_bridge.dart'
+    show VisionBridge, VisionFace, VisionFaces, VisionMaskResult, VisionPerson, VisionPersons;
 import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
 import '../../domain/ai_masks.dart';
 import '../../domain/crop_math.dart';
+import '../../domain/face_parts.dart';
 import '../../domain/curves.dart';
 import '../../domain/develop_params.dart';
 import '../../domain/histogram.dart';
@@ -1306,6 +1309,122 @@ class _DevelopPageState extends State<DevelopPage> {
     _refresh();
   }
 
+  /// La personne dont le masque est choisi, sinon l'unique personne repérée ; null s'il faut choisir.
+  VisionPerson? get _targetPerson {
+    for (final VisionPerson p in _persons) {
+      final int at = _personMaskIndex(p);
+      if (at >= 0 && at == _maskSel) return p;
+    }
+    return _persons.length == 1 ? _persons.first : null;
+  }
+
+  /// Boutons des parties du visage, pour la personne dont le masque est choisi.
+  List<Widget> _facePartChips(TextStyle title, TextStyle hint) {
+    return <Widget>[
+      Padding(padding: const EdgeInsets.only(top: 6, bottom: 4), child: Text('PARTIES DU VISAGE', style: title)),
+      Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: <Widget>[
+          for (final MapEntry<String, String> e in kFacePartNames.entries)
+            ActionChip(
+              label: Text(e.value),
+              onPressed: _aiBusy ? null : () => _maskFacePart(e.key),
+            ),
+        ],
+      ),
+      Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Text(
+          _targetPerson == null ? 'Touchez d\'abord la pastille d\'une personne.' : 'Pour la personne choisie (zones calculées par iPadOS).',
+          style: hint,
+        ),
+      ),
+    ];
+  }
+
+  /// Un masque pour une partie du visage (peau, yeux, sourcils, lèvres) de la personne choisie.
+  Future<void> _maskFacePart(String part) async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
+    final VisionPerson? who = _targetPerson;
+    if (who == null) {
+      _say('Choisissez d\'abord une personne (touchez sa pastille).');
+      return;
+    }
+    setState(() => _aiBusy = true);
+    try {
+      final VisionFaces found = await VisionBridge.faceParts(rgba, _w, _h);
+      if (!mounted) return;
+      final String? error = found.error;
+      if (error != null) {
+        _say(error);
+        return;
+      }
+      // le visage dont le centre est dans le cadre de la personne (le plus grand s'il y en a plusieurs)
+      VisionFace? face;
+      double best = 0;
+      for (final VisionFace f in found.faces) {
+        final double cx = (f.x0 + f.x1) / 2, cy = (f.y0 + f.y1) / 2;
+        final double size = (f.x1 - f.x0) * (f.y1 - f.y0);
+        if (cx >= who.x0 && cx <= who.x1 && cy >= who.y0 && cy <= who.y1 && size > best) {
+          face = f;
+          best = size;
+        }
+      }
+      if (face == null) {
+        _say('Aucun visage repéré pour cette personne.');
+        return;
+      }
+      final Map<String, List<double>> marks = <String, List<double>>{
+        ...face.parts,
+        'box': <double>[face.x0, face.y0, face.x1, face.y1],
+      };
+      final PartShape? shape = partShape(marks, part);
+      if (shape == null) {
+        _say('iPadOS n\'a pas trouvé ${kFacePartNames[part]!.toLowerCase()} sur ce visage.');
+        return;
+      }
+      final double aspect = _w / _h;
+      final int pw = aspect >= 1 ? 1024 : (1024 * aspect).round().clamp(64, 1024).toInt();
+      final int ph = aspect >= 1 ? (1024 / aspect).round().clamp(64, 1024).toInt() : 1024;
+      final Uint8List plane = blurPlane(fillShape(pw, ph, shape), pw, ph, (math.max(pw, ph) * 0.004).round().clamp(1, 12).toInt());
+      int covered = 0;
+      for (final int v in plane) {
+        if (v > 127) covered++;
+      }
+      if (covered == 0) {
+        _say('Zone trop petite pour être sélectionnée.');
+        return;
+      }
+      final String key = maskKey(plane);
+      MaskBitmaps.set(key, pw, ph, plane);
+      final MaskMap m = bitmapMask(
+        name: nextMaskName(_masks, kFacePartNames[part]!),
+        key: key,
+        pngBase64: planeToBase64(plane, pw, ph),
+        what: 'face_$part',
+      );
+      setState(() {
+        _masks = <MaskMap>[..._masks, m];
+        _maskSel = _masks.length - 1;
+        _compSel = 0;
+        _maskDraw = null;
+        _maskAttach = false;
+        _maskPick = false;
+        _brushTool = null;
+        _before = false;
+        _maskZone = true;
+      });
+      _commit();
+      _refresh();
+    } catch (e) {
+      _say('Sélection impossible : $e');
+    } finally {
+      if (mounted) setState(() => _aiBusy = false);
+    }
+  }
+
   /// Rangée de pastilles dans le panneau : une par personne repérée, plus « Toutes ».
   /// Toucher une pastille choisit le masque de cette personne, ou le crée.
   List<Widget> _personTiles(TextStyle title, TextStyle hint) {
@@ -1744,6 +1863,7 @@ class _DevelopPageState extends State<DevelopPage> {
         ],
       ),
       if (_personsShown) ..._personTiles(title, hint),
+      if (_personsShown) ..._facePartChips(title, hint),
       Padding(padding: const EdgeInsets.only(top: 6), child: Text(guide, style: hint)),
       if (idx.isNotEmpty) ...<Widget>[
         const Padding(padding: EdgeInsets.only(top: 14, bottom: 2), child: Text('MASQUES', style: title)),

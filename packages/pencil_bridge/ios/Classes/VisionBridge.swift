@@ -14,7 +14,7 @@ final class VisionBridge {
       name: "sursaut/vision/methods",
       binaryMessenger: registrar.messenger())
     channel.setMethodCallHandler { call, result in
-      guard call.method == "instanceMask" || call.method == "listPersons" else {
+      guard call.method == "instanceMask" || call.method == "listPersons" || call.method == "faceParts" else {
         result(FlutterMethodNotImplemented)
         return
       }
@@ -31,9 +31,12 @@ final class VisionBridge {
       let tapY = args["y"] as? Double
       let pixels = typed.data
       let listing = call.method == "listPersons"
+      let faces = call.method == "faceParts"
       DispatchQueue.global(qos: .userInitiated).async {
         let out: [String: Any]
-        if listing {
+        if faces {
+          out = VisionBridge.faceParts(rgba: pixels, width: width, height: height)
+        } else if listing {
           out = VisionBridge.listPersons(rgba: pixels, width: width, height: height)
         } else {
           out = VisionBridge.instanceMask(
@@ -110,6 +113,54 @@ final class VisionBridge {
     } catch {
       return ["error": "Le masque n'a pas pu être fabriqué : \(error.localizedDescription)"]
     }
+  }
+
+  /// Les visages repérés avec leurs repères (yeux, sourcils, lèvres, contour) : suites x, y, x, y… en fractions de la photo.
+  static func faceParts(rgba: Data, width: Int, height: Int) -> [String: Any] {
+    guard let image = makeImage(rgba, width, height) else {
+      return ["error": "Image illisible pour le repérage des visages."]
+    }
+    let handler = VNImageRequestHandler(cgImage: image, options: [:])
+    let request = VNDetectFaceLandmarksRequest()
+    do {
+      try handler.perform([request])
+    } catch {
+      return ["error": "Vision a refusé l'image : \(error.localizedDescription)"]
+    }
+    guard let found = request.results, !found.isEmpty else {
+      return ["error": "Aucun visage repéré par iPadOS."]
+    }
+    var faces: [[String: Any]] = []
+    for face in found {
+      guard let marks = face.landmarks else { continue }
+      let box = face.boundingBox
+      func flat(_ region: VNFaceLandmarkRegion2D?) -> [Double] {
+        guard let region = region else { return [] }
+        var values: [Double] = []
+        for p in region.normalizedPoints {
+          values.append(Double(box.minX + p.x * box.width))
+          values.append(Double(1.0 - (box.minY + p.y * box.height)))
+        }
+        return values
+      }
+      faces.append([
+        "x0": Double(box.minX),
+        "y0": Double(1.0 - box.maxY),
+        "x1": Double(box.maxX),
+        "y1": Double(1.0 - box.minY),
+        "leftEye": flat(marks.leftEye),
+        "rightEye": flat(marks.rightEye),
+        "leftBrow": flat(marks.leftEyebrow),
+        "rightBrow": flat(marks.rightEyebrow),
+        "outerLips": flat(marks.outerLips),
+        "innerLips": flat(marks.innerLips),
+        "contour": flat(marks.faceContour),
+      ])
+    }
+    if faces.isEmpty {
+      return ["error": "Aucun visage exploitable."]
+    }
+    return ["faces": faces]
   }
 
   /// Les personnes repérées : pour chacune son cadre et un point à l'intérieur de sa silhouette (fractions de la photo).

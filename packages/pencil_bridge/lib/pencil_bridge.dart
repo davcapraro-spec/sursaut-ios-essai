@@ -138,11 +138,63 @@ class VisionPersons {
   final String? error;
 }
 
+/// Un visage repéré : son cadre (x0, y0, x1, y1) et ses repères, chacun une suite x, y, x, y… en fractions de la photo.
+class VisionFace {
+  const VisionFace(this.x0, this.y0, this.x1, this.y1, this.parts);
+
+  final double x0, y0, x1, y1;
+
+  /// `leftEye`, `rightEye`, `leftBrow`, `rightBrow`, `outerLips`, `innerLips`, `contour` (certains peuvent manquer).
+  final Map<String, List<double>> parts;
+}
+
+/// Les visages repérés par Vision, ou un message d'erreur.
+class VisionFaces {
+  const VisionFaces({this.faces = const <VisionFace>[], this.error});
+
+  final List<VisionFace> faces;
+  final String? error;
+}
+
 /// Détourage par Vision (Apple) : sujet principal ou personnes, sans fichier de modèle (iPadOS 17 ou plus).
 class VisionBridge {
   VisionBridge._();
 
   static const MethodChannel _methods = MethodChannel('sursaut/vision/methods');
+
+  /// Les visages de la photo avec leurs repères (yeux, sourcils, lèvres, contour).
+  static Future<VisionFaces> faceParts(Uint8List rgba, int width, int height) async {
+    try {
+      final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>(
+        'faceParts',
+        <String, Object?>{'rgba': rgba, 'width': width, 'height': height, 'kind': 'face'},
+      );
+      if (r == null) return const VisionFaces(error: 'Pas de réponse du repérage des visages.');
+      final Object? err = r['error'];
+      if (err != null) return VisionFaces(error: err.toString());
+      final Object? list = r['faces'];
+      if (list is! List<Object?>) return const VisionFaces(error: 'Réponse du repérage illisible.');
+      const List<String> keys = <String>['leftEye', 'rightEye', 'leftBrow', 'rightBrow', 'outerLips', 'innerLips', 'contour'];
+      final List<VisionFace> out = <VisionFace>[];
+      for (final Object? e in list) {
+        if (e is! Map<Object?, Object?>) continue;
+        double v(String k) => (e[k] as num?)?.toDouble() ?? 0;
+        final Map<String, List<double>> parts = <String, List<double>>{};
+        for (final String k in keys) {
+          final Object? raw = e[k];
+          if (raw is List<Object?>) {
+            parts[k] = <double>[for (final Object? n in raw) if (n is num) n.toDouble()];
+          }
+        }
+        out.add(VisionFace(v('x0'), v('y0'), v('x1'), v('y1'), parts));
+      }
+      return VisionFaces(faces: out);
+    } on MissingPluginException {
+      return const VisionFaces(error: 'Repérage des visages indisponible (pas un iPad).');
+    } on PlatformException catch (e) {
+      return VisionFaces(error: e.message ?? e.code);
+    }
+  }
 
   /// Les personnes de la photo, une entrée chacune (cadre + point intérieur), de gauche à droite.
   static Future<VisionPersons> listPersons(Uint8List rgba, int width, int height) async {
