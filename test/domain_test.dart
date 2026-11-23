@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:sursaut_essai/common/app_version.dart';
 import 'package:sursaut_essai/domain/ai_masks.dart';
 import 'package:sursaut_essai/domain/face_parts.dart';
 import 'package:sursaut_essai/domain/crop_math.dart';
@@ -584,6 +585,12 @@ void main() {
     expect(mainComp(duplicateMask(m))!['png'], mainComp(m)!['png']);
   });
 
+  test('le numéro de version affiché est celui de pubspec.yaml', () {
+    final String pubspec = File('pubspec.yaml').readAsStringSync();
+    final RegExpMatch? m = RegExp(r'^version:\s*(\d+\.\d+\.\d+)\+', multiLine: true).firstMatch(pubspec);
+    expect(m, isNotNull);
+    expect(kAppVersion, m!.group(1));
+  });
   test('parties du visage : zones remplies à partir des repères', () {
     // carré du quart au trois-quarts d'une image de 8 x 8 : 4 lignes x 4 colonnes
     const List<double> carre = <double>[0.25, 0.25, 0.75, 0.25, 0.75, 0.75, 0.25, 0.75];

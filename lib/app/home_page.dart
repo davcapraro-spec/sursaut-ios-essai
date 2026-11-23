@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../common/app_version.dart';
 import '../features/develop/develop_page.dart';
 import '../features/diagnostics/camera_bench/camera_bench_page.dart';
 import '../features/diagnostics/diagnostics_page.dart';
@@ -55,6 +56,8 @@ class HomePage extends StatelessWidget {
                               'Développement des photos et capture connectée',
                               textAlign: TextAlign.center,
                             ),
+                            const SizedBox(height: 6),
+                            const Text('Version $kAppVersion', style: TextStyle(fontSize: 12, color: Colors.white54)),
                           ],
                         ),
                       ],
