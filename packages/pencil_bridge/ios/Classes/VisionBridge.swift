@@ -14,7 +14,7 @@ final class VisionBridge {
       name: "sursaut/vision/methods",
       binaryMessenger: registrar.messenger())
     channel.setMethodCallHandler { call, result in
-      guard call.method == "instanceMask" else {
+      guard call.method == "instanceMask" || call.method == "listPersons" else {
         result(FlutterMethodNotImplemented)
         return
       }
@@ -30,10 +30,16 @@ final class VisionBridge {
       let tapX = args["x"] as? Double
       let tapY = args["y"] as? Double
       let pixels = typed.data
+      let listing = call.method == "listPersons"
       DispatchQueue.global(qos: .userInitiated).async {
-        let out = VisionBridge.instanceMask(
-          rgba: pixels, width: width, height: height,
-          person: kind == "person", tapX: tapX, tapY: tapY)
+        let out: [String: Any]
+        if listing {
+          out = VisionBridge.listPersons(rgba: pixels, width: width, height: height)
+        } else {
+          out = VisionBridge.instanceMask(
+            rgba: pixels, width: width, height: height,
+            person: kind == "person", tapX: tapX, tapY: tapY)
+        }
         DispatchQueue.main.async { result(out) }
       }
     }
@@ -104,6 +110,93 @@ final class VisionBridge {
     } catch {
       return ["error": "Le masque n'a pas pu être fabriqué : \(error.localizedDescription)"]
     }
+  }
+
+  /// Les personnes repérées : pour chacune son cadre et un point à l'intérieur de sa silhouette (fractions de la photo).
+  static func listPersons(rgba: Data, width: Int, height: Int) -> [String: Any] {
+    guard #available(iOS 17.0, *) else {
+      return ["error": "Le détourage automatique demande iPadOS 17 ou plus."]
+    }
+    guard let image = makeImage(rgba, width, height) else {
+      return ["error": "Image illisible pour le détourage."]
+    }
+    let handler = VNImageRequestHandler(cgImage: image, options: [:])
+    let request = VNGeneratePersonInstanceMaskRequest()
+    do {
+      try handler.perform([request])
+    } catch {
+      return ["error": "Vision a refusé l'image : \(error.localizedDescription)"]
+    }
+    guard let observation = (request.results as? [VNInstanceMaskObservation])?.first,
+      !observation.allInstances.isEmpty
+    else {
+      return ["error": "Aucune personne repérée."]
+    }
+    let buffer = observation.instanceMask
+    CVPixelBufferLockBaseAddress(buffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+    let w = CVPixelBufferGetWidth(buffer)
+    let h = CVPixelBufferGetHeight(buffer)
+    let stride = CVPixelBufferGetBytesPerRow(buffer)
+    guard w > 0, h > 0, let base = CVPixelBufferGetBaseAddress(buffer) else {
+      return ["error": "Masque des personnes illisible."]
+    }
+    var minX = [Int](repeating: Int.max, count: 256)
+    var minY = [Int](repeating: Int.max, count: 256)
+    var maxX = [Int](repeating: -1, count: 256)
+    var maxY = [Int](repeating: -1, count: 256)
+    var sumX = [Int](repeating: 0, count: 256)
+    var sumY = [Int](repeating: 0, count: 256)
+    var cnt = [Int](repeating: 0, count: 256)
+    for y in 0..<h {
+      let row = base.advanced(by: y * stride).assumingMemoryBound(to: UInt8.self)
+      for x in 0..<w {
+        let l = Int(row[x])
+        if l == 0 { continue }
+        if x < minX[l] { minX[l] = x }
+        if y < minY[l] { minY[l] = y }
+        if x > maxX[l] { maxX[l] = x }
+        if y > maxY[l] { maxY[l] = y }
+        sumX[l] += x
+        sumY[l] += y
+        cnt[l] += 1
+      }
+    }
+    // le point de la silhouette le plus proche de son centre de gravité (le centre peut tomber hors de la personne)
+    var bestD = [Int](repeating: Int.max, count: 256)
+    var bestX = [Int](repeating: 0, count: 256)
+    var bestY = [Int](repeating: 0, count: 256)
+    for y in 0..<h {
+      let row = base.advanced(by: y * stride).assumingMemoryBound(to: UInt8.self)
+      for x in 0..<w {
+        let l = Int(row[x])
+        if l == 0 || cnt[l] == 0 { continue }
+        let dx = x - sumX[l] / cnt[l]
+        let dy = y - sumY[l] / cnt[l]
+        let d = dx * dx + dy * dy
+        if d < bestD[l] {
+          bestD[l] = d
+          bestX[l] = x
+          bestY[l] = y
+        }
+      }
+    }
+    var persons: [[String: Any]] = []
+    let smallest = max(20, w * h / 2000)
+    for l in observation.allInstances where l > 0 && l < 256 && cnt[l] >= smallest {
+      persons.append([
+        "x0": Double(minX[l]) / Double(w),
+        "y0": Double(minY[l]) / Double(h),
+        "x1": Double(maxX[l] + 1) / Double(w),
+        "y1": Double(maxY[l] + 1) / Double(h),
+        "px": (Double(bestX[l]) + 0.5) / Double(w),
+        "py": (Double(bestY[l]) + 0.5) / Double(h),
+      ])
+    }
+    if persons.isEmpty {
+      return ["error": "Aucune personne assez grande repérée."]
+    }
+    return ["persons": persons]
   }
 
   /// Numéro d'élément (0 = fond) à la position donnée (fractions) dans le masque d'étiquettes de Vision.

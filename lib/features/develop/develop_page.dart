@@ -10,7 +10,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:file_picker/file_picker.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
-import 'package:pencil_bridge/pencil_bridge.dart' show VisionBridge, VisionMaskResult;
+import 'package:pencil_bridge/pencil_bridge.dart' show VisionBridge, VisionMaskResult, VisionPerson, VisionPersons;
 import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
@@ -1230,13 +1230,126 @@ class _DevelopPageState extends State<DevelopPage> {
     _refresh();
   }
 
+  /// « Personnes » : une pastille par personne repérée (on en choisit une), ou toutes ensemble.
+  Future<void> _maskPersons() async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
+    setState(() => _aiBusy = true);
+    VisionPersons found = const VisionPersons();
+    try {
+      found = await VisionBridge.listPersons(rgba, _w, _h);
+    } finally {
+      if (mounted) setState(() => _aiBusy = false);
+    }
+    if (!mounted) return;
+    final String? error = found.error;
+    if (error != null) {
+      _say(error);
+      return;
+    }
+    final List<VisionPerson> list = found.persons;
+    if (list.length < 2) {
+      await _maskAi('person');
+      return;
+    }
+    final List<ui.Image> thumbs = await _personThumbs(rgba, list);
+    if (!mounted) return;
+    final int? pick = await showModalBottomSheet<int>(
+      context: context,
+      builder: (BuildContext sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 14, 16, 0),
+              child: Text('Quelle personne ?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            ),
+            SizedBox(
+              height: 170,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.all(12),
+                children: <Widget>[
+                  for (int i = 0; i < list.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 12),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(8),
+                        onTap: () => Navigator.pop(sheet, i),
+                        child: Column(
+                          children: <Widget>[
+                            Expanded(
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: RawImage(image: thumbs[i], fit: BoxFit.contain),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text('Personne ${i + 1}'),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: OutlinedButton(
+                onPressed: () => Navigator.pop(sheet, -1),
+                child: const Text('Toutes les personnes'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (pick == null || !mounted) return;
+    if (pick < 0) {
+      await _maskAi('person');
+    } else {
+      await _maskAi('person', fx: list[pick].px, fy: list[pick].py, base: 'Personne');
+    }
+  }
+
+  /// Petites images (120 px de haut) de chaque personne : la photo recadrée sur son cadre, un peu élargi.
+  Future<List<ui.Image>> _personThumbs(Uint8List rgba, List<VisionPerson> list) async {
+    const int th = 120;
+    final List<ui.Image> out = <ui.Image>[];
+    for (final VisionPerson p in list) {
+      final double mx = (p.x1 - p.x0) * 0.08, my = (p.y1 - p.y0) * 0.08;
+      final int sx0 = ((p.x0 - mx) * _w).floor().clamp(0, _w - 1).toInt();
+      final int sy0 = ((p.y0 - my) * _h).floor().clamp(0, _h - 1).toInt();
+      final int sx1 = ((p.x1 + mx) * _w).ceil().clamp(sx0 + 1, _w).toInt();
+      final int sy1 = ((p.y1 + my) * _h).ceil().clamp(sy0 + 1, _h).toInt();
+      final int cw = sx1 - sx0, ch = sy1 - sy0;
+      final int tw = (cw * th / ch).round().clamp(24, 240).toInt();
+      final Uint8List px = Uint8List(tw * th * 4);
+      for (int y = 0; y < th; y++) {
+        final int sy = sy0 + (y * ch ~/ th);
+        for (int x = 0; x < tw; x++) {
+          final int sx = sx0 + (x * cw ~/ tw);
+          final int s = (sy * _w + sx) * 4, d = (y * tw + x) * 4;
+          px[d] = rgba[s];
+          px[d + 1] = rgba[s + 1];
+          px[d + 2] = rgba[s + 2];
+          px[d + 3] = 255;
+        }
+      }
+      final Completer<ui.Image> done = Completer<ui.Image>();
+      ui.decodeImageFromPixels(px, tw, th, ui.PixelFormat.rgba8888, done.complete);
+      out.add(await done.future);
+    }
+    return out;
+  }
+
   /// Masque d'IA par Vision (iPadOS) : le sujet, l'arrière-plan (le sujet inversé) ou les personnes.
-  Future<void> _maskAi(String what) async {
+  Future<void> _maskAi(String what, {double? fx, double? fy, String? base}) async {
     final Uint8List? rgba = _srcRgba;
     if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
     setState(() => _aiBusy = true);
     try {
-      final VisionMaskResult r = await VisionBridge.instanceMask(rgba, _w, _h, person: what == 'person');
+      final VisionMaskResult r = await VisionBridge.instanceMask(rgba, _w, _h, person: what == 'person', fx: fx, fy: fy);
       if (!mounted) return;
       final Uint8List? mask = r.mask;
       if (!r.ok || mask == null) {
@@ -1258,7 +1371,7 @@ class _DevelopPageState extends State<DevelopPage> {
       final int pct = (covered * 100 / fit.$1.length).round();
       _say(inEngine ? 'Zone repérée : $pct % de l\'image.' : 'Zone repérée ($pct % de l\'image) mais refusée par le moteur.');
       final MaskMap m = bitmapMask(
-        name: nextMaskName(_masks, kAiNames[what]!),
+        name: nextMaskName(_masks, base ?? kAiNames[what]!),
         key: key,
         pngBase64: planeToBase64(fit.$1, fit.$2, fit.$3),
         what: what,
@@ -1504,7 +1617,7 @@ class _DevelopPageState extends State<DevelopPage> {
         side: const BorderSide(color: Colors.white24),
         minimumSize: const Size(48, 48),
       ),
-      onPressed: ready && !_aiBusy ? () => _maskAi(what) : null,
+      onPressed: ready && !_aiBusy ? () => (what == 'person' ? _maskPersons() : _maskAi(what)) : null,
       icon: _aiBusy
           ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
           : Icon(icon, size: 20),

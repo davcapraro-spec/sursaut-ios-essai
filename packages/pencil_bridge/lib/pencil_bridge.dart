@@ -123,11 +123,53 @@ class VisionMaskResult {
   bool get ok => mask != null && error == null;
 }
 
+/// Une personne repérée par Vision : son cadre et un point à l'intérieur de sa silhouette (fractions de la photo).
+class VisionPerson {
+  const VisionPerson(this.x0, this.y0, this.x1, this.y1, this.px, this.py);
+
+  final double x0, y0, x1, y1, px, py;
+}
+
+/// Les personnes repérées par Vision, ou un message d'erreur.
+class VisionPersons {
+  const VisionPersons({this.persons = const <VisionPerson>[], this.error});
+
+  final List<VisionPerson> persons;
+  final String? error;
+}
+
 /// Détourage par Vision (Apple) : sujet principal ou personnes, sans fichier de modèle (iPadOS 17 ou plus).
 class VisionBridge {
   VisionBridge._();
 
   static const MethodChannel _methods = MethodChannel('sursaut/vision/methods');
+
+  /// Les personnes de la photo, une entrée chacune (cadre + point intérieur), de gauche à droite.
+  static Future<VisionPersons> listPersons(Uint8List rgba, int width, int height) async {
+    try {
+      final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>(
+        'listPersons',
+        <String, Object?>{'rgba': rgba, 'width': width, 'height': height, 'kind': 'person'},
+      );
+      if (r == null) return const VisionPersons(error: 'Pas de réponse du détourage.');
+      final Object? err = r['error'];
+      if (err != null) return VisionPersons(error: err.toString());
+      final Object? list = r['persons'];
+      if (list is! List<Object?>) return const VisionPersons(error: 'Réponse du détourage illisible.');
+      final List<VisionPerson> out = <VisionPerson>[];
+      for (final Object? e in list) {
+        if (e is! Map<Object?, Object?>) continue;
+        double v(String k) => (e[k] as num?)?.toDouble() ?? 0;
+        out.add(VisionPerson(v('x0'), v('y0'), v('x1'), v('y1'), v('px'), v('py')));
+      }
+      out.sort((VisionPerson a, VisionPerson b) => a.x0.compareTo(b.x0));
+      return VisionPersons(persons: out);
+    } on MissingPluginException {
+      return const VisionPersons(error: 'Détourage indisponible (pas un iPad).');
+    } on PlatformException catch (e) {
+      return VisionPersons(error: e.message ?? e.code);
+    }
+  }
 
   /// [rgba] : photo RGBA 8 bits ([width] × [height]). [person] : les personnes au lieu du sujet principal.
   /// Avec [fx], [fy] (fractions de la photo, origine en haut à gauche) : seul l'élément touché ; sinon tous ensemble.
