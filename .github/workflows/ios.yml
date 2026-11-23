@@ -7,14 +7,20 @@ on:
 jobs:
   build:
     runs-on: macos-15-intel
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
+      # Cache des dépendances Rust (gagne plusieurs minutes quand Cargo.lock ne change pas).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
       # Moteur Rust : tests, puis bibliothèque pour l'iPad (étape 1).
+      # Tests en mode normal (non optimisé) : bien plus rapide à compiler que « --release ».
       - name: Tests du moteur Rust (pont + moteur sursaut-core copié du PC)
         working-directory: engine
-        run: cargo test --release --workspace
+        run: cargo test --workspace
 
       - name: Compiler le moteur Rust pour l'iPad
         working-directory: engine
