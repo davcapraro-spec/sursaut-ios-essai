@@ -1075,8 +1075,9 @@ class _DevelopPageState extends State<DevelopPage> {
   }
 
   void _maskResetKeys(Iterable<String> keys) {
-    MaskMap? m = _maskSelected;
-    if (m == null) return;
+    final MaskMap? start = _maskSelected;
+    if (start == null) return;
+    MaskMap m = start;
     for (final String k in keys) {
       m = withAdj(m, k, 0);
     }
