@@ -73,6 +73,7 @@ class _DevelopPageState extends State<DevelopPage> {
     for (final DevelopParam p in kDevelopParams) p.key: 0,
     for (final DevelopParam p in kHslParams) p.key: 0,
     for (final DevelopParam p in kDetailParams) p.key: defaultOf(p.key),
+    for (final DevelopParam p in kLensParams) p.key: defaultOf(p.key),
     ...kCropDefaults,
   };
 

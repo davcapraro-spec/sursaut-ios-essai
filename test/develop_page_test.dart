@@ -40,6 +40,10 @@ void main() {
     await tester.pump();
     expect(find.text('RETOUCHE DE TACHES'), findsOneWidget);
     expect(find.text('POUSSIÈRE AUTOMATIQUE'), findsOneWidget);
+    await tester.tap(find.text('Objectif'));
+    await tester.pump();
+    expect(find.text('CORRECTIONS MANUELLES'), findsOneWidget);
+    expect(find.text('Échelle'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
