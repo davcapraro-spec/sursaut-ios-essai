@@ -10,7 +10,8 @@ import '../../domain/spots.dart';
 /// Toutes les positions sont des fractions de la photo. Gestes :
 /// - un doigt, outil « Toucher » : toucher une zone vide ajoute une retouche ; toucher un cercle le choisit ;
 ///   glisser le cercle de la retouche choisie la déplace, glisser son petit cercle « source » change la zone copiée ;
-/// - un doigt, outil « Pinceau » : glisser sur la photo trace une seule retouche qui suit le trait ;
+/// - un doigt, outil « Pinceau » : glisser sur la photo trace une seule retouche qui suit le trait
+///   (sauf si l'on saisit la poignée orange de la zone copiée de la retouche choisie : elle se déplace) ;
 /// - deux doigts : pincer pour zoomer, glisser pour déplacer la photo (ou boutons + / − en bas à droite).
 class SpotOverlay extends StatefulWidget {
   const SpotOverlay({
@@ -133,20 +134,21 @@ class _SpotOverlayState extends State<SpotOverlay> {
     _moved = false;
     _drag = null;
     _dragIndex = -1;
-    if (widget.brush) {
-      _drag = 'stroke';
-      _stroke
-        ..clear()
-        ..add(_frac(img, p));
-      return;
-    }
     final int sel = widget.selected;
     if (sel >= 0 && sel < widget.spots.length) {
       final Spot s = widget.spots[sel];
       final Offset src = _px(img, (s['sx'] as num).toDouble(), (s['sy'] as num).toDouble());
+      // la poignée orange de la zone copiée se déplace aussi avec le pinceau
       if ((src - p).distance <= _grab) {
         _drag = 'source';
         _dragIndex = sel;
+        return;
+      }
+      if (widget.brush) {
+        _drag = 'stroke';
+        _stroke
+          ..clear()
+          ..add(_frac(img, p));
         return;
       }
       final Offset tgt = _px(img, (s['x'] as num).toDouble(), (s['y'] as num).toDouble());
@@ -154,6 +156,11 @@ class _SpotOverlayState extends State<SpotOverlay> {
         _drag = 'target';
         _dragIndex = sel;
       }
+    } else if (widget.brush) {
+      _drag = 'stroke';
+      _stroke
+        ..clear()
+        ..add(_frac(img, p));
     }
   }
 
@@ -395,7 +402,9 @@ class _SpotPainter extends CustomPainter {
         final Offset src = _px((s['sx'] as num).toDouble(), (s['sy'] as num).toDouble());
         canvas.drawLine(t, src, Paint()..color = col.withAlpha(160)..strokeWidth = 1.4);
         canvas.drawCircle(src, math.min(r, 40), ring..strokeWidth = 1.8);
-        canvas.drawCircle(src, 4, Paint()..color = col);
+        canvas.drawCircle(src, 15, Paint()..color = const Color(0xCC000000));
+        canvas.drawCircle(src, 12, Paint()..color = const Color(0xFFF2A33A));
+        canvas.drawCircle(src, 4, Paint()..color = Colors.white);
       }
     }
     if (stroke.length > 1) {
