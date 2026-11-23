@@ -1254,11 +1254,6 @@ class _DevelopPageState extends State<DevelopPage> {
       return;
     }
     final List<VisionPerson> list = found.persons;
-    if (list.length < 2) {
-      _say('iPadOS ne repère qu\'une personne (ou un groupe collé) : pas de choix possible.');
-      await _maskAi('person');
-      return;
-    }
     final List<ui.Image> thumbs = await _personThumbs(rgba, list);
     if (!mounted) return;
     setState(() {
@@ -1266,6 +1261,11 @@ class _DevelopPageState extends State<DevelopPage> {
       _personImgs = thumbs;
       _personsFor = rgba;
     });
+    if (list.length == 1) {
+      // une seule personne : son masque est créé tout de suite, sa pastille et les parties du visage restent disponibles
+      _pickPerson(0);
+      return;
+    }
     _say('${list.length} personnes repérées : touchez une pastille.');
   }
 
