@@ -436,6 +436,73 @@ mod tests {
         a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap_or(0)
     }
 
+
+    /// Les masques manuels de l'onglet « Masques » de l'iPad (même JSON que `lib/domain/mask_tools.dart`).
+    fn masque(comp: &str, exposure: f64) -> String {
+        format!(
+            r#"{{"masks":[{{"name":"Test","enabled":true,"invert":false,"amount":100.0,"comps":[{comp}],"adj":{{"exposure":{exposure},"contrast":0.0,"highlights":0.0,"shadows":0.0,"temperature":0.0,"tint":0.0,"vibrance":0.0,"saturation":0.0,"clarity":0.0,"texture":0.0,"sharpen":0.0,"denoise":0.0}}}}]}}"#
+        )
+    }
+
+    fn lum_zone(rgba: &[u8], w: usize, x0: usize, x1: usize, y0: usize, y1: usize) -> f64 {
+        let mut s = 0u64;
+        let mut n = 0u64;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = &rgba[(y * w + x) * 4..];
+                s += p[0] as u64 + p[1] as u64 + p[2] as u64;
+                n += 3;
+            }
+        }
+        s as f64 / n as f64
+    }
+
+    #[test]
+    fn le_degrade_lineaire_eclaircit_le_haut_seulement() {
+        let (w, h) = (96usize, 96usize);
+        let src = photo(w, h);
+        let mut e = Engine::open_rgba8(&src, w, h).unwrap();
+        let lin = r#"{"kind":"linear","op":"add","invert":false,"x0":0.5,"y0":0.2,"x1":0.5,"y1":0.6}"#;
+        e.render(&masque(lin, 2.0)).unwrap();
+        let out = e.output().to_vec();
+        let (top_in, top_out) = (lum_zone(&src, w, 0, w, 0, 12), lum_zone(&out, w, 0, w, 0, 12));
+        let (bot_in, bot_out) = (lum_zone(&src, w, 0, w, 80, 96), lum_zone(&out, w, 0, w, 80, 96));
+        assert!(top_out > top_in + 25.0, "le haut doit s'éclaircir : {top_in} -> {top_out}");
+        assert!((bot_out - bot_in).abs() < 1.0, "le bas ne doit pas bouger : {bot_in} -> {bot_out}");
+    }
+
+    #[test]
+    fn le_degrade_radial_agit_au_centre_et_pas_dans_les_coins() {
+        let (w, h) = (96usize, 96usize);
+        let src = photo(w, h);
+        let mut e = Engine::open_rgba8(&src, w, h).unwrap();
+        let rad = r#"{"kind":"radial","op":"add","invert":false,"x0":0.5,"y0":0.5,"rx":0.2,"ry":0.2,"angle":0.0,"feather":0.5}"#;
+        e.render(&masque(rad, 2.0)).unwrap();
+        let out = e.output().to_vec();
+        let (c_in, c_out) = (lum_zone(&src, w, 44, 52, 44, 52), lum_zone(&out, w, 44, 52, 44, 52));
+        let (k_in, k_out) = (lum_zone(&src, w, 0, 10, 0, 10), lum_zone(&out, w, 0, 10, 0, 10));
+        assert!(c_out > c_in + 25.0, "le centre doit s'éclaircir : {c_in} -> {c_out}");
+        assert!((k_out - k_in).abs() < 1.0, "le coin ne doit pas bouger : {k_in} -> {k_out}");
+        // masque inversé : l'inverse
+        let inv = masque(rad, 2.0).replace(r#""invert":false,"amount""#, r#""invert":true,"amount""#);
+        e.render(&inv).unwrap();
+        let out2 = e.output().to_vec();
+        assert!((lum_zone(&out2, w, 44, 52, 44, 52) - c_in).abs() < 1.0);
+        assert!(lum_zone(&out2, w, 0, 10, 0, 10) > k_in + 25.0);
+    }
+
+    #[test]
+    fn un_masque_a_zero_ne_change_rien() {
+        let (w, h) = (64usize, 64usize);
+        let src = photo(w, h);
+        let mut e = Engine::open_rgba8(&src, w, h).unwrap();
+        let lin = r#"{"kind":"linear","op":"add","invert":false,"x0":0.5,"y0":0.2,"x1":0.5,"y1":0.6}"#;
+        e.render("{}").unwrap();
+        let neutre = e.output().to_vec();
+        e.render(&masque(lin, 0.0)).unwrap();
+        assert!(maxdiff(&neutre, e.output()) <= 1);
+    }
+
     #[test]
     fn version_et_erreur_vide() {
         let v = unsafe { CStr::from_ptr(sursaut_engine_version()) }.to_str().unwrap();

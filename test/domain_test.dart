@@ -8,6 +8,7 @@ import 'dart:typed_data';
 import 'package:sursaut_essai/domain/curves.dart';
 import 'package:sursaut_essai/domain/histogram.dart';
 import 'package:sursaut_essai/domain/lens_profiles.dart';
+import 'package:sursaut_essai/domain/mask_tools.dart';
 import 'package:sursaut_essai/domain/masks.dart';
 import 'package:sursaut_essai/domain/develop_params.dart';
 import 'package:sursaut_essai/domain/photo_key.dart';
@@ -387,5 +388,73 @@ void main() {
     final CurvePoints c = curvePresetPoints(idx('Contraste doux'));
     c[1][1] = 0.9;
     expect(kCurvePresets[idx('Contraste doux')].$2[1][1], 0.21);
+  });
+
+  test('masques manuels : dégradé linéaire et radial', () {
+    // format identique à celui du PC (moteur : MaskComp / Mask)
+    final MaskMap lin = linearMask('Dégradé linéaire 1');
+    expect(maskKind(lin), 'linear');
+    expect(mainComp(lin)!['y0'], 0.3);
+    expect(mainComp(lin)!['y1'], 0.7);
+    expect(lin['amount'], 100.0);
+    expect((lin['adj'] as Map<String, dynamic>).length, 12);
+    expect(maskIsNeutral(lin), isTrue);
+    final MaskMap rad = radialMask('Dégradé radial 1');
+    expect(maskKind(rad), 'radial');
+    expect(mainComp(rad)!['rx'], 0.25);
+    expect(mainComp(rad)!['feather'], 0.5);
+
+    // réglages locaux : copie, valeur lue, masque plus neutre
+    final MaskMap lit = withAdj(lin, 'exposure', 1.5);
+    expect(adjOf(lit, 'exposure'), 1.5);
+    expect(adjOf(lin, 'exposure'), 0); // l'original ne change pas
+    expect(maskIsNeutral(lit), isFalse);
+    expect(kLocalKeys.length, 12);
+    expect(kLocalGroups.map(((String, List<LocalParam>) g) => g.$1).toList(), <String>['LUMIÈRE', 'COULEUR', 'DÉTAIL']);
+
+    // la première composante se modifie sans toucher au reste
+    final MaskMap moved = withComp(lit, <String, dynamic>{'x0': 0.2, 'y0': 0.1});
+    expect(mainComp(moved)!['x0'], 0.2);
+    expect(mainComp(moved)!['x1'], 0.5);
+    expect(adjOf(moved, 'exposure'), 1.5);
+
+    // noms : on ne reprend jamais un nom déjà pris
+    expect(nextMaskName(<MaskMap>[], 'Dégradé linéaire'), 'Dégradé linéaire 1');
+    expect(nextMaskName(<MaskMap>[lin], 'Dégradé linéaire'), 'Dégradé linéaire 2');
+    expect(nextMaskName(<MaskMap>[linearMask('Dégradé linéaire 2')], 'Dégradé linéaire'), 'Dégradé linéaire 3');
+
+    // doublon : copie profonde, nouveau nom, léger décalage
+    final MaskMap dup = duplicateMask(lit);
+    expect(dup['name'], 'Dégradé linéaire 1 (copie)');
+    expect(adjOf(dup, 'exposure'), 1.5);
+    expect(mainComp(dup)!['x0'], closeTo(0.54, 1e-9));
+    expect(mainComp(lit)!['x0'], 0.5);
+
+    // tracé au doigt, photo 3:2
+    final MaskMap drawn = linearFromDrag('L', 0.5, 0.2, 0.5, 0.6, 1.5);
+    expect(mainComp(drawn)!['y0'], 0.2);
+    expect(mainComp(drawn)!['y1'], 0.6);
+    final MaskMap tap = linearFromDrag('L', 0.5, 0.5, 0.5, 0.505, 1.5); // trop court : défaut vertical
+    expect(mainComp(tap)!['y0'], closeTo(0.3, 1e-9));
+    expect(mainComp(tap)!['y1'], closeTo(0.7, 1e-9));
+    // rayon = distance (en unités de hauteur) / grand côté : 0,15 de largeur × 1,5 = 0,225, grand côté 1,5 -> 0,15
+    final MaskMap circle = radialFromDrag('R', 0.5, 0.5, 0.65, 0.5, 1.5);
+    expect(mainComp(circle)!['rx'], closeTo(0.15, 1e-9));
+    expect(mainComp(circle)!['ry'], closeTo(0.15, 1e-9));
+    final MaskMap tiny = radialFromDrag('R', 0.5, 0.5, 0.5, 0.5, 1.5);
+    expect(mainComp(tiny)!['rx'], 0.25); // trop petit : taille par défaut
+
+    // les masques d'yeux restent à part
+    expect(isManualMask(lin), isTrue);
+    expect(isManualMask(eyeMask(<String, dynamic>{'x': 0.5, 'y': 0.5, 'r': 0.01, 'hue': 'rouge'}, 1, 'Yeux · rouge 1')), isFalse);
+
+    // historique : annuler / rétablir ramène la liste de masques
+    final RecipeHistory h = RecipeHistory(<String, double>{}, masks: <MaskMap>[]);
+    h.commit(<String, double>{}, masks: <MaskMap>[lit]);
+    expect(h.currentMasks.length, 1);
+    h.undo();
+    expect(h.currentMasks, isEmpty);
+    h.redo();
+    expect(adjOf(h.currentMasks.first, 'exposure'), 1.5);
   });
 }

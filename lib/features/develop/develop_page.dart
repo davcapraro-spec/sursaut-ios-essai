@@ -18,6 +18,7 @@ import '../../domain/curves.dart';
 import '../../domain/develop_params.dart';
 import '../../domain/histogram.dart';
 import '../../domain/lens_profiles.dart';
+import '../../domain/mask_tools.dart';
 import '../../domain/masks.dart';
 import '../../domain/shoot_info.dart';
 import '../../domain/photo_key.dart';
@@ -27,6 +28,7 @@ import '../../domain/sidecar.dart';
 import 'crop_overlay.dart';
 import 'curve_editor.dart';
 import 'histogram_view.dart';
+import 'mask_overlay.dart';
 import 'spot_overlay.dart';
 
 /// Écran Développement : aperçu rendu par le moteur Rust, curseurs, recadrage,
@@ -82,7 +84,7 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Courbes de tonalité non neutres, par canal ('rvb', 'red', 'green', 'blue').
   Map<String, CurvePoints> _curves = <String, CurvePoints>{};
-  String _tool = 'basic'; // basic | curve | color | detail | lens | spots
+  String _tool = 'basic'; // basic | curve | color | detail | lens | masks | spots
 
   /// Objectif lu dans le RAW (nom, focale, ouverture) et profil trouvé dans la base, s'il existe.
   String? _lensName;
@@ -116,6 +118,11 @@ class _DevelopPageState extends State<DevelopPage> {
   bool _eyesBusy = false;
   String _eyesMsg = '';
   double _eyesStrength = 100;
+
+  /// Onglet « Masques » : masque choisi (indice dans `_masks`), type en cours de tracé, zone teintée sur la photo.
+  int _maskSel = -1;
+  String? _maskDraw;
+  bool _maskShowArea = true;
 
   bool _cropMode = false;
   double? _aspect; // largeur/hauteur imposée ; null = cadre libre
@@ -210,6 +217,8 @@ class _DevelopPageState extends State<DevelopPage> {
       _eyesMsg = '';
       _syncEyesStrength();
       _spotSel = -1;
+      _maskSel = -1;
+      _maskDraw = null;
       _dust = null;
       _srcRgba = rgba;
       _w = w;
@@ -283,6 +292,8 @@ class _DevelopPageState extends State<DevelopPage> {
       _masks = _history.currentMasks;
       _syncEyesStrength();
       _spotSel = -1;
+      _maskSel = -1;
+      _maskDraw = null;
       for (final String k in _values.keys.toList()) {
         _values[k] = v[k] ?? defaultOf(k);
       }
@@ -568,7 +579,7 @@ class _DevelopPageState extends State<DevelopPage> {
         // En mode recadrage, on voit toute l'image (déjà redressée) sous le cadre.
         if (_cropMode) ...kCropDefaults,
         // Onglet « Supprimer » : photo entière et droite, pour que les positions touchées soient celles de la source.
-        if (_tool == 'spots' && !_cropMode) ...<String, double>{...kCropDefaults, 'angle': 0},
+        if (_uncropped(_tool) && !_cropMode) ...<String, double>{...kCropDefaults, 'angle': 0},
       });
 
   Rect get _cropRect => Rect.fromLTRB(_values['crop_left']!, _values['crop_top']!,
@@ -1002,10 +1013,284 @@ class _DevelopPageState extends State<DevelopPage> {
     ];
   }
 
+  /// Onglets qui montrent la photo entière et droite (les positions touchées sont celles de la photo d'origine).
+  bool _uncropped(String t) => t == 'spots' || t == 'masks';
+
   void _setTool(String t) {
-    final bool redo = (t == 'spots') != (_tool == 'spots');
-    setState(() => _tool = t);
+    final bool redo = _uncropped(t) != _uncropped(_tool);
+    setState(() {
+      _tool = t;
+      if (t != 'masks') _maskDraw = null;
+    });
     if (redo) _refresh();
+  }
+
+  // -- Masques : dégradés linéaire et radial ---------------------------------------------------
+  MaskMap? get _maskSelected =>
+      _maskSel >= 0 && _maskSel < _masks.length && isManualMask(_masks[_maskSel]) ? _masks[_maskSel] : null;
+
+  void _maskSet(int i, MaskMap m) {
+    if (i < 0 || i >= _masks.length) return;
+    setState(() {
+      _masks = <MaskMap>[for (int k = 0; k < _masks.length; k++) k == i ? m : _masks[k]];
+      _before = false;
+    });
+  }
+
+  /// Un doigt a tracé un nouveau masque sur la photo.
+  void _maskDrawn(String kind, double ax, double ay, double bx, double by) {
+    final double aspect = _h == 0 ? 1 : _w / _h;
+    final String name = nextMaskName(_masks, kMaskKindNames[kind]!);
+    final MaskMap m = kind == kLinear
+        ? linearFromDrag(name, ax, ay, bx, by, aspect)
+        : radialFromDrag(name, ax, ay, bx, by, aspect);
+    setState(() {
+      _masks = <MaskMap>[..._masks, m];
+      _maskSel = _masks.length - 1;
+      _maskDraw = null;
+      _before = false;
+    });
+    _commit();
+  }
+
+  /// Une poignée du masque choisi est déplacée.
+  void _maskEdit(Map<String, dynamic> changes) {
+    final MaskMap? m = _maskSelected;
+    if (m == null) return;
+    _maskSet(_maskSel, withComp(m, changes));
+    if (!maskIsNeutral(m)) _refresh();
+  }
+
+  void _maskEditEnd() {
+    _commit();
+    final MaskMap? m = _maskSelected;
+    if (m != null && !maskIsNeutral(m)) _refresh();
+  }
+
+  void _maskAdj(String key, double v) {
+    final MaskMap? m = _maskSelected;
+    if (m == null) return;
+    _maskSet(_maskSel, withAdj(m, key, v));
+    _refresh();
+  }
+
+  void _maskResetKeys(Iterable<String> keys) {
+    MaskMap? m = _maskSelected;
+    if (m == null) return;
+    for (final String k in keys) {
+      m = withAdj(m, k, 0);
+    }
+    _maskSet(_maskSel, m);
+    _commit();
+    _refresh();
+  }
+
+  void _maskField(String key, Object? v) {
+    final MaskMap? m = _maskSelected;
+    if (m == null) return;
+    _maskSet(_maskSel, <String, dynamic>{...m, key: v});
+    _refresh();
+  }
+
+  void _maskDelete() {
+    final int i = _maskSel;
+    if (_maskSelected == null) return;
+    setState(() {
+      _masks = <MaskMap>[for (int k = 0; k < _masks.length; k++) if (k != i) _masks[k]];
+      _maskSel = -1;
+      _before = false;
+    });
+    _commit();
+    _refresh();
+  }
+
+  void _maskDuplicate() {
+    final MaskMap? m = _maskSelected;
+    if (m == null) return;
+    final int at = _maskSel + 1;
+    setState(() {
+      _masks = <MaskMap>[..._masks.sublist(0, at), duplicateMask(m), ..._masks.sublist(at)];
+      _maskSel = at;
+      _before = false;
+    });
+    _commit();
+    _refresh();
+  }
+
+  Future<void> _maskRename() async {
+    final MaskMap? m = _maskSelected;
+    if (m == null) return;
+    final int i = _maskSel;
+    final TextEditingController c = TextEditingController(text: '${m['name'] ?? ''}');
+    final String? name = await showDialog<String>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('Nom du masque'),
+        content: TextField(controller: c, autofocus: true, onSubmitted: (String v) => Navigator.pop(ctx, v)),
+        actions: <Widget>[
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, c.text), child: const Text('OK')),
+        ],
+      ),
+    );
+    c.dispose();
+    if (name == null || name.trim().isEmpty || !mounted || i >= _masks.length) return;
+    _maskSet(i, <String, dynamic>{..._masks[i], 'name': name.trim()});
+    _commit();
+  }
+
+  Widget _maskSlider(String label, double value, double min, double max, int decimals, ValueChanged<double> onChanged,
+      {required VoidCallback onEnd, double reset = 0}) {
+    return Row(
+      children: <Widget>[
+        SizedBox(width: 130, child: Text(label)),
+        Expanded(
+          child: GestureDetector(
+            onDoubleTap: () {
+              onChanged(reset);
+              onEnd();
+            },
+            child: Slider(
+              value: value.clamp(min, max).toDouble(),
+              min: min,
+              max: max,
+              onChanged: onChanged,
+              onChangeEnd: (double _) => onEnd(),
+            ),
+          ),
+        ),
+        SizedBox(
+          width: 52,
+          child: Text(value.toStringAsFixed(decimals),
+              textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.w600)),
+        ),
+      ],
+    );
+  }
+
+  Widget _maskKindButton(String kind, bool ready) {
+    final bool on = _maskDraw == kind;
+    return OutlinedButton.icon(
+      style: OutlinedButton.styleFrom(
+        backgroundColor: on ? const Color(0xFF33291A) : null,
+        side: BorderSide(color: on ? const Color(0xFFF2A33A) : Colors.white24),
+        minimumSize: const Size(48, 48),
+      ),
+      onPressed: ready ? () => setState(() => _maskDraw = on ? null : kind) : null,
+      icon: Icon(kind == kLinear ? Icons.gradient : Icons.radio_button_unchecked, size: 20),
+      label: Text(kind == kLinear ? 'Linéaire' : 'Radial'),
+    );
+  }
+
+  List<Widget> _masksPanel(bool ready) {
+    final List<int> idx = <int>[
+      for (int i = 0; i < _masks.length; i++)
+        if (isManualMask(_masks[i])) i,
+    ];
+    final MaskMap? sel = _maskSelected;
+    final Map<String, dynamic>? comp = sel == null ? null : mainComp(sel);
+    const TextStyle hint = TextStyle(fontSize: 12, color: Colors.white60);
+    return <Widget>[
+      const SizedBox(height: 8),
+      const Text('NOUVEAU MASQUE',
+          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: Colors.white60)),
+      const SizedBox(height: 6),
+      Row(
+        children: <Widget>[
+          Expanded(child: _maskKindButton(kLinear, ready)),
+          const SizedBox(width: 8),
+          Expanded(child: _maskKindButton(kRadial, ready)),
+        ],
+      ),
+      Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Text(
+          _maskDraw == kLinear
+              ? 'Posez le doigt là où l\'effet est plein, glissez jusqu\'où il s\'arrête, puis levez le doigt.'
+              : _maskDraw == kRadial
+                  ? 'Posez le doigt au centre, glissez jusqu\'au bord, puis levez le doigt.'
+                  : 'Touchez un type, puis tracez-le avec le doigt sur la photo.',
+          style: hint,
+        ),
+      ),
+      if (idx.isNotEmpty) ...<Widget>[
+        const Padding(
+          padding: EdgeInsets.only(top: 14, bottom: 2),
+          child: Text('MASQUES',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: Colors.white60)),
+        ),
+        for (final int i in idx)
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            selected: i == _maskSel,
+            selectedColor: const Color(0xFFF2A33A),
+            leading: Icon(maskKind(_masks[i]) == kRadial ? Icons.radio_button_unchecked : Icons.gradient),
+            title: Text('${_masks[i]['name'] ?? ''}',
+                style: TextStyle(color: _masks[i]['enabled'] == false ? Colors.white38 : null)),
+            trailing: IconButton(
+              tooltip: _masks[i]['enabled'] == false ? 'Réactiver ce masque' : 'Désactiver ce masque',
+              icon: Icon(_masks[i]['enabled'] == false ? Icons.visibility_off_outlined : Icons.visibility_outlined),
+              onPressed: () {
+                _maskSet(i, <String, dynamic>{..._masks[i], 'enabled': _masks[i]['enabled'] == false});
+                _commit();
+                _refresh();
+              },
+            ),
+            onTap: () => setState(() {
+              _maskSel = i;
+              _maskDraw = null;
+            }),
+          ),
+      ],
+      if (sel != null && comp != null) ...<Widget>[
+        const Divider(height: 20),
+        Wrap(
+          spacing: 4,
+          children: <Widget>[
+            TextButton.icon(onPressed: _maskRename, icon: const Icon(Icons.edit_outlined, size: 18), label: const Text('Renommer')),
+            TextButton.icon(onPressed: _maskDuplicate, icon: const Icon(Icons.copy_outlined, size: 18), label: const Text('Dupliquer')),
+            TextButton.icon(onPressed: _maskDelete, icon: const Icon(Icons.delete_outline, size: 18), label: const Text('Supprimer')),
+          ],
+        ),
+        SwitchListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Inverser le masque'),
+          value: sel['invert'] == true,
+          onChanged: (bool v) {
+            _maskField('invert', v);
+            _commit();
+          },
+        ),
+        SwitchListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Montrer la zone sur la photo'),
+          value: _maskShowArea,
+          onChanged: (bool v) => setState(() => _maskShowArea = v),
+        ),
+        _maskSlider('Opacité', ((sel['amount'] as num?) ?? 100).toDouble(), 0, 100, 0,
+            (double v) => _maskField('amount', v), onEnd: _commit, reset: 100),
+        if ('${comp['kind']}' == kRadial) ...<Widget>[
+          _maskSlider('Contour progressif', (((comp['feather'] as num?) ?? 0.5).toDouble()) * 100, 0, 100, 0,
+              (double v) => _maskEdit(<String, dynamic>{'feather': v / 100}), onEnd: _maskEditEnd, reset: 50),
+          _maskSlider('Angle', ((comp['angle'] as num?) ?? 0).toDouble(), -90, 90, 0,
+              (double v) => _maskEdit(<String, dynamic>{'angle': v}), onEnd: _maskEditEnd),
+        ],
+        if (maskIsNeutral(sel))
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: Text('Tant que tous les réglages ci-dessous sont à zéro, le masque ne change rien à la photo.', style: hint),
+          ),
+        for (final (String title, List<LocalParam> params) in kLocalGroups) ...<Widget>[
+          _groupTitle(title, () => _maskResetKeys(params.map((LocalParam p) => p.key))),
+          for (final LocalParam p in params)
+            _maskSlider(p.label, adjOf(sel, p.key), p.min, p.max, p.decimals, (double v) => _maskAdj(p.key, v),
+                onEnd: _commit),
+        ],
+      ],
+    ];
   }
 
   // -- Supprimer : retouches de taches ---------------------------------------------------------
@@ -1255,6 +1540,7 @@ class _DevelopPageState extends State<DevelopPage> {
           if (!isEyeMask(m)) m,
       ];
       _eyesMsg = 'Corrections retirées.';
+      _maskSel = -1; // les indices des masques ont pu changer
       _before = false;
     });
     _commit();
@@ -1518,6 +1804,7 @@ class _DevelopPageState extends State<DevelopPage> {
         _toolButton('color', Icons.palette_outlined, 'Couleur', onTap: _cropMode ? null : () => _setTool('color')),
         _toolButton('detail', Icons.change_history_outlined, 'Détail', onTap: _cropMode ? null : () => _setTool('detail')),
         _toolButton('lens', Icons.lens_outlined, 'Objectif', onTap: _cropMode ? null : () => _setTool('lens')),
+        _toolButton('masks', Icons.gradient, 'Masques', onTap: _cropMode ? null : () => _setTool('masks')),
         _toolButton('spots', Icons.healing, 'Supprimer', onTap: _cropMode ? null : () => _setTool('spots')),
         _toolButton('crop', Icons.crop, 'Recadrer', onTap: ready && !_cropMode ? _enterCrop : null),
       ];
@@ -1553,6 +1840,20 @@ class _DevelopPageState extends State<DevelopPage> {
           aspect: _aspect,
           onChanged: _setCropRect,
           onEnd: _commit,
+        ),
+      );
+    }
+    if (_tool == 'masks') {
+      return Padding(
+        padding: const EdgeInsets.all(12),
+        child: MaskOverlay(
+          image: _shown!,
+          mask: _maskSelected,
+          drawKind: _maskDraw,
+          showArea: _maskShowArea,
+          onDraw: _maskDrawn,
+          onEdit: _maskEdit,
+          onEditEnd: _maskEditEnd,
         ),
       );
     }
@@ -1657,6 +1958,8 @@ class _DevelopPageState extends State<DevelopPage> {
         return _detailPanel(ready);
       case 'lens':
         return _lensPanel(ready);
+      case 'masks':
+        return _masksPanel(ready);
       case 'spots':
         return _spotsPanel(ready);
       default:
