@@ -1309,11 +1309,22 @@ class _DevelopPageState extends State<DevelopPage> {
     _refresh();
   }
 
-  /// La personne dont le masque est choisi, sinon l'unique personne repérée ; null s'il faut choisir.
+  /// La personne du masque choisi (masque « Personne » ou masque d'une partie de son visage), sinon l'unique personne repérée.
   VisionPerson? get _targetPerson {
-    for (final VisionPerson p in _persons) {
-      final int at = _personMaskIndex(p);
-      if (at >= 0 && at == _maskSel) return p;
+    final MaskMap? m = _maskSelected;
+    final Map<String, dynamic>? c = m == null ? null : mainComp(m);
+    final Object? ai = c?['ai'];
+    if (ai is Map<String, dynamic>) {
+      final String what = '${ai['what']}';
+      final Object? pts = ai['points'];
+      if ((what == 'person' || what.startsWith('face_')) && pts is List<dynamic> && pts.isNotEmpty && pts.first is List<dynamic>) {
+        final List<dynamic> q = pts.first as List<dynamic>;
+        if (q.length >= 2 && q[0] is num && q[1] is num) {
+          for (final VisionPerson p in _persons) {
+            if (((q[0] as num) - p.px).abs() < 1e-4 && ((q[1] as num) - p.py).abs() < 1e-4) return p;
+          }
+        }
+      }
     }
     return _persons.length == 1 ? _persons.first : null;
   }
@@ -1361,13 +1372,33 @@ class _DevelopPageState extends State<DevelopPage> {
         _say(error);
         return;
       }
-      // le visage dont le centre est dans le cadre de la personne (le plus grand s'il y en a plusieurs)
+      // le visage de cette personne : son centre est dans le masque de la personne (sinon dans son cadre) ; le plus grand s'il y en a plusieurs
+      Uint8List? body;
+      int bw = 0, bh = 0;
+      final int at = _personMaskIndex(who);
+      final Object? bodyPng = at >= 0 ? mainComp(_masks[at])?['png'] : null;
+      if (bodyPng is String && bodyPng.isNotEmpty) {
+        final (Uint8List, int, int)? d = pngToPlane(base64Decode(bodyPng));
+        if (d != null) {
+          body = d.$1;
+          bw = d.$2;
+          bh = d.$3;
+        }
+      }
       VisionFace? face;
       double best = 0;
       for (final VisionFace f in found.faces) {
         final double cx = (f.x0 + f.x1) / 2, cy = (f.y0 + f.y1) / 2;
         final double size = (f.x1 - f.x0) * (f.y1 - f.y0);
-        if (cx >= who.x0 && cx <= who.x1 && cy >= who.y0 && cy <= who.y1 && size > best) {
+        final bool mine;
+        if (body != null) {
+          final int bx = (cx * bw).floor().clamp(0, bw - 1).toInt();
+          final int by = (cy * bh).floor().clamp(0, bh - 1).toInt();
+          mine = body[by * bw + bx] > 127;
+        } else {
+          mine = cx >= who.x0 && cx <= who.x1 && cy >= who.y0 && cy <= who.y1;
+        }
+        if (mine && size > best) {
           face = f;
           best = size;
         }
@@ -1405,6 +1436,9 @@ class _DevelopPageState extends State<DevelopPage> {
         pngBase64: planeToBase64(plane, pw, ph),
         what: 'face_$part',
       );
+      ((m['comps'] as List<dynamic>).first as Map<String, dynamic>)['ai']['points'] = <dynamic>[
+        <double>[who.px, who.py]
+      ];
       setState(() {
         _masks = <MaskMap>[..._masks, m];
         _maskSel = _masks.length - 1;
