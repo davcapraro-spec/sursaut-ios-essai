@@ -819,6 +819,20 @@ class _DevelopPageState extends State<DevelopPage> {
     ];
   }
 
+  void _applyCurvePreset(int index) {
+    final CurvePoints pts = curvePresetPoints(index);
+    setState(() {
+      if (isIdentityCurve(pts)) {
+        _curves.remove(_curveChannel);
+      } else {
+        _curves[_curveChannel] = pts;
+      }
+      _before = false;
+    });
+    _commit();
+    _refresh();
+  }
+
   List<Widget> _curvePanel(bool ready) {
     const Map<String, String> names = <String, String>{
       'rvb': 'RVB',
@@ -864,6 +878,25 @@ class _DevelopPageState extends State<DevelopPage> {
           'touchez-le deux fois pour le supprimer.',
           style: TextStyle(fontSize: 12, color: Colors.white60),
         ),
+      ),
+      const Padding(
+        padding: EdgeInsets.only(top: 10, bottom: 4),
+        child: Text('COURBES PRÊTES À L\'EMPLOI',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: Colors.white60)),
+      ),
+      Text('Appliquées au canal ${names[_curveChannel]} ; vous pouvez ensuite les ajuster au doigt.',
+          style: const TextStyle(fontSize: 12, color: Colors.white60)),
+      const SizedBox(height: 6),
+      Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: <Widget>[
+          for (int i = 0; i < kCurvePresets.length; i++)
+            ActionChip(
+              label: Text(kCurvePresets[i].$1),
+              onPressed: ready ? () => _applyCurvePreset(i) : null,
+            ),
+        ],
       ),
       Align(
         alignment: Alignment.centerLeft,

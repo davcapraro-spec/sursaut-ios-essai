@@ -358,4 +358,24 @@ void main() {
     expect(c.every((double v) => v >= 0 && v <= 1), isTrue);
     expect(Histogram.reference(List<int>.filled(256, 0)), 1.0);
   });
+
+  test('courbes prêtes à l\'emploi', () {
+    expect(kCurvePresets.length, 7);
+    expect(isIdentityCurve(curvePresetPoints(0)), isTrue); // Linéaire
+    for (int i = 0; i < kCurvePresets.length; i++) {
+      final List<double> s = curveSamples(curvePresetPoints(i));
+      expect(s.length, 256, reason: kCurvePresets[i].$1);
+      expect(s.every((double v) => v >= -1e-9 && v <= 1 + 1e-9), isTrue, reason: kCurvePresets[i].$1);
+    }
+    expect(curveSamples(curvePresetPoints(1))[64], lessThan(64 / 255)); // Contraste doux : ombres plus sombres
+    expect(curveSamples(curvePresetPoints(1))[191], greaterThan(191 / 255)); // ... hautes lumières plus claires
+    expect(curveSamples(curvePresetPoints(3))[128], greaterThan(0.55)); // Éclaircir
+    expect(curveSamples(curvePresetPoints(4))[128], lessThan(0.45)); // Assombrir
+    expect(curveSamples(curvePresetPoints(5))[0], closeTo(0.08, 1e-6)); // Mat
+    expect(curveSamples(curvePresetPoints(6))[0], closeTo(1, 1e-6)); // Inverser
+    // la copie est indépendante de la liste d'origine
+    final CurvePoints c = curvePresetPoints(1);
+    c[1][1] = 0.9;
+    expect(kCurvePresets[1].$2[1][1], 0.21);
+  });
 }

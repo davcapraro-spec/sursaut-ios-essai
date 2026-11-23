@@ -16,6 +16,22 @@ const Map<String, String> kCurveKeys = <String, String>{
 
 const double kCurveMinGap = 1e-4;
 
+/// Courbes prêtes à l'emploi (les mêmes que sur le PC), appliquées au canal choisi.
+final List<(String, CurvePoints)> kCurvePresets = <(String, CurvePoints)>[
+  ('Linéaire', <List<double>>[<double>[0, 0], <double>[1, 1]]),
+  ('Contraste doux', <List<double>>[<double>[0, 0], <double>[0.25, 0.21], <double>[0.75, 0.79], <double>[1, 1]]),
+  ('Contraste fort', <List<double>>[<double>[0, 0], <double>[0.25, 0.16], <double>[0.75, 0.86], <double>[1, 1]]),
+  ('Éclaircir', <List<double>>[<double>[0, 0], <double>[0.5, 0.62], <double>[1, 1]]),
+  ('Assombrir', <List<double>>[<double>[0, 0], <double>[0.5, 0.38], <double>[1, 1]]),
+  ('Mat (noirs relevés)', <List<double>>[<double>[0, 0.08], <double>[1, 0.94]]),
+  ('Inverser', <List<double>>[<double>[0, 1], <double>[1, 0]]),
+];
+
+/// Copie des points de la courbe prête à l'emploi numéro [index].
+CurvePoints curvePresetPoints(int index) => <List<double>>[
+      for (final List<double> p in kCurvePresets[index].$2) <double>[p[0], p[1]],
+    ];
+
 CurvePoints identityCurve() => <List<double>>[<double>[0, 0], <double>[1, 1]];
 
 bool isIdentityCurve(CurvePoints pts) =>
