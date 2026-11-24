@@ -889,4 +889,16 @@ void main() {
     expect(z[20 * 40 + 20], 255);
     expect(z[2 * 40 + 2], 0);
   });
+
+  test('SAM : 16 points au plus, avec au moins un point dans l\'objet', () {
+    final List<List<double>> many = <List<double>>[
+      <double>[0.5, 0.5, 1],
+      for (int i = 0; i < 22; i++) <double>[0.1, 0.1, 0],
+    ];
+    final List<List<double>> out = samLimitPoints(many);
+    expect(out.length, kSamMaxPoints);
+    expect(out.any((List<double> q) => q[2] >= 0.5), isTrue);
+    final List<List<double>> few = <List<double>>[<double>[0.2, 0.2, 1]];
+    expect(samLimitPoints(few).length, 1);
+  });
 }

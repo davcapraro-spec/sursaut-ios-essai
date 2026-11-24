@@ -120,3 +120,15 @@ List<List<double>>? samPointsOf(Object? ai) {
   }
   return out;
 }
+
+/// Nombre maximal de points que le modèle SAM 2.1 accepte (Core ML : « allowed range (1..16) »).
+const int kSamMaxPoints = 16;
+
+/// Garde au plus [max] points : les plus récents. Il reste toujours au moins un point « dans l'objet » (étiquette 1) s'il y en a eu.
+List<List<double>> samLimitPoints(List<List<double>> pts, {int max = kSamMaxPoints}) {
+  if (pts.length <= max) return pts;
+  final List<List<double>> kept = pts.sublist(pts.length - max);
+  if (kept.any((List<double> q) => q[2] >= 0.5)) return kept;
+  final List<double> lastIn = pts.lastWhere((List<double> q) => q[2] >= 0.5, orElse: () => pts.last);
+  return <List<double>>[lastIn, ...kept.sublist(1)];
+}

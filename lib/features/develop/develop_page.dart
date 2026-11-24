@@ -1607,8 +1607,10 @@ class _DevelopPageState extends State<DevelopPage> {
       // le toucher est hors de la zone relue en gros plan : retour à la vue d'ensemble
       if (!await _samEncodeView(null)) return;
     }
-    _samPts = <List<double>>[..._samPts, <double>[fx, fy, _samAdd ? 1.0 : 0.0]];
+    final int before = _samPts.length;
+    _samPts = samLimitPoints(<List<double>>[..._samPts, <double>[fx, fy, _samAdd ? 1.0 : 0.0]]);
     await _samRun();
+    if (before >= kSamMaxPoints && mounted) _say('SAM 2.1 accepte $kSamMaxPoints points au plus : le plus ancien est oublié.');
   }
 
   /// Fait relire à SAM la photo entière (crop null) ou seulement la zone [crop] en gros plan.
