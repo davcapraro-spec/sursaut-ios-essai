@@ -66,8 +66,9 @@ jobs:
       # sont téléchargés, compilés (.mlpackage -> .mlmodelc) et mis dans le plugin avant « pod install ».
       - name: SAM 2.1 (modèles Core ML)
         run: |
-          pip3 install --quiet huggingface_hub || pip3 install --quiet --break-system-packages huggingface_hub
-          python3 -c "from huggingface_hub import snapshot_download; snapshot_download('apple/coreml-sam2.1-small', local_dir='sam_src', allow_patterns=['*.mlpackage/**'])"
+          python3 -m venv sam_venv
+          sam_venv/bin/pip install --quiet huggingface_hub
+          sam_venv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('apple/coreml-sam2.1-small', local_dir='sam_src', allow_patterns=['*.mlpackage/**'])"
           find sam_src -maxdepth 2 | sort
           mkdir -p packages/pencil_bridge/ios/Assets
           for m in SAM2_1SmallImageEncoderFLOAT16 SAM2_1SmallPromptEncoderFLOAT16 SAM2_1SmallMaskDecoderFLOAT16; do
