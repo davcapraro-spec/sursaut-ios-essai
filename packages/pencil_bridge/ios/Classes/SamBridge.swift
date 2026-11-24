@@ -46,17 +46,27 @@ final class SamBridge {
   }
 
   /// La photo (RGBA 8 bits) étirée en 1024 x 1024 (comme le programme de référence), en BGRA.
-  private static func pixelBuffer(_ rgba: Data, _ width: Int, _ height: Int) -> CVPixelBuffer? {
+  private static func pixelBuffer(_ rgba: Data, _ width: Int, _ height: Int, crop: [Double]?) -> CVPixelBuffer? {
     guard width > 0, height > 0, rgba.count >= width * height * 4,
       let provider = CGDataProvider(data: rgba as CFData)
     else { return nil }
     let srcInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue)
     guard
-      let image = CGImage(
+      let whole = CGImage(
         width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
         bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: srcInfo,
         provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     else { return nil }
+    var image = whole
+    if let c = crop, c.count == 4 {
+      // zone [x0, y0, x1, y1] en fractions de la photo : SAM ne voit que cette zone (en gros plan)
+      let x0 = max(0, min(Double(width) - 2, (c[0] * Double(width)).rounded(.down)))
+      let y0 = max(0, min(Double(height) - 2, (c[1] * Double(height)).rounded(.down)))
+      let x1 = max(x0 + 2, min(Double(width), (c[2] * Double(width)).rounded(.up)))
+      let y1 = max(y0 + 2, min(Double(height), (c[3] * Double(height)).rounded(.up)))
+      guard let part = whole.cropping(to: CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)) else { return nil }
+      image = part
+    }
     var buffer: CVPixelBuffer?
     let attrs: [CFString: Any] = [
       kCVPixelBufferCGImageCompatibilityKey: true,
@@ -82,14 +92,14 @@ final class SamBridge {
     return pb
   }
 
-  /// Analyse la photo (une fois ; `key` identifie la photo pour ne pas la refaire).
-  static func encode(rgba: Data, width: Int, height: Int, key: Int) -> [String: Any] {
+  /// Analyse la photo (une fois ; `key` identifie la photo et la zone pour ne pas la refaire). Avec `crop`, seule cette zone est analysée.
+  static func encode(rgba: Data, width: Int, height: Int, key: Int, crop: [Double]?) -> [String: Any] {
     lock.lock()
     defer { lock.unlock() }
     do {
       if encodedKey == key && embedding != nil { return ["ok": true, "cached": true] }
       try loadAll()
-      guard let pb = pixelBuffer(rgba, width, height) else {
+      guard let pb = pixelBuffer(rgba, width, height, crop: crop) else {
         throw fail("La photo n'a pas pu être préparée pour SAM 2.1.")
       }
       let input = try MLDictionaryFeatureProvider(dictionary: ["image": MLFeatureValue(pixelBuffer: pb)])

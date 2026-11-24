@@ -857,4 +857,36 @@ void main() {
     expect(samPointsOf(<String, dynamic>{'what': 'sam', 'points': <dynamic>[<dynamic>[0.1, 0.2]]}), isNull);
     expect(samPointsOf(null), isNull);
   });
+
+  test('SAM : zone de relecture en gros plan', () {
+    // carré plein au centre d'un plan 100 x 100
+    final Uint8List pl = Uint8List(100 * 100);
+    for (int y = 40; y < 60; y++) {
+      for (int x = 30; x < 50; x++) {
+        pl[y * 100 + x] = 255;
+      }
+    }
+    final List<double>? c = samCropOf(pl, 100, 100);
+    expect(c, isNotNull);
+    expect(c![0], lessThan(0.30));
+    expect(c[2], greaterThan(0.50));
+    expect(c[1], lessThan(0.40));
+    expect(c[3], greaterThan(0.60));
+    expect(samCropOf(Uint8List(100 * 100), 100, 100), isNull);
+    // points : celui qui est dans la zone est ramené dans [0, 1], l'autre est écarté
+    final List<List<double>> pts = samPointsInCrop(
+      <List<double>>[<double>[0.4, 0.5, 1], <double>[0.9, 0.9, 0]],
+      <double>[0.3, 0.4, 0.5, 0.6],
+    );
+    expect(pts.length, 1);
+    expect(pts[0][0], closeTo(0.5, 1e-9));
+    expect(pts[0][1], closeTo(0.5, 1e-9));
+    expect(pts[0][2], 1.0);
+    // plan avec zone : hors zone = 0, dans la zone = objet
+    const int n = 8;
+    final Float32List l = Float32List(n * n)..fillRange(0, n * n, 8.0);
+    final Uint8List z = samPlane(logits: l, size: n, pw: 40, ph: 40, crop: <double>[0.25, 0.25, 0.75, 0.75]);
+    expect(z[20 * 40 + 20], 255);
+    expect(z[2 * 40 + 2], 0);
+  });
 }

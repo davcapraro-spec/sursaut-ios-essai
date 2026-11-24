@@ -37,9 +37,10 @@ final class VisionBridge {
           result(["error": "Arguments manquants pour SAM 2.1."])
           return
         }
+        let crop = a["crop"] as? [Double]
         let pixels = typed.data
         DispatchQueue.global(qos: .userInitiated).async {
-          let out = SamBridge.encode(rgba: pixels, width: w, height: h, key: key)
+          let out = SamBridge.encode(rgba: pixels, width: w, height: h, key: key, crop: crop)
           DispatchQueue.main.async { result(out) }
         }
         return

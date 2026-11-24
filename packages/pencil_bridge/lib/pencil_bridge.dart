@@ -183,12 +183,12 @@ class VisionBridge {
 
   static const MethodChannel _methods = MethodChannel('sursaut/vision/methods');
 
-  /// SAM 2.1 : analyse la photo (une fois par photo : [key] l'identifie). Rend un message d'erreur, ou null si tout va bien.
-  static Future<String?> samEncode(Uint8List rgba, int width, int height, int key) async {
+  /// SAM 2.1 : analyse la photo (une fois par photo et par zone : [key] les identifie ; [crop] = zone [x0, y0, x1, y1] en fractions, en gros plan). Rend un message d'erreur, ou null si tout va bien.
+  static Future<String?> samEncode(Uint8List rgba, int width, int height, int key, {List<double>? crop}) async {
     try {
       final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>(
         'samEncode',
-        <String, Object?>{'rgba': rgba, 'width': width, 'height': height, 'key': key},
+        <String, Object?>{'rgba': rgba, 'width': width, 'height': height, 'key': key, if (crop != null) 'crop': crop},
       );
       if (r == null) return 'Pas de réponse de SAM 2.1.';
       final Object? err = r['error'];

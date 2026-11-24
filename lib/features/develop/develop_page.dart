@@ -144,6 +144,9 @@ class _DevelopPageState extends State<DevelopPage> {
   bool _samAdd = true; // le prochain point est « dans l'objet » (sinon « en dehors »)
   List<List<double>> _samPts = <List<double>>[]; // points [x, y, 1 ou 0] (fractions de la photo)
   int _samMask = -1; // numéro du masque en cours de construction
+  List<double>? _samCrop; // zone [x0, y0, x1, y1] (fractions) que SAM relit en gros plan (« Affiner les bords »), sinon null
+  Uint8List? _samPlaneLast; // dernier plan de la sélection (pour trouver la zone à relire)
+  int _samPlaneW = 0, _samPlaneH = 0;
   Set<int> _selFaces = <int>{}; // personnes cochées (indices dans `_faces`)
   Set<String> _selParts = <String>{}; // parties cochées : person | skin | eyes | … | hair | clothes | bodyskin
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
@@ -1582,6 +1585,7 @@ class _DevelopPageState extends State<DevelopPage> {
         _samAdd = true;
         _samPts = <List<double>>[];
         _samMask = -1;
+        _samCrop = null;
         _maskPick = false;
         _maskPickNew = false;
         _maskDraw = null;
@@ -1598,9 +1602,54 @@ class _DevelopPageState extends State<DevelopPage> {
 
   Future<void> _samTapped(double fx, double fy) async {
     if (_aiBusy || !_samOn) return;
+    final List<double>? c = _samCrop;
+    if (c != null && (fx < c[0] || fx > c[2] || fy < c[1] || fy > c[3])) {
+      // le toucher est hors de la zone relue en gros plan : retour à la vue d'ensemble
+      if (!await _samEncodeView(null)) return;
+    }
     _samPts = <List<double>>[..._samPts, <double>[fx, fy, _samAdd ? 1.0 : 0.0]];
     await _samRun();
   }
+
+  /// Fait relire à SAM la photo entière (crop null) ou seulement la zone [crop] en gros plan.
+  Future<bool> _samEncodeView(List<double>? crop) async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _w == 0 || _h == 0) return false;
+    setState(() => _aiBusy = true);
+    try {
+      final int key = crop == null ? identityHashCode(rgba) : Object.hash(identityHashCode(rgba), crop[0], crop[1], crop[2], crop[3]);
+      final String? error = await VisionBridge.samEncode(rgba, _w, _h, key, crop: crop);
+      if (!mounted) return false;
+      if (error != null) {
+        _say(error);
+        return false;
+      }
+      _samCrop = crop;
+      return true;
+    } catch (e) {
+      _say('SAM 2.1 : $e');
+      return false;
+    } finally {
+      if (mounted) setState(() => _aiBusy = false);
+    }
+  }
+
+  /// « Affiner les bords » : SAM relit en gros plan la zone de la sélection, puis le masque est recalculé.
+  Future<void> _samRefine() async {
+    final Uint8List? plane = _samPlaneLast;
+    if (_aiBusy || !_samOn || plane == null || _samPts.isEmpty) return;
+    final List<double>? crop = samCropOf(plane, _samPlaneW, _samPlaneH);
+    if (crop == null) return;
+    if (_samPointsInView(crop).every((List<double> q) => q[2] < 0.5)) {
+      _say('Affiner : touchez d\'abord l\'objet (« Dans l\'objet »).');
+      return;
+    }
+    _say('SAM 2.1 relit la zone en gros plan…');
+    if (!await _samEncodeView(crop)) return;
+    await _samRun();
+  }
+
+  List<List<double>> _samPointsInView(List<double>? crop) => crop == null ? _samPts : samPointsInCrop(_samPts, crop);
 
   Future<void> _samUndo() async {
     if (_aiBusy || _samPts.length < 2) return;
@@ -1614,7 +1663,8 @@ class _DevelopPageState extends State<DevelopPage> {
     if (rgba == null || _samPts.isEmpty || _w == 0 || _h == 0) return;
     setState(() => _aiBusy = true);
     try {
-      final VisionSam r = await VisionBridge.samDecode(_samPts);
+      final List<double>? crop = _samCrop;
+      final VisionSam r = await VisionBridge.samDecode(_samPointsInView(crop));
       if (!mounted) return;
       final Float32List? logits = r.logits;
       final String? error = r.error;
@@ -1625,7 +1675,10 @@ class _DevelopPageState extends State<DevelopPage> {
       final double aspect = _w / _h;
       final int pw = aspect >= 1 ? 1024 : (1024 * aspect).round().clamp(64, 1024).toInt();
       final int ph = aspect >= 1 ? (1024 / aspect).round().clamp(64, 1024).toInt() : 1024;
-      final Uint8List plane = samPlane(logits: logits, size: r.size, pw: pw, ph: ph, guide: grayPlane(rgba, _w, _h, pw, ph));
+      final Uint8List plane = samPlane(logits: logits, size: r.size, pw: pw, ph: ph, guide: grayPlane(rgba, _w, _h, pw, ph), crop: crop);
+      _samPlaneLast = plane;
+      _samPlaneW = pw;
+      _samPlaneH = ph;
       int covered = 0;
       for (final int v in plane) {
         if (v > 127) covered++;
@@ -1701,6 +1754,8 @@ class _DevelopPageState extends State<DevelopPage> {
         _samAdd = true;
         _samPts = <List<double>>[for (final List<double> q in pts) List<double>.of(q)];
         _samMask = at;
+        _samCrop = null;
+        _samPlaneLast = null;
         _maskPick = false;
         _maskPickNew = false;
         _maskDraw = null;
@@ -1742,6 +1797,7 @@ class _DevelopPageState extends State<DevelopPage> {
         children: <Widget>[
           ChoiceChip(label: const Text('+ Dans l\'objet'), selected: _samAdd, onSelected: (_) => setState(() => _samAdd = true)),
           ChoiceChip(label: const Text('− En dehors'), selected: !_samAdd, onSelected: (_) => setState(() => _samAdd = false)),
+          ActionChip(avatar: const Icon(Icons.center_focus_strong_outlined, size: 18), label: Text(_samCrop == null ? 'Affiner les bords' : 'Bords affinés (relire)'), onPressed: _aiBusy || _samPts.isEmpty ? null : _samRefine),
           ActionChip(label: const Text('Annuler le dernier point'), onPressed: _aiBusy || _samPts.length < 2 ? null : _samUndo),
           ActionChip(avatar: const Icon(Icons.check, size: 18), label: const Text('Terminé'), onPressed: _aiBusy ? null : () => setState(() => _samOn = false)),
         ],
