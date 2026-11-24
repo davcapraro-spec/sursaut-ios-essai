@@ -1326,8 +1326,8 @@ class _DevelopPageState extends State<DevelopPage> {
             child: Column(
               children: <Widget>[
                 Container(
-                  height: 92,
-                  constraints: const BoxConstraints(minWidth: 70),
+                  height: 72,
+                  constraints: const BoxConstraints(minWidth: 56),
                   padding: const EdgeInsets.all(2),
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(10),
@@ -1344,12 +1344,12 @@ class _DevelopPageState extends State<DevelopPage> {
     return <Widget>[
       Padding(padding: const EdgeInsets.only(top: 10, bottom: 4), child: Text('PERSONNES', style: title)),
       SizedBox(
-        height: 112,
+        height: 94,
         child: ListView(
           scrollDirection: Axis.horizontal,
           children: <Widget>[
             tile(
-              const SizedBox(width: 70, child: Center(child: Icon(Icons.groups_outlined, size: 34))),
+              const SizedBox(width: 56, child: Center(child: Icon(Icons.groups_outlined, size: 30))),
               'Toutes',
               all,
               () => setState(() => _selFaces = all ? <int>{} : <int>{for (int i = 0; i < _faces.length; i++) i}),
@@ -1385,9 +1385,10 @@ class _DevelopPageState extends State<DevelopPage> {
         children: <Widget>[
           for (final MapEntry<String, String> e in _kSelParts.entries)
             SizedBox(
-              width: 200,
+              width: 170,
               child: CheckboxListTile(
                 dense: true,
+                visualDensity: VisualDensity.compact,
                 contentPadding: EdgeInsets.zero,
                 controlAffinity: ListTileControlAffinity.leading,
                 title: Text(e.value),
@@ -1908,7 +1909,9 @@ class _DevelopPageState extends State<DevelopPage> {
                 ? 'Posez le doigt au centre, glissez jusqu\'au bord, puis levez le doigt.'
                 : 'Touchez un type : les dégradés se tracent au doigt, les plages se règlent avec des curseurs.';
     return <Widget>[
-      const SizedBox(height: 8),
+      if (_facesShown) ..._faceTiles(title, hint),
+      if (_facesShown) ..._facePartChips(title, hint),
+      const SizedBox(height: 12),
       const Text('NOUVEAU MASQUE', style: title),
       const SizedBox(height: 6),
       Row(
@@ -1942,8 +1945,6 @@ class _DevelopPageState extends State<DevelopPage> {
           Expanded(child: _aiButton('person', Icons.groups_outlined, ready)),
         ],
       ),
-      if (_facesShown) ..._faceTiles(title, hint),
-      if (_facesShown) ..._facePartChips(title, hint),
       Padding(padding: const EdgeInsets.only(top: 6), child: Text(guide, style: hint)),
       if (idx.isNotEmpty) ...<Widget>[
         const Padding(padding: EdgeInsets.only(top: 14, bottom: 2), child: Text('MASQUES', style: title)),
