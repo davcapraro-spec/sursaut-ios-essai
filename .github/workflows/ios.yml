@@ -53,6 +53,15 @@ jobs:
           cp -R /tmp/sauvegarde/lib /tmp/sauvegarde/test ./
           cp /tmp/sauvegarde/pubspec.yaml /tmp/sauvegarde/analysis_options.yaml ./
 
+      # TensorFlow Lite (parties du corps : cheveux, vêtements, peau) est une bibliothèque statique alors que l'application
+      # est en bibliothèques dynamiques : CocoaPods refuse ce mélange par défaut ; on désactive ce contrôle (la bibliothèque
+      # est alors liée dans le plugin pencil_bridge, et retirée de la liaison de Runner pour n'exister qu'une fois).
+      - name: TensorFlow Lite (contrôle CocoaPods des bibliothèques statiques)
+        run: |
+          printf '%s\n' '' 'pre_install do |installer|' '  Pod::Installer::Xcode::TargetValidator.send(:define_method, :verify_no_static_framework_transitive_dependencies) {}' 'end' >> ios/Podfile
+          cat tools/podfile_tflite.rb >> ios/Podfile
+          tail -20 ios/Podfile
+
       # Logo de Sursaut : on remplace l'icône Flutter par assets/app_icon_1024.png (carré, sans transparence,
       # comme l'exige iOS) en fabriquant toutes les tailles listées par le modèle Flutter.
       - name: Icône de l'application
