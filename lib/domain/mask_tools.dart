@@ -20,7 +20,7 @@ const Map<String, String> kMaskKindNames = <String, String>{
   kLinear: 'Dégradé linéaire',
   kRadial: 'Dégradé radial',
   kBrush: 'Pinceau',
-  kBitmap: 'Sélection IA',
+  kBitmap: 'Zone choisie (IA)',
   kLuminance: 'Plage de luminosité',
   kColor: 'Plage de couleur',
 };

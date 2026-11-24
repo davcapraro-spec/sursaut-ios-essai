@@ -149,6 +149,7 @@ class _DevelopPageState extends State<DevelopPage> {
   int _samPlaneW = 0, _samPlaneH = 0;
   Set<int> _selFaces = <int>{}; // personnes cochées (indices dans `_faces`)
   Set<String> _selParts = <String>{}; // parties cochées : person | skin | eyes | … | hair | clothes | bodyskin
+  bool? _maskShapeOpen; // section « Forme du masque » : ouverte ou fermée à la main (null = automatique)
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
   String _newOp = 'add'; // comment la prochaine composante se combine : add | subtract | intersect
 
@@ -2236,16 +2237,37 @@ class _DevelopPageState extends State<DevelopPage> {
       ],
       if (sel != null && comp != null) ...<Widget>[
         const Divider(height: 20),
-        Wrap(
-          spacing: 4,
+        Row(
           children: <Widget>[
-            if (!_samOn && _samEditablePoints != null)
-              TextButton.icon(onPressed: _aiBusy ? null : _samEdit, icon: const Icon(Icons.touch_app_outlined, size: 18), label: const Text('Modifier la sélection')),
-            TextButton.icon(onPressed: _maskRename, icon: const Icon(Icons.edit_outlined, size: 18), label: const Text('Renommer')),
-            TextButton.icon(onPressed: _maskDuplicate, icon: const Icon(Icons.copy_outlined, size: 18), label: const Text('Dupliquer')),
-            TextButton.icon(onPressed: _maskDelete, icon: const Icon(Icons.delete_outline, size: 18), label: const Text('Supprimer')),
+            Expanded(
+              child: Text('${sel['name'] ?? ''}', maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            ),
+            PopupMenuButton<String>(
+              tooltip: 'Renommer, dupliquer, supprimer',
+              icon: const Icon(Icons.more_horiz),
+              onSelected: (String v) {
+                if (v == 'rename') _maskRename();
+                if (v == 'dup') _maskDuplicate();
+                if (v == 'del') _maskDelete();
+              },
+              itemBuilder: (BuildContext context) => const <PopupMenuEntry<String>>[
+                PopupMenuItem<String>(value: 'rename', child: Text('Renommer')),
+                PopupMenuItem<String>(value: 'dup', child: Text('Dupliquer')),
+                PopupMenuItem<String>(value: 'del', child: Text('Supprimer ce masque')),
+              ],
+            ),
           ],
         ),
+        if (!_samOn && _samEditablePoints != null)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _aiBusy ? null : _samEdit,
+              icon: const Icon(Icons.touch_app_outlined, size: 18),
+              label: const Text('Modifier la sélection au toucher'),
+            ),
+          ),
         // Peindre / Gommer : seulement pour un masque pinceau ou d'IA (les poignées d'un dégradé se déplacent toutes seules ;
         // pour peindre sur un autre masque, on ajoute une composante « Pinceau »).
         if (comps.any((Map<String, dynamic> c) => '${c['kind']}' == kBrush || '${c['kind']}' == kBitmap)) ...<Widget>[
@@ -2289,7 +2311,33 @@ class _DevelopPageState extends State<DevelopPage> {
         ),
         _maskSlider('Opacité', ((sel['amount'] as num?) ?? 100).toDouble(), 0, 100, 0,
             (double v) => _maskField('amount', v), onEnd: _commit, reset: 100),
-        const Padding(padding: EdgeInsets.only(top: 14, bottom: 2), child: Text('COMPOSANTES', style: title)),
+        const Padding(padding: EdgeInsets.only(top: 14, bottom: 2), child: Text('RÉGLAGES DE LA PHOTO DANS CE MASQUE', style: title)),
+        if (maskIsNeutral(sel))
+          const Padding(
+            padding: EdgeInsets.only(bottom: 6),
+            child: Text('Tant que tous les réglages ci-dessous sont à zéro, le masque ne change rien à la photo.', style: hint),
+          ),
+        for (final (String gt, List<LocalParam> params) in kLocalGroups) ...<Widget>[
+          _groupTitle(gt, () => _maskResetKeys(params.map((LocalParam p) => p.key))),
+          for (final LocalParam p in params)
+            _maskSlider(p.label, adjOf(sel, p.key), p.min, p.max, p.decimals, (double v) => _maskAdj(p.key, v),
+                onEnd: _commit),
+        ],
+        const Divider(height: 24),
+        Builder(builder: (BuildContext context) {
+          final bool shapeOpen = (_maskShapeOpen ?? !comps.every((Map<String, dynamic> c) => '${c['kind']}' == kBitmap));
+          return ExpansionTile(
+            key: ValueKey<String>('shape-$_maskSel-$shapeOpen'),
+            initiallyExpanded: shapeOpen,
+            onExpansionChanged: (bool v) => _maskShapeOpen = v,
+            tilePadding: EdgeInsets.zero,
+            childrenPadding: EdgeInsets.zero,
+            shape: const Border(),
+            collapsedShape: const Border(),
+            title: const Text('FORME DU MASQUE (avancé)', style: title),
+            subtitle: const Text('Où le masque s\'applique : zones, ajouter / soustraire, taille, contour.', style: hint),
+            children: <Widget>[
+        const Padding(padding: EdgeInsets.only(top: 14, bottom: 2), child: Text('ZONES DU MASQUE (empilées)', style: title)),
         for (int i = 0; i < comps.length; i++)
           ListTile(
             dense: true,
@@ -2431,18 +2479,9 @@ class _DevelopPageState extends State<DevelopPage> {
           _maskSlider('Saturation minimale', num0('sat_min', 0.1) * 100, 0, 100, 0,
               (double v) => _maskEdit(<String, dynamic>{'sat_min': v / 100}), onEnd: _maskEditEnd, reset: 10),
         ],
-        const Divider(height: 24),
-        if (maskIsNeutral(sel))
-          const Padding(
-            padding: EdgeInsets.only(bottom: 6),
-            child: Text('Tant que tous les réglages ci-dessous sont à zéro, le masque ne change rien à la photo.', style: hint),
-          ),
-        for (final (String gt, List<LocalParam> params) in kLocalGroups) ...<Widget>[
-          _groupTitle(gt, () => _maskResetKeys(params.map((LocalParam p) => p.key))),
-          for (final LocalParam p in params)
-            _maskSlider(p.label, adjOf(sel, p.key), p.min, p.max, p.decimals, (double v) => _maskAdj(p.key, v),
-                onEnd: _commit),
-        ],
+            ],
+          );
+        }),
       ],
     ];
   }
