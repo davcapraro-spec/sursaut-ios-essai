@@ -839,4 +839,22 @@ void main() {
     // sans guide ni logits : plan vide de la bonne taille
     expect(samPlane(logits: Float32List(0), size: 8, pw: 4, ph: 4).length, 16);
   });
+
+  test('SAM : points d\'un masque repris pour le modifier', () {
+    final Map<String, dynamic> ai = <String, dynamic>{
+      'what': 'sam',
+      'points': <dynamic>[
+        <dynamic>[0.25, 0.5, 1],
+        <dynamic>[0.75, 0.5, 0.0],
+      ],
+    };
+    final List<List<double>>? pts = samPointsOf(ai);
+    expect(pts, isNotNull);
+    expect(pts!.length, 2);
+    expect(pts[0], <double>[0.25, 0.5, 1.0]);
+    expect(pts[1][2], 0.0);
+    expect(samPointsOf(<String, dynamic>{'what': 'person', 'points': <dynamic>[]}), isNull);
+    expect(samPointsOf(<String, dynamic>{'what': 'sam', 'points': <dynamic>[<dynamic>[0.1, 0.2]]}), isNull);
+    expect(samPointsOf(null), isNull);
+  });
 }

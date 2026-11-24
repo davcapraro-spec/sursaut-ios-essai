@@ -1673,6 +1673,49 @@ class _DevelopPageState extends State<DevelopPage> {
     }
   }
 
+  /// Les points du masque choisi s'il a été fait par SAM (pour le reprendre), sinon null.
+  List<List<double>>? get _samEditablePoints {
+    final MaskMap? m = _maskSelected;
+    final Map<String, dynamic>? c = m == null ? null : mainComp(m);
+    if (c == null || '${c['kind']}' != kBitmap) return null;
+    return samPointsOf(c['ai']);
+  }
+
+  /// « Modifier la sélection » : reprend un masque SAM avec ses points, pour en ajouter ou en retirer.
+  Future<void> _samEdit() async {
+    final Uint8List? rgba = _srcRgba;
+    final List<List<double>>? pts = _samEditablePoints;
+    if (rgba == null || pts == null || _aiBusy || _w == 0 || _h == 0 || _maskSel < 0) return;
+    final int at = _maskSel;
+    setState(() => _aiBusy = true);
+    _say('SAM 2.1 prépare la photo…');
+    try {
+      final String? error = await VisionBridge.samEncode(rgba, _w, _h, identityHashCode(rgba));
+      if (!mounted) return;
+      if (error != null) {
+        _say(error);
+        return;
+      }
+      setState(() {
+        _samOn = true;
+        _samAdd = true;
+        _samPts = <List<double>>[for (final List<double> q in pts) List<double>.of(q)];
+        _samMask = at;
+        _maskPick = false;
+        _maskPickNew = false;
+        _maskDraw = null;
+        _maskAttach = false;
+        _brushTool = null;
+        _maskZone = true;
+      });
+      _say('Touchez la photo pour ajouter ou retirer une zone.');
+    } catch (e) {
+      _say('SAM 2.1 : $e');
+    } finally {
+      if (mounted) setState(() => _aiBusy = false);
+    }
+  }
+
   /// Bouton « Objet au toucher », puis ses choix quand la sélection au toucher est en cours.
   List<Widget> _samBlock(TextStyle title, TextStyle hint, bool ready) {
     if (!_samOn) {
@@ -2138,6 +2181,8 @@ class _DevelopPageState extends State<DevelopPage> {
         Wrap(
           spacing: 4,
           children: <Widget>[
+            if (!_samOn && _samEditablePoints != null)
+              TextButton.icon(onPressed: _aiBusy ? null : _samEdit, icon: const Icon(Icons.touch_app_outlined, size: 18), label: const Text('Modifier la sélection')),
             TextButton.icon(onPressed: _maskRename, icon: const Icon(Icons.edit_outlined, size: 18), label: const Text('Renommer')),
             TextButton.icon(onPressed: _maskDuplicate, icon: const Icon(Icons.copy_outlined, size: 18), label: const Text('Dupliquer')),
             TextButton.icon(onPressed: _maskDelete, icon: const Icon(Icons.delete_outline, size: 18), label: const Text('Supprimer')),

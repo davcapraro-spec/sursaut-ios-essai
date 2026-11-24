@@ -41,3 +41,16 @@ Uint8List samPlane({required Float32List logits, required int size, required int
   }
   return out;
 }
+
+/// Les points [x, y, 1 ou 0] d'un masque fait par SAM (champ `ai` de sa composante), ou null si ce n'est pas un masque SAM.
+List<List<double>>? samPointsOf(Object? ai) {
+  if (ai is! Map<String, dynamic> || '${ai['what']}' != 'sam') return null;
+  final Object? pts = ai['points'];
+  if (pts is! List<dynamic> || pts.isEmpty) return null;
+  final List<List<double>> out = <List<double>>[];
+  for (final dynamic q in pts) {
+    if (q is! List<dynamic> || q.length < 3 || q[0] is! num || q[1] is! num || q[2] is! num) return null;
+    out.add(<double>[(q[0] as num).toDouble(), (q[1] as num).toDouble(), (q[2] as num).toDouble()]);
+  }
+  return out;
+}
