@@ -1395,11 +1395,17 @@ class _DevelopPageState extends State<DevelopPage> {
                 onChanged: _aiBusy
                     ? null
                     : (bool? v) => setState(() {
-                          final Set<String> n = <String>{..._selParts};
-                          if (v ?? false) {
+                          final bool on = v ?? false;
+                          Set<String> n = <String>{..._selParts};
+                          if (e.key == 'person') {
+                            // « Toute la personne » coche (ou décoche) tout le reste
+                            n = on ? <String>{..._kSelParts.keys} : <String>{};
+                          } else if (on) {
                             n.add(e.key);
+                            if (_kSelParts.keys.where((String k) => k != 'person').every(n.contains)) n.add('person');
                           } else {
                             n.remove(e.key);
+                            n.remove('person');
                           }
                           _selParts = n;
                         }),
