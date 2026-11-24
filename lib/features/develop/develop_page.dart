@@ -75,6 +75,10 @@ class _DevelopPageState extends State<DevelopPage> {
   int _w = 0, _h = 0;
   ui.Image? _shown;
   bool _before = false;
+  bool _split = false; // « Partagé » : photo d'origine à gauche, retouchée à droite, séparées par un curseur
+  double _splitX = 0.5; // position du curseur (fraction de la largeur de la photo)
+  ui.Image? _beforeImg; // photo d'origine pour le mode partagé
+  Uint8List? _beforeFor; // pixels d'origine dont _beforeImg est tirée
   String _name = '';
 
   /// RAW ouvert (étape 3c) : gardé pour développer à pleine taille à l'export.
@@ -169,6 +173,7 @@ class _DevelopPageState extends State<DevelopPage> {
   /// Histogramme de l'image affichée (petit encart sur la photo) ; choix mémorisés dans preferences.json.
   Histogram? _hist;
   bool _histVisible = true;
+  bool _infoVisible = false; // bulle d'informations (appareil, réglages de prise de vue, fichier) sur la photo
   bool _histLum = false;
   int _imageMs = -1;
 
@@ -193,6 +198,7 @@ class _DevelopPageState extends State<DevelopPage> {
         setState(() {
           _histVisible = j['histogram_visible'] != false;
           _histLum = j['histogram_mode'] == 'lum';
+          _infoVisible = j['info_visible'] == true;
         });
         if (_histVisible) _refresh();
       }
@@ -205,6 +211,7 @@ class _DevelopPageState extends State<DevelopPage> {
       await f.writeAsString(jsonEncode(<String, dynamic>{
         'histogram_visible': _histVisible,
         'histogram_mode': _histLum ? 'lum' : 'rgb',
+        'info_visible': _infoVisible,
       }));
     } catch (_) {}
   }
@@ -625,6 +632,7 @@ class _DevelopPageState extends State<DevelopPage> {
     setState(() {
       _cropMode = true;
       _before = false;
+      _split = false;
     });
     _refresh();
   }
@@ -706,6 +714,7 @@ class _DevelopPageState extends State<DevelopPage> {
         final PhotoEngine? photo = _photo;
         final Uint8List? src = _srcRgba;
         if (photo == null || src == null) break;
+        if (_split && !identical(_beforeFor, src)) await _ensureBeforeImg();
         final Stopwatch sw = Stopwatch()..start();
         int w = _w, h = _h;
         Uint8List out = src;
@@ -746,6 +755,7 @@ class _DevelopPageState extends State<DevelopPage> {
     _dropRaw();
     _photo?.close();
     _shown?.dispose();
+    _beforeImg?.dispose();
     super.dispose();
   }
 
@@ -1047,6 +1057,7 @@ class _DevelopPageState extends State<DevelopPage> {
     final bool redo = _uncropped(t) != _uncropped(_tool) || (_maskZone && t != 'masks');
     setState(() {
       _tool = t;
+      if (t == 'masks' || t == 'spots') _split = false;
       if (t != 'masks') {
         _maskDraw = null;
         _maskAttach = false;
@@ -3075,11 +3086,13 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// La photo, avec l'histogramme en haut à droite (ou sa pastille quand il est masqué).
   Widget _photoStack() {
-    final Widget area = _photoArea();
+    final bool splitting = _split && _beforeImg != null && identical(_beforeFor, _srcRgba) && _shown != null && !_cropMode;
+    final Widget area = splitting ? _splitView() : _photoArea();
     if (_shown == null || _cropMode) return area;
     return Stack(
       children: <Widget>[
         Positioned.fill(child: area),
+        Positioned(top: 12, left: 12, child: _infoBubble()),
         Positioned(
           top: 12,
           right: 12,
@@ -3178,44 +3191,167 @@ class _DevelopPageState extends State<DevelopPage> {
     );
   }
 
-  Widget _infoRow(bool ready) {
-    final List<String> shoot = <String>[for (final String l in _shoot) if (l.isNotEmpty) l];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        if (shoot.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 2),
-            child: Text(shoot.join('\n'),
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFFF2A33A))),
-          ),
-        _infoLine(ready),
-      ],
+  Future<void> _ensureBeforeImg() async {
+    final Uint8List? src = _srcRgba;
+    if (src == null || _w == 0 || _h == 0) return;
+    if (identical(_beforeFor, src) && _beforeImg != null) return;
+    final Completer<ui.Image> done = Completer<ui.Image>();
+    ui.decodeImageFromPixels(src, _w, _h, ui.PixelFormat.rgba8888, done.complete);
+    final ui.Image img = await done.future;
+    final ui.Image? old = _beforeImg;
+    _beforeImg = img;
+    _beforeFor = src;
+    WidgetsBinding.instance.addPostFrameCallback((_) => old?.dispose());
+  }
+
+  Future<void> _setCompare(String mode) async {
+    if (mode == 'split') await _ensureBeforeImg();
+    if (!mounted) return;
+    setState(() {
+      _before = mode == 'before';
+      _split = mode == 'split' && _beforeImg != null;
+      if (mode == 'split') _splitX = 0.5;
+    });
+    _refresh();
+  }
+
+  /// Sous la photo : Avant, Après, ou Partagé (curseur au milieu).
+  Widget _beforeAfterBar(bool ready) {
+    if (_shown == null || _cropMode) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Center(
+        child: SegmentedButton<String>(
+          showSelectedIcon: false,
+          segments: const <ButtonSegment<String>>[
+            ButtonSegment<String>(value: 'before', label: Text('Avant')),
+            ButtonSegment<String>(value: 'after', label: Text('Après')),
+            ButtonSegment<String>(value: 'split', label: Text('Partagé'), icon: Icon(Icons.view_column_outlined, size: 18)),
+          ],
+          selected: <String>{_split ? 'split' : (_before ? 'before' : 'after')},
+          onSelectionChanged: !ready ? null : (Set<String> v) => _setCompare(v.first),
+        ),
+      ),
     );
   }
 
-  Widget _infoLine(bool ready) {
-    return Row(
-      children: <Widget>[
-        Expanded(
-          child: Text(
-            _srcRgba == null
-                ? ''
-                : '$_name · $_w×$_h px · rendu $_renderMs ms · conversion $_imageMs ms · $_saveInfo',
-            style: const TextStyle(fontSize: 12),
+  /// Mode « Partagé » : la photo d'origine à gauche du curseur, la photo retouchée à droite. Se déplace au doigt (sans zoom).
+  Widget _splitView() {
+    final ui.Image a = _shown!;
+    final ui.Image b = _beforeImg!;
+    return LayoutBuilder(builder: (BuildContext context, BoxConstraints c) {
+      final double aspect = a.width / a.height;
+      double iw = c.maxWidth, ih = c.maxWidth / aspect;
+      if (ih > c.maxHeight) {
+        ih = c.maxHeight;
+        iw = c.maxHeight * aspect;
+      }
+      final double ox = (c.maxWidth - iw) / 2, oy = (c.maxHeight - ih) / 2;
+      final double lx = ox + iw * _splitX;
+      void moveTo(double dx) => setState(() => _splitX = ((dx - ox) / iw).clamp(0.0, 1.0).toDouble());
+      Widget label(String t, {double? left, double? right}) => Positioned(
+            left: left,
+            right: right,
+            bottom: oy + 10,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              decoration: BoxDecoration(color: const Color(0xD91C1C1E), borderRadius: BorderRadius.circular(10)),
+              child: Text(t, style: const TextStyle(fontSize: 12)),
+            ),
+          );
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapDown: (TapDownDetails d) => moveTo(d.localPosition.dx),
+        onHorizontalDragUpdate: (DragUpdateDetails d) => moveTo(d.localPosition.dx),
+        child: Stack(
+          children: <Widget>[
+            Positioned(left: ox, top: oy, width: iw, height: ih, child: RawImage(image: a, fit: BoxFit.fill)),
+            Positioned(
+              left: ox,
+              top: oy,
+              width: iw * _splitX,
+              height: ih,
+              child: ClipRect(
+                child: OverflowBox(
+                  alignment: Alignment.centerLeft,
+                  minWidth: iw,
+                  maxWidth: iw,
+                  minHeight: ih,
+                  maxHeight: ih,
+                  child: RawImage(image: b, fit: BoxFit.fill),
+                ),
+              ),
+            ),
+            Positioned(left: lx - 1, top: oy, width: 2, height: ih, child: const ColoredBox(color: Colors.white)),
+            Positioned(
+              left: lx - 17,
+              top: oy + ih / 2 - 17,
+              child: Container(
+                width: 34,
+                height: 34,
+                decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+                child: const Icon(Icons.swap_horiz, color: Color(0xFF1C1C1E), size: 22),
+              ),
+            ),
+            label('Avant', left: ox + 10),
+            label('Après', right: c.maxWidth - ox - iw + 10),
+          ],
+        ),
+      );
+    });
+  }
+
+  void _setInfoVisible(bool v) {
+    setState(() => _infoVisible = v);
+    _savePrefs();
+  }
+
+  /// Bulle en haut à gauche de la photo : appareil, réglages de prise de vue, fichier. Se montre ou se cache.
+  Widget _infoBubble() {
+    if (!_infoVisible) {
+      return Material(
+        color: const Color(0xE61C1C1E),
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () => _setInfoVisible(true),
+          child: const Padding(padding: EdgeInsets.all(8), child: Icon(Icons.info_outline, size: 20)),
+        ),
+      );
+    }
+    final List<String> shoot = <String>[for (final String l in _shoot) if (l.isNotEmpty) l];
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 360),
+      padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+      decoration: BoxDecoration(
+        color: const Color(0xE61C1C1E),
+        border: Border.all(color: Colors.white24),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                if (shoot.isNotEmpty)
+                  Text(shoot.join('\n'),
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFFF2A33A))),
+                if (_srcRgba != null)
+                  Text('$_name · $_w×$_h px · rendu $_renderMs ms · conversion $_imageMs ms · $_saveInfo',
+                      style: const TextStyle(fontSize: 12, color: Colors.white70)),
+              ],
+            ),
           ),
-        ),
-        const Text('Avant'),
-        Switch(
-          value: _before,
-          onChanged: !ready
-              ? null
-              : (bool v) {
-                  setState(() => _before = v);
-                  _refresh();
-                },
-        ),
-      ],
+          InkWell(
+            onTap: () => _setInfoVisible(false),
+            child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.close, size: 18, color: Colors.white60)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -3262,6 +3398,7 @@ class _DevelopPageState extends State<DevelopPage> {
                   children: <Widget>[
                     _banner(),
                     Expanded(child: _photoStack()),
+                    _beforeAfterBar(ready),
                   ],
                 ),
               ),
@@ -3271,7 +3408,6 @@ class _DevelopPageState extends State<DevelopPage> {
                 padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
                 child: Column(
                   children: <Widget>[
-                    _infoRow(ready),
                     Expanded(child: SingleChildScrollView(
                         child: Material(type: MaterialType.transparency, child: Column(children: _panelBody(ready))))),
                   ],
@@ -3283,6 +3419,7 @@ class _DevelopPageState extends State<DevelopPage> {
             children: <Widget>[
               _banner(),
               Expanded(child: _photoStack()),
+              _beforeAfterBar(ready),
               Container(
                 color: Theme.of(context).colorScheme.surface,
                 padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
@@ -3294,7 +3431,6 @@ class _DevelopPageState extends State<DevelopPage> {
                       scrollDirection: Axis.horizontal,
                       child: Row(children: _tools(ready)),
                     ),
-                    _infoRow(ready),
                     Flexible(child: SingleChildScrollView(
                         child: Material(type: MaterialType.transparency, child: Column(children: _panelBody(ready))))),
                   ],
