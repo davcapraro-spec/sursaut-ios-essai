@@ -1272,10 +1272,10 @@ class _DevelopPageState extends State<DevelopPage> {
       _faces = list;
       _faceImgs = thumbs;
       _facesFor = rgba;
-      _selFaces = <int>{for (int i = 0; i < list.length; i++) i};
+      _selFaces = list.length == 1 ? <int>{0} : <int>{};
       _selParts = <String>{};
     });
-    _say(list.length == 1 ? '1 personne repérée.' : '${list.length} personnes repérées : « Toutes » ou une pastille, puis cochez.');
+    _say(list.length == 1 ? '1 personne repérée.' : '${list.length} personnes repérées : touchez « Toutes » ou une pastille.');
   }
 
   /// Les pastilles des visages sont-elles à montrer (même photo que celle où on les a cherchés) ?
@@ -1374,6 +1374,11 @@ class _DevelopPageState extends State<DevelopPage> {
   /// Cases à cocher (comme Lightroom) puis « Annuler » / « Créer ».
   List<Widget> _facePartChips(TextStyle title, TextStyle hint) {
     final bool ready = _selFaces.isNotEmpty && _selParts.isNotEmpty && !_aiBusy;
+    if (_selFaces.isEmpty) {
+      return <Widget>[
+        Padding(padding: const EdgeInsets.only(top: 4), child: Text('Touchez « Toutes » ou une ou plusieurs pastilles : les cases à cocher apparaissent ensuite.', style: hint)),
+      ];
+    }
     return <Widget>[
       Padding(padding: const EdgeInsets.only(top: 6, bottom: 4), child: Text('CE QUE LE MASQUE COUVRE', style: title)),
       Wrap(
