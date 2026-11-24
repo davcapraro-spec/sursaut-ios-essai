@@ -787,29 +787,43 @@ void main() {
       }
     }
     const int pw = 1000, ph = 500;
-    final List<double> anchor = partAnchor('clothes', 450 / iw, 225 / ih, 550 / iw, 375 / ih, iw, ih);
-    Uint8List run(int self) => bodyPartPlane(
-        probs: probs,
+    final List<double> anchor0 = partAnchor('clothes', 450 / iw, 225 / ih, 550 / iw, 375 / ih, iw, ih);
+    final List<double> anchor1 = partAnchor('clothes', 590 / iw, 225 / ih, 690 / iw, 375 / ih, iw, ih);
+    Uint8List run(Uint8List pr, int self) => bodyPartPlane(
+        probs: pr,
         size: size,
         cls: 4,
         crop: crop,
-        anchor: anchor,
+        anchor: self == 0 ? anchor0 : anchor1,
         pw: pw,
         ph: ph,
         imgW: iw,
         imgH: ih,
         faces: <List<double>>[
-          <double>[500, 100], // la personne choisie
-          <double>[640, 100], // son voisin, 140 pixels à droite
+          <double>[500, 300, 100], // la personne choisie : centre x, centre y, largeur
+          <double>[640, 300, 100], // son voisin, 140 pixels à droite
         ],
+        anchors: <List<double>>[anchor0, anchor1],
         self: self);
     int at(Uint8List plane, double x, double y) => plane[(y * ph / ih).toInt() * pw + (x * pw / iw).toInt()];
-    final Uint8List mine = run(0);
-    expect(at(mine, 450, 560), 255); // côté de la personne choisie
-    expect(at(mine, 600, 560), 0); // plus près du voisin (milieu = 570)
-    final Uint8List other = run(1);
-    expect(at(other, 600, 560), 255); // vue par le voisin : il garde cette partie
-    expect(at(other, 450, 560), 0);
+    // une zone continue qui touche les deux personnes ne peut pas être répartie : écartée (pas de bande verticale)
+    expect(run(probs, 0).every((int v) => v == 0), isTrue);
+    expect(run(probs, 1).every((int v) => v == 0), isTrue);
+    // deux zones séparées : chacune va à la personne dont le visage est le plus proche
+    final Uint8List two = Uint8List(kBodyClasses * size * size);
+    for (int y = 0; y < size; y++) {
+      for (int x = 0; x < size; x++) {
+        final double px = crop.x0 + (x + 0.5) / sc, py = crop.y0 + (y + 0.5) / sc;
+        final bool cloth = py >= 420 && py <= 700 && ((px >= 420 && px <= 520) || (px >= 620 && px <= 720));
+        two[(cloth ? 4 : 0) * size * size + y * size + x] = 255;
+      }
+    }
+    final Uint8List mine = run(two, 0);
+    expect(at(mine, 470, 560), 255);
+    expect(at(mine, 670, 560), 0);
+    final Uint8List other = run(two, 1);
+    expect(at(other, 670, 560), 255);
+    expect(at(other, 470, 560), 0);
   });
 
   test('plans : rééchantillonnage et réunion', () {

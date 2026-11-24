@@ -1489,7 +1489,10 @@ class _DevelopPageState extends State<DevelopPage> {
       imgH: _h,
       guide: grayPlane(rgba, _w, _h, pw, ph),
       faces: <List<double>>[
-        for (final VisionFace f in _faces) <double>[(f.x0 + f.x1) / 2 * _w, (f.x1 - f.x0) * _w],
+        for (final VisionFace f in _faces) <double>[(f.x0 + f.x1) / 2 * _w, (f.y0 + f.y1) / 2 * _h, (f.x1 - f.x0) * _w],
+      ],
+      anchors: <List<double>>[
+        for (final VisionFace f in _faces) partAnchor(part, f.x0, f.y0, f.x1, f.y1, _w, _h),
       ],
       self: which,
     );
@@ -1548,7 +1551,7 @@ class _DevelopPageState extends State<DevelopPage> {
         return;
       }
       final String who0 = who.length == _faces.length && who.length > 1 ? 'Tous' : who.length == 1 ? 'Personne ${who.first + 1}' : 'Personnes ${who.map((int i) => i + 1).join('+')}';
-      final String what0 = parts.length == 1 ? _kSelParts[parts.first]! : parts.map((String k) => _kSelParts[k]!).join(', ');
+      final String what0 = parts.length == 1 ? _kSelParts[parts.first]! : parts.length == 2 ? parts.map((String k) => _kSelParts[k]!).join(', ') : '${parts.length} parties';
       final String key = maskKey(plane);
       MaskBitmaps.set(key, pw, ph, plane);
       final MaskMap m = bitmapMask(

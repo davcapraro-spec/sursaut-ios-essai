@@ -130,8 +130,8 @@ List<double> partAnchor(String part, double fx0, double fy0, double fx1, double 
 /// [probs] : [kBodyClasses] plans de [size] x [size] octets (probabilité x 255) du carré [crop]. Une zone de la classe
 /// n'est gardée que si elle touche [anchor] (pixels de la photo). [guide] : la photo en niveaux de gris, [pw] x [ph] ; si elle
 /// est donnée, les bords sont recalés dessus (filtre guidé, rayon = 1,5 pixel du modèle). [faces] : pour chaque personne de la photo,
-/// [centre x, largeur du visage] en pixels ; chaque pixel de la zone va à la personne dont l'axe (centre du visage) est le plus proche,
-/// pour que la partie suive la personne choisie ([self]) et pas son voisin.
+/// [centre x, centre y, largeur du visage] en pixels ; chaque zone va à la personne dont le visage est le plus proche (jamais par bandes),
+/// pour que la partie suive la personne choisie ([self]). [anchors] : l'ancre de chaque personne ; des vêtements touchant plusieurs ancres sont écartés.
 Uint8List bodyPartPlane({
   required Uint8List probs,
   required int size,
@@ -144,6 +144,7 @@ Uint8List bodyPartPlane({
   required int imgH,
   Uint8List? guide,
   List<List<double>>? faces,
+  List<List<double>>? anchors,
   int self = 0,
 }) {
   final int n = size * size;
@@ -205,22 +206,63 @@ Uint8List bodyPartPlane({
   final Uint8List soft = Uint8List(n);
   final List<List<double>>? all = faces;
   final bool split = all != null && all.length > 1 && self >= 0 && self < all.length;
-  for (int i = 0; i < n; i++) {
-    if (keep[i] != 1) continue;
-    if (split) {
-      final double photoX = crop.x0 + ((i % size) + 0.5) / sc;
-      int owner = 0;
-      double best = double.infinity;
-      for (int k = 0; k < all!.length; k++) {
-        final double d = (photoX - all[k][0]).abs() / math.max(1.0, all[k][1]);
-        if (d < best) {
-          best = d;
-          owner = k;
+  if (split) {
+    // Attribution par zone (et non par bande verticale) : chaque zone connexe va à la personne dont le visage est le plus proche ;
+    // une zone de vêtements qui touche les ancres de plusieurs personnes (corps collés) ne peut pas être répartie : elle est écartée.
+    final Int32List lab = Int32List(n);
+    int count = 0;
+    for (int s0 = 0; s0 < n; s0++) {
+      if (keep[s0] != 1 || lab[s0] != 0) continue;
+      count++;
+      final List<int> q = <int>[s0];
+      lab[s0] = count;
+      int h = 0;
+      int touched = 0;
+      final List<double> bd = List<double>.filled(all!.length, double.infinity);
+      while (h < q.length) {
+        final int i = q[h++];
+        final int x = i % size, y = i ~/ size;
+        final double phx = crop.x0 + (x + 0.5) / sc, phy = crop.y0 + (y + 0.5) / sc;
+        for (int k = 0; k < all.length; k++) {
+          final double dx = phx - all[k][0], dy = phy - all[k][1];
+          final double d = math.sqrt(dx * dx + dy * dy) / math.max(1.0, all[k][2]);
+          if (d < bd[k]) bd[k] = d;
+          if (anchors != null && k < anchors.length) {
+            final List<double> a = anchors[k];
+            if (phx >= a[0] && phx < a[2] && phy >= a[1] && phy < a[3]) touched |= 1 << k;
+          }
+        }
+        if (x > 0 && keep[i - 1] == 1 && lab[i - 1] == 0) {
+          lab[i - 1] = count;
+          q.add(i - 1);
+        }
+        if (x < size - 1 && keep[i + 1] == 1 && lab[i + 1] == 0) {
+          lab[i + 1] = count;
+          q.add(i + 1);
+        }
+        if (y > 0 && keep[i - size] == 1 && lab[i - size] == 0) {
+          lab[i - size] = count;
+          q.add(i - size);
+        }
+        if (y < size - 1 && keep[i + size] == 1 && lab[i + size] == 0) {
+          lab[i + size] = count;
+          q.add(i + size);
         }
       }
-      if (owner != self) continue;
+      int owner = 0;
+      for (int k = 1; k < all.length; k++) {
+        if (bd[k] < bd[owner]) owner = k;
+      }
+      final bool shared = cls == kBodyPartClass['clothes'] && (touched & (touched - 1)) != 0;
+      if (owner != self || shared) continue;
+      for (final int i in q) {
+        soft[i] = probs[cls * n + i];
+      }
     }
-    soft[i] = probs[cls * n + i];
+  } else {
+    for (int i = 0; i < n; i++) {
+      if (keep[i] == 1) soft[i] = probs[cls * n + i];
+    }
   }
   final double px = pw / imgW, py = ph / imgH;
   final int ox0 = (crop.x0 * px).floor().clamp(0, pw).toInt();
