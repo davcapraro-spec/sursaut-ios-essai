@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sursaut_essai/common/app_version.dart';
 import 'package:sursaut_essai/domain/ai_masks.dart';
 import 'package:sursaut_essai/domain/body_parts.dart';
+import 'package:sursaut_essai/domain/sam_mask.dart';
 import 'package:sursaut_essai/domain/face_parts.dart';
 import 'package:sursaut_essai/domain/crop_math.dart';
 import 'dart:convert';
@@ -820,5 +821,22 @@ void main() {
     final Uint8List a = Uint8List.fromList(<int>[10, 200, 0]);
     unionPlanes(a, Uint8List.fromList(<int>[50, 100, 7]));
     expect(a, <int>[50, 200, 7]);
+  });
+
+  test('SAM : logits -> plan couvrant toute la photo', () {
+    const int n = 8;
+    final Float32List l = Float32List(n * n);
+    for (int y = 0; y < n; y++) {
+      for (int x = 0; x < n; x++) {
+        l[y * n + x] = (x >= 2 && x < 6 && y >= 2 && y < 6) ? 8.0 : -8.0;
+      }
+    }
+    final Uint8List p = samPlane(logits: l, size: n, pw: 64, ph: 32);
+    expect(p.length, 64 * 32);
+    expect(p[16 * 64 + 32], 255); // centre : dans l'objet
+    expect(p[0], 0); // coin : en dehors
+    expect(p[16 * 64 + 63], 0); // bord droit : en dehors
+    // sans guide ni logits : plan vide de la bonne taille
+    expect(samPlane(logits: Float32List(0), size: 8, pw: 4, ph: 4).length, 16);
   });
 }

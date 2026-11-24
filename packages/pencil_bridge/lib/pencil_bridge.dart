@@ -167,11 +167,62 @@ class VisionParts {
   final String? error;
 }
 
+/// Masque de SAM 2.1 pour des points : `logits` (size x size, avant sigmoïde : > 0 = dans l'objet).
+class VisionSam {
+  const VisionSam({this.size = 0, this.logits, this.score = 0, this.error});
+
+  final int size;
+  final Float32List? logits;
+  final double score;
+  final String? error;
+}
+
 /// Détourage par Vision (Apple) : sujet principal ou personnes, sans fichier de modèle (iPadOS 17 ou plus).
 class VisionBridge {
   VisionBridge._();
 
   static const MethodChannel _methods = MethodChannel('sursaut/vision/methods');
+
+  /// SAM 2.1 : analyse la photo (une fois par photo : [key] l'identifie). Rend un message d'erreur, ou null si tout va bien.
+  static Future<String?> samEncode(Uint8List rgba, int width, int height, int key) async {
+    try {
+      final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>(
+        'samEncode',
+        <String, Object?>{'rgba': rgba, 'width': width, 'height': height, 'key': key},
+      );
+      if (r == null) return 'Pas de réponse de SAM 2.1.';
+      final Object? err = r['error'];
+      return err?.toString();
+    } on MissingPluginException {
+      return 'SAM 2.1 indisponible (pas un iPad).';
+    } on PlatformException catch (e) {
+      return e.message ?? e.code;
+    }
+  }
+
+  /// SAM 2.1 : le masque pour des points [x, y, étiquette] (x et y : fractions de la photo ; 1 = dans l'objet, 0 = en dehors).
+  static Future<VisionSam> samDecode(List<List<double>> points) async {
+    try {
+      final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>(
+        'samDecode',
+        <String, Object?>{'points': points},
+      );
+      if (r == null) return const VisionSam(error: 'Pas de réponse de SAM 2.1.');
+      final Object? err = r['error'];
+      if (err != null) return VisionSam(error: err.toString());
+      final Object? size = r['size'];
+      final Object? logits = r['logits'];
+      final Object? score = r['score'];
+      if (size is! int || logits is! Float32List || logits.length < size * size) {
+        return const VisionSam(error: 'Réponse de SAM 2.1 illisible.');
+      }
+      return VisionSam(size: size, logits: logits, score: score is num ? score.toDouble() : 0);
+    } on MissingPluginException {
+      return const VisionSam(error: 'SAM 2.1 indisponible (pas un iPad).');
+    } on PlatformException catch (e) {
+      return VisionSam(error: e.message ?? e.code);
+    }
+  }
 
   /// Les parties du corps dans le carré (`cropX`, `cropY`, `cropSide`, en pixels ; il peut dépasser la photo) : cheveux, peau, vêtements.
   static Future<VisionParts> bodyParts(Uint8List rgba, int width, int height, int cropX, int cropY, int cropSide) async {

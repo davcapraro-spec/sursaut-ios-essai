@@ -8,3 +8,4 @@ build/
 Payload/
 engine/target/
 packages/pencil_bridge/ios/libsursaut_engine.a
+packages/pencil_bridge/ios/Assets/*.mlmodelc

@@ -12,7 +12,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:pencil_bridge/pencil_bridge.dart'
-    show VisionBridge, VisionFace, VisionFaces, VisionMaskResult, VisionParts;
+    show VisionBridge, VisionFace, VisionFaces, VisionMaskResult, VisionParts, VisionSam;
 import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
@@ -20,6 +20,7 @@ import '../../domain/ai_masks.dart';
 import '../../common/app_version.dart';
 import '../../domain/crop_math.dart';
 import '../../domain/body_parts.dart';
+import '../../domain/sam_mask.dart';
 import '../../domain/face_parts.dart';
 import '../../domain/curves.dart';
 import '../../domain/develop_params.dart';
@@ -139,6 +140,10 @@ class _DevelopPageState extends State<DevelopPage> {
   List<VisionFace> _faces = <VisionFace>[]; // personnes repérées = un visage chacune (pastilles du panneau Masques)
   List<ui.Image> _faceImgs = <ui.Image>[];
   Uint8List? _facesFor; // la photo pour laquelle on les a cherchés
+  bool _samOn = false; // sélection au toucher (SAM 2.1) : chaque toucher sur la photo ajoute un point
+  bool _samAdd = true; // le prochain point est « dans l'objet » (sinon « en dehors »)
+  List<List<double>> _samPts = <List<double>>[]; // points [x, y, 1 ou 0] (fractions de la photo)
+  int _samMask = -1; // numéro du masque en cours de construction
   Set<int> _selFaces = <int>{}; // personnes cochées (indices dans `_faces`)
   Set<String> _selParts = <String>{}; // parties cochées : person | skin | eyes | … | hair | clothes | bodyskin
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
@@ -1559,6 +1564,157 @@ class _DevelopPageState extends State<DevelopPage> {
     }
   }
 
+  /// SAM 2.1 : analyse la photo (une fois), puis chaque toucher sur la photo ajoute un point.
+  Future<void> _samStart() async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
+    setState(() => _aiBusy = true);
+    _say('SAM 2.1 analyse la photo…');
+    try {
+      final String? error = await VisionBridge.samEncode(rgba, _w, _h, identityHashCode(rgba));
+      if (!mounted) return;
+      if (error != null) {
+        _say(error);
+        return;
+      }
+      setState(() {
+        _samOn = true;
+        _samAdd = true;
+        _samPts = <List<double>>[];
+        _samMask = -1;
+        _maskPick = false;
+        _maskPickNew = false;
+        _maskDraw = null;
+        _maskAttach = false;
+        _brushTool = null;
+      });
+      _say('Touchez l\'objet à sélectionner.');
+    } catch (e) {
+      _say('SAM 2.1 : $e');
+    } finally {
+      if (mounted) setState(() => _aiBusy = false);
+    }
+  }
+
+  Future<void> _samTapped(double fx, double fy) async {
+    if (_aiBusy || !_samOn) return;
+    _samPts = <List<double>>[..._samPts, <double>[fx, fy, _samAdd ? 1.0 : 0.0]];
+    await _samRun();
+  }
+
+  Future<void> _samUndo() async {
+    if (_aiBusy || _samPts.length < 2) return;
+    _samPts = _samPts.sublist(0, _samPts.length - 1);
+    await _samRun();
+  }
+
+  /// Calcule le masque pour tous les points et le met à la place de celui en cours (ou le crée).
+  Future<void> _samRun() async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _samPts.isEmpty || _w == 0 || _h == 0) return;
+    setState(() => _aiBusy = true);
+    try {
+      final VisionSam r = await VisionBridge.samDecode(_samPts);
+      if (!mounted) return;
+      final Float32List? logits = r.logits;
+      final String? error = r.error;
+      if (error != null || logits == null) {
+        _say(error ?? 'SAM 2.1 : pas de masque.');
+        return;
+      }
+      final double aspect = _w / _h;
+      final int pw = aspect >= 1 ? 1024 : (1024 * aspect).round().clamp(64, 1024).toInt();
+      final int ph = aspect >= 1 ? (1024 / aspect).round().clamp(64, 1024).toInt() : 1024;
+      final Uint8List plane = samPlane(logits: logits, size: r.size, pw: pw, ph: ph, guide: grayPlane(rgba, _w, _h, pw, ph));
+      int covered = 0;
+      for (final int v in plane) {
+        if (v > 127) covered++;
+      }
+      if (covered == 0) {
+        _say('Rien n\'est sélectionné ici : touchez l\'objet.');
+        return;
+      }
+      final String key = maskKey(plane);
+      MaskBitmaps.set(key, pw, ph, plane);
+      final bool existing = _samMask >= 0 && _samMask < _masks.length;
+      final MaskMap old = existing ? _masks[_samMask] : <String, dynamic>{};
+      MaskMap m = bitmapMask(
+        name: existing ? '${old['name']}' : nextMaskName(_masks, 'Sélection'),
+        key: key,
+        pngBase64: planeToBase64(plane, pw, ph),
+        what: 'sam',
+      );
+      ((m['comps'] as List<dynamic>).first as Map<String, dynamic>)['ai']['points'] = <dynamic>[
+        for (final List<double> q in _samPts) List<double>.of(q),
+      ];
+      if (existing) {
+        m = <String, dynamic>{...m, 'enabled': old['enabled'], 'invert': old['invert'], 'amount': old['amount'], 'adj': old['adj']};
+      }
+      setState(() {
+        if (existing) {
+          final int at = _samMask;
+          _masks = <MaskMap>[for (int k = 0; k < _masks.length; k++) k == at ? m : _masks[k]];
+        } else {
+          _masks = <MaskMap>[..._masks, m];
+          _samMask = _masks.length - 1;
+        }
+        _maskSel = _samMask;
+        _compSel = 0;
+        _before = false;
+        _maskZone = true;
+      });
+      _commit();
+      _refresh();
+      _say('Sélection : ${(covered * 100 / plane.length).round()} % de l\'image (${_samPts.length} point${_samPts.length > 1 ? 's' : ''}).');
+    } catch (e) {
+      _say('SAM 2.1 : $e');
+    } finally {
+      if (mounted) setState(() => _aiBusy = false);
+    }
+  }
+
+  /// Bouton « Objet au toucher », puis ses choix quand la sélection au toucher est en cours.
+  List<Widget> _samBlock(TextStyle title, TextStyle hint, bool ready) {
+    if (!_samOn) {
+      return <Widget>[
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white24), minimumSize: const Size(48, 48)),
+            onPressed: ready && !_aiBusy ? _samStart : null,
+            icon: _aiBusy ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.touch_app_outlined, size: 20),
+            label: const Text('Objet au toucher (SAM 2.1, en essai)'),
+          ),
+        ),
+      ];
+    }
+    return <Widget>[
+      const SizedBox(height: 8),
+      Text('OBJET AU TOUCHER', style: title),
+      const SizedBox(height: 4),
+      Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: <Widget>[
+          ChoiceChip(label: const Text('+ Dans l\'objet'), selected: _samAdd, onSelected: (_) => setState(() => _samAdd = true)),
+          ChoiceChip(label: const Text('− En dehors'), selected: !_samAdd, onSelected: (_) => setState(() => _samAdd = false)),
+          ActionChip(label: const Text('Annuler le dernier point'), onPressed: _aiBusy || _samPts.length < 2 ? null : _samUndo),
+          ActionChip(avatar: const Icon(Icons.check, size: 18), label: const Text('Terminé'), onPressed: _aiBusy ? null : () => setState(() => _samOn = false)),
+        ],
+      ),
+      Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Text(
+          _samPts.isEmpty
+              ? 'Touchez l\'objet sur la photo.'
+              : '${_samPts.length} point${_samPts.length > 1 ? 's' : ''}. Touchez encore pour ajouter une zone (« Dans l\'objet ») ou en retirer une (« En dehors »), puis « Terminé ».',
+          style: hint,
+        ),
+      ),
+    ];
+  }
+
   /// Petites images (120 px de haut) de la photo recadrée sur chaque cadre [x0, y0, x1, y1] (fractions), élargi de [margin].
   Future<List<ui.Image>> _cropThumbs(Uint8List rgba, List<List<double>> boxes, double margin) async {
     const int th = 120;
@@ -1945,6 +2101,7 @@ class _DevelopPageState extends State<DevelopPage> {
           Expanded(child: _aiButton('person', Icons.groups_outlined, ready)),
         ],
       ),
+      ..._samBlock(title, hint, ready),
       Padding(padding: const EdgeInsets.only(top: 6), child: Text(guide, style: hint)),
       if (idx.isNotEmpty) ...<Widget>[
         const Padding(padding: EdgeInsets.only(top: 14, bottom: 2), child: Text('MASQUES', style: title)),
@@ -2746,8 +2903,8 @@ class _DevelopPageState extends State<DevelopPage> {
           invert: _maskSelected?['invert'] == true,
           drawKind: _maskDraw,
           showArea: !_maskZone,
-          pickMode: _maskPick,
-          onPick: _maskPicked,
+          pickMode: _maskPick || _samOn,
+          onPick: _samOn ? _samTapped : _maskPicked,
           paintKind: _brushTool,
           brushR: _effBrushR,
           onStroke: _maskStroke,

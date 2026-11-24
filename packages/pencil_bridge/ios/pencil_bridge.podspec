@@ -7,7 +7,7 @@ Pod::Spec.new do |s|
   s.license          = { :type => 'Proprietary' }
   s.author           = { 'Sursaut' => 'noreply@example.com' }
   s.source           = { :path => '.' }
-  s.frameworks = 'ImageCaptureCore', 'Vision'
+  s.frameworks = 'ImageCaptureCore', 'Vision', 'CoreML'
   s.source_files     = 'Classes/**/*'
   # Moteur Rust (étape 1) : fabriqué par le workflow, copié ici avant la compilation.
   s.vendored_libraries = 'libsursaut_engine.a'
@@ -17,7 +17,7 @@ Pod::Spec.new do |s|
   # Parties du corps (cheveux, peau, vêtements) : TensorFlow Lite, API C (Google, Apache 2.0 ; bibliothèque statique) fait tourner le modèle MediaPipe
   # « selfie multiclasse » (Google, Apache 2.0, 16 Mo, mis dans Assets/). Essai : à terme, modèle téléchargé à la première utilisation.
   s.dependency 'TensorFlowLiteC', '2.17.0'
-  s.resources        = ['Assets/*.tflite']
+  s.resources        = ['Assets/*.tflite', 'Assets/*.mlmodelc']
   s.platform         = :ios, '13.0'
   s.swift_version    = '5.0'
   # TensorFlowLiteC est une bibliothèque statique : on la lie explicitement dans ce plugin (sinon « Undefined symbol: TfLite… »).

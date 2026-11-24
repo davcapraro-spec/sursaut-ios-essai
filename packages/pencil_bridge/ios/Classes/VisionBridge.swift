@@ -14,8 +14,34 @@ final class VisionBridge {
       name: "sursaut/vision/methods",
       binaryMessenger: registrar.messenger())
     channel.setMethodCallHandler { call, result in
-      guard call.method == "instanceMask" || call.method == "listPersons" || call.method == "faceParts" || call.method == "bodyParts" else {
+      guard call.method == "instanceMask" || call.method == "listPersons" || call.method == "faceParts" || call.method == "bodyParts" || call.method == "samEncode" || call.method == "samDecode" else {
         result(FlutterMethodNotImplemented)
+        return
+      }
+      if call.method == "samDecode" {
+        guard let a = call.arguments as? [String: Any], let raw = a["points"] as? [[Double]] else {
+          result(["error": "Points manquants pour SAM 2.1."])
+          return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+          let out = SamBridge.decode(points: raw)
+          DispatchQueue.main.async { result(out) }
+        }
+        return
+      }
+      if call.method == "samEncode" {
+        guard let a = call.arguments as? [String: Any],
+          let typed = a["rgba"] as? FlutterStandardTypedData,
+          let w = a["width"] as? Int, let h = a["height"] as? Int, let key = a["key"] as? Int
+        else {
+          result(["error": "Arguments manquants pour SAM 2.1."])
+          return
+        }
+        let pixels = typed.data
+        DispatchQueue.global(qos: .userInitiated).async {
+          let out = SamBridge.encode(rgba: pixels, width: w, height: h, key: key)
+          DispatchQueue.main.async { result(out) }
+        }
         return
       }
       guard let args = call.arguments as? [String: Any],

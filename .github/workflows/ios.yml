@@ -62,6 +62,19 @@ jobs:
           cat tools/podfile_tflite.rb >> ios/Podfile
           tail -20 ios/Podfile
 
+      # SAM 2.1 (sélection au toucher) : les trois modèles Core ML d'Apple (Apache 2.0, 94 Mo, apple/coreml-sam2.1-small sur Hugging Face)
+      # sont téléchargés, compilés (.mlpackage -> .mlmodelc) et mis dans le plugin avant « pod install ».
+      - name: SAM 2.1 (modèles Core ML)
+        run: |
+          pip3 install --quiet huggingface_hub || pip3 install --quiet --break-system-packages huggingface_hub
+          python3 -c "from huggingface_hub import snapshot_download; snapshot_download('apple/coreml-sam2.1-small', local_dir='sam_src', allow_patterns=['*.mlpackage/**'])"
+          find sam_src -maxdepth 2 | sort
+          mkdir -p packages/pencil_bridge/ios/Assets
+          for m in SAM2_1SmallImageEncoderFLOAT16 SAM2_1SmallPromptEncoderFLOAT16 SAM2_1SmallMaskDecoderFLOAT16; do
+            xcrun coremlcompiler compile "sam_src/$m.mlpackage" packages/pencil_bridge/ios/Assets
+          done
+          ls -la packages/pencil_bridge/ios/Assets
+
       # Logo de Sursaut : on remplace l'icône Flutter par assets/app_icon_1024.png (carré, sans transparence,
       # comme l'exige iOS) en fabriquant toutes les tailles listées par le modèle Flutter.
       - name: Icône de l'application
