@@ -744,4 +744,70 @@ void main() {
         probs: probs, size: size, cls: kBodyPartClass['bodyskin']!, crop: crop, anchor: partAnchor('bodyskin', 450 / w, 225 / h, 550 / w, 375 / h, w, h), pw: pw, ph: ph, imgW: w, imgH: h);
     expect(none.every((int v) => v == 0), isTrue);
   });
+  test('parties du corps : découpe serrée, filtre guidé, partage entre deux personnes', () {
+    // cheveux : carré serré sur la tête ; vêtements : carré large (valeurs vérifiées par un calcul de référence)
+    final CropSquare tete = bodyCrop(450 / 2000, 225 / 1000, 550 / 2000, 375 / 1000, 2000, 1000, part: 'hair');
+    expect(tete.side, 420); // max(150 x 2,8 ; 100 x 2,6)
+    expect(tete.x0, 290); // 500 - 210
+    expect(tete.y0, inInclusiveRange(82, 83)); // 225 - 150 x 0,95 = 82,5 : l'arrondi dépend des décimales
+    // le filtre guidé ramène un bord flou (à 18) sur le bord de l'image guide (à 20)
+    const int w = 40, h = 8;
+    final Float64List guide = Float64List(w * h), p = Float64List(w * h);
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        guide[y * w + x] = x >= 20 ? 1 : 0;
+        p[y * w + x] = ((x - 16) / 4).clamp(0.0, 1.0).toDouble();
+      }
+    }
+    final Float64List q = guidedFilter(guide, p, w, h, 5, 1e-3);
+    expect(q[3 * w + 12], closeTo(0.0668, 0.002));
+    expect(q[3 * w + 18], closeTo(0.2714, 0.002));
+    expect(q[3 * w + 20], closeTo(0.9978, 0.002));
+    expect(q[3 * w + 25], closeTo(0.9997, 0.002));
+    // gris : 2 x 2 pixels uniformes
+    final Uint8List rgba = Uint8List.fromList(<int>[for (int i = 0; i < 4; i++) ...<int>[100, 100, 100, 255]]);
+    expect(grayPlane(rgba, 2, 2, 2, 2).every((int v) => v == 100), isTrue);
+
+    // deux personnes côte à côte : une zone de vêtements continue est partagée à mi-chemin entre leurs visages
+    const int iw = 2000, ih = 1000;
+    final CropSquare crop = bodyCrop(450 / iw, 225 / ih, 550 / iw, 375 / ih, iw, ih);
+    const int size = 256;
+    final double sc = size / crop.side;
+    final Uint8List probs = Uint8List(kBodyClasses * size * size);
+    for (int i = 0; i < size * size; i++) {
+      probs[i] = 0;
+    }
+    for (int y = 0; y < size; y++) {
+      for (int x = 0; x < size; x++) {
+        final int i = y * size + x;
+        final double px = crop.x0 + (x + 0.5) / sc, py = crop.y0 + (y + 0.5) / sc;
+        final bool cloth = py >= 420 && py <= 700 && px >= 350 && px <= 750;
+        probs[(cloth ? 4 : 0) * size * size + i] = 255;
+      }
+    }
+    const int pw = 1000, ph = 500;
+    final List<double> anchor = partAnchor('clothes', 450 / iw, 225 / ih, 550 / iw, 375 / ih, iw, ih);
+    Uint8List run(int self) => bodyPartPlane(
+        probs: probs,
+        size: size,
+        cls: 4,
+        crop: crop,
+        anchor: anchor,
+        pw: pw,
+        ph: ph,
+        imgW: iw,
+        imgH: ih,
+        faces: <List<double>>[
+          <double>[500, 100], // la personne choisie
+          <double>[640, 100], // son voisin, 140 pixels à droite
+        ],
+        self: self);
+    int at(Uint8List plane, double x, double y) => plane[(y * ph / ih).toInt() * pw + (x * pw / iw).toInt()];
+    final Uint8List mine = run(0);
+    expect(at(mine, 450, 560), 255); // côté de la personne choisie
+    expect(at(mine, 600, 560), 0); // plus près du voisin (milieu = 570)
+    final Uint8List other = run(1);
+    expect(at(other, 600, 560), 255); // vue par le voisin : il garde cette partie
+    expect(at(other, 450, 560), 0);
+  });
 }

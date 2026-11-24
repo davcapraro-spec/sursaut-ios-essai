@@ -1479,7 +1479,7 @@ class _DevelopPageState extends State<DevelopPage> {
     final String label = kBodyPartNames[part]!;
     setState(() => _aiBusy = true);
     try {
-      final CropSquare crop = bodyCrop(face.x0, face.y0, face.x1, face.y1, _w, _h);
+      final CropSquare crop = bodyCrop(face.x0, face.y0, face.x1, face.y1, _w, _h, part: part);
       final VisionParts r = await VisionBridge.bodyParts(rgba, _w, _h, crop.x0, crop.y0, crop.side);
       if (!mounted) return;
       final Uint8List? probs = r.probs;
@@ -1501,6 +1501,11 @@ class _DevelopPageState extends State<DevelopPage> {
         ph: ph,
         imgW: _w,
         imgH: _h,
+        guide: grayPlane(rgba, _w, _h, pw, ph),
+        faces: <List<double>>[
+          for (final VisionFace f in _faces) <double>[(f.x0 + f.x1) / 2 * _w, (f.x1 - f.x0) * _w],
+        ],
+        self: which,
       );
       int covered = 0;
       for (final int v in plane) {
