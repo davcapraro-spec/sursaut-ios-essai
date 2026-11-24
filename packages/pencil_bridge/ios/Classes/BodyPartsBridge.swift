@@ -1,6 +1,6 @@
 import Flutter
 import Foundation
-import TensorFlowLite
+import TensorFlowLiteC
 
 /// Parties du corps d'une personne (cheveux, peau du corps, peau du visage, vêtements) par le modèle MediaPipe
 /// « selfie multiclasse 256x256 » (Google, Apache 2.0), exécuté avec TensorFlow Lite (Google, Apache 2.0).
@@ -13,7 +13,8 @@ final class BodyPartsBridge {
   static let size = 256
   static let classes = 6
   private static let lock = NSLock()
-  private static var interpreter: Interpreter?
+  private static var model: OpaquePointer?
+  private static var interpreter: OpaquePointer?
 
   /// Le fichier du modèle (mis dans l'application avec le plugin), ou nil.
   private static func modelPath() -> String? {
@@ -23,19 +24,38 @@ final class BodyPartsBridge {
     return nil
   }
 
-  private static func loadInterpreter() throws -> Interpreter {
+  private static func fail(_ text: String) -> NSError {
+    return NSError(domain: "BodyParts", code: 1, userInfo: [NSLocalizedDescriptionKey: text])
+  }
+
+  /// Charge le modèle une fois (API C de TensorFlow Lite).
+  private static func loadInterpreter() throws -> OpaquePointer {
     if let existing = interpreter { return existing }
     guard let path = modelPath() else {
-      throw NSError(
-        domain: "BodyParts", code: 1,
-        userInfo: [NSLocalizedDescriptionKey: "Le fichier du modèle (selfie_multiclass_256x256.tflite) est absent de l'application."])
+      throw fail("Le fichier du modèle (selfie_multiclass_256x256.tflite) est absent de l'application.")
     }
-    var options = Interpreter.Options()
-    options.threadCount = 2
-    let made = try Interpreter(modelPath: path, options: options)
-    try made.allocateTensors()
-    interpreter = made
-    return made
+    guard let loaded = TfLiteModelCreateFromFile(path) else {
+      throw fail("TensorFlow Lite n'a pas pu lire le modèle.")
+    }
+    guard let options = TfLiteInterpreterOptionsCreate() else {
+      TfLiteModelDelete(loaded)
+      throw fail("TensorFlow Lite : options impossibles.")
+    }
+    TfLiteInterpreterOptionsSetNumThreads(options, 2)
+    let made = TfLiteInterpreterCreate(loaded, options)
+    TfLiteInterpreterOptionsDelete(options)
+    guard let itp = made else {
+      TfLiteModelDelete(loaded)
+      throw fail("TensorFlow Lite : interpréteur impossible.")
+    }
+    if TfLiteInterpreterAllocateTensors(itp) != kTfLiteOk {
+      TfLiteInterpreterDelete(itp)
+      TfLiteModelDelete(loaded)
+      throw fail("TensorFlow Lite : mémoire du modèle impossible.")
+    }
+    model = loaded
+    interpreter = itp
+    return itp
   }
 
   /// Le carré de la photo, ramené à 256 x 256, en réels (rouge, vert, bleu entre 0 et 1) : moyenne de plusieurs points par pixel.
@@ -88,9 +108,30 @@ final class BodyPartsBridge {
     defer { lock.unlock() }
     do {
       let itp = try loadInterpreter()
-      try itp.copy(prepare(rgba, width, height, x0, y0, side), toInputAt: 0)
-      try itp.invoke()
-      let data = try itp.output(at: 0).data
+      let input = prepare(rgba, width, height, x0, y0, side)
+      guard let inTensor = TfLiteInterpreterGetInputTensor(itp, 0) else {
+        throw fail("TensorFlow Lite : entrée du modèle introuvable.")
+      }
+      let copied = input.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> TfLiteStatus in
+        return TfLiteTensorCopyFromBuffer(inTensor, raw.baseAddress, raw.count)
+      }
+      if copied != kTfLiteOk {
+        throw fail("TensorFlow Lite : la photo n'a pas la taille attendue par le modèle.")
+      }
+      if TfLiteInterpreterInvoke(itp) != kTfLiteOk {
+        throw fail("TensorFlow Lite : le calcul a échoué.")
+      }
+      guard let outTensor = TfLiteInterpreterGetOutputTensor(itp, 0) else {
+        throw fail("TensorFlow Lite : sortie du modèle introuvable.")
+      }
+      let outBytes = Int(TfLiteTensorByteSize(outTensor))
+      var data = Data(count: outBytes)
+      let read = data.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) -> TfLiteStatus in
+        return TfLiteTensorCopyToBuffer(outTensor, raw.baseAddress, raw.count)
+      }
+      if read != kTfLiteOk {
+        throw fail("TensorFlow Lite : lecture de la sortie impossible.")
+      }
       let n = size
       let c = classes
       guard data.count >= n * n * c * MemoryLayout<Float>.size else {

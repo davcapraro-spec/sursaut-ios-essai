@@ -14,9 +14,9 @@ Pod::Spec.new do |s|
   # LibRaw est du C++ : la bibliothèque standard du C++ doit être liée à l'application.
   s.libraries = 'c++'
   s.dependency 'Flutter'
-  # Parties du corps (cheveux, peau, vêtements) : TensorFlow Lite (Google, Apache 2.0) fait tourner le modèle MediaPipe
+  # Parties du corps (cheveux, peau, vêtements) : TensorFlow Lite, API C (Google, Apache 2.0 ; bibliothèque dynamique) fait tourner le modèle MediaPipe
   # « selfie multiclasse » (Google, Apache 2.0, 16 Mo, mis dans Assets/). Essai : à terme, modèle téléchargé à la première utilisation.
-  s.dependency 'TensorFlowLiteSwift', '2.17.0'
+  s.dependency 'TensorFlowLiteC', '2.17.0'
   s.resources        = ['Assets/*.tflite']
   s.platform         = :ios, '13.0'
   s.swift_version    = '5.0'
