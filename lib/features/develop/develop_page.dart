@@ -12,7 +12,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:pencil_bridge/pencil_bridge.dart'
-    show VisionBridge, VisionFace, VisionFaces, VisionMaskResult, VisionPerson, VisionPersons;
+    show VisionBridge, VisionFace, VisionFaces, VisionMaskResult;
 import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
@@ -135,10 +135,7 @@ class _DevelopPageState extends State<DevelopPage> {
   double _brushR = kBrushDefaultR; // taille du pinceau pour un nouveau masque ou une nouvelle composante
   bool _maskPickNew = false; // la pipette sert à créer un nouveau masque de couleur (rien n'existe avant le toucher)
   bool _maskPick = false; // pipette : le prochain toucher sur la photo choisit la couleur
-  List<VisionPerson> _persons = <VisionPerson>[]; // personnes repérées (pastilles du panneau Masques)
-  List<ui.Image> _personImgs = <ui.Image>[];
-  Uint8List? _personsFor; // la photo pour laquelle on les a cherchées
-  List<VisionFace> _faces = <VisionFace>[]; // visages repérés (pastilles « Visages »), indépendants des silhouettes des personnes
+  List<VisionFace> _faces = <VisionFace>[]; // personnes repérées = un visage chacune (pastilles du panneau Masques)
   List<ui.Image> _faceImgs = <ui.Image>[];
   Uint8List? _facesFor; // la photo pour laquelle on les a cherchés
   int _faceSel = -1; // visage choisi (indice dans `_faces`), -1 = aucun
@@ -1241,81 +1238,8 @@ class _DevelopPageState extends State<DevelopPage> {
     _refresh();
   }
 
-  /// « Personnes » : une pastille par personne repérée (on en choisit une), ou toutes ensemble.
+  /// « Personnes » : une pastille par personne repérée (une personne = un visage), même quand les corps se touchent.
   Future<void> _maskPersons() async {
-    final Uint8List? rgba = _srcRgba;
-    if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
-    setState(() => _aiBusy = true);
-    VisionPersons found = const VisionPersons();
-    try {
-      found = await VisionBridge.listPersons(rgba, _w, _h);
-    } finally {
-      if (mounted) setState(() => _aiBusy = false);
-    }
-    if (!mounted) return;
-    final String? error = found.error;
-    if (error != null) {
-      _say(error);
-      return;
-    }
-    final List<VisionPerson> list = found.persons;
-    final List<ui.Image> thumbs = await _personThumbs(rgba, list);
-    if (!mounted) return;
-    setState(() {
-      _persons = list;
-      _personImgs = thumbs;
-      _personsFor = rgba;
-    });
-    if (list.length == 1) {
-      // une seule personne : son masque est créé tout de suite, sa pastille et les parties du visage restent disponibles
-      _pickPerson(0);
-      return;
-    }
-    _say('${list.length} personnes repérées : touchez une pastille.');
-  }
-
-  /// Les pastilles des personnes repérées sont-elles à montrer (même photo que celle où on les a cherchées) ?
-  bool get _personsShown => _persons.isNotEmpty && identical(_personsFor, _srcRgba);
-
-  /// Numéro du masque déjà fait pour cette personne (même point de départ), ou -1.
-  int _personMaskIndex(VisionPerson p) {
-    for (int k = 0; k < _masks.length; k++) {
-      final Map<String, dynamic>? c = mainComp(_masks[k]);
-      if (c == null || '${c['kind']}' != kBitmap) continue;
-      final Object? ai = c['ai'];
-      if (ai is! Map<String, dynamic> || ai['what'] != 'person') continue;
-      final Object? pts = ai['points'];
-      if (pts is! List<dynamic> || pts.isEmpty || pts.first is! List<dynamic>) continue;
-      final List<dynamic> q = pts.first as List<dynamic>;
-      if (q.length >= 2 && q[0] is num && q[1] is num && ((q[0] as num) - p.px).abs() < 1e-4 && ((q[1] as num) - p.py).abs() < 1e-4) {
-        return k;
-      }
-    }
-    return -1;
-  }
-
-  /// Une pastille touchée : le masque de cette personne est choisi s'il existe, sinon il est créé (plusieurs personnes = plusieurs masques).
-  void _pickPerson(int i) {
-    final VisionPerson p = _persons[i];
-    final int at = _personMaskIndex(p);
-    if (at < 0) {
-      _maskAi('person', fx: p.px, fy: p.py, base: 'Personne');
-      return;
-    }
-    setState(() {
-      _maskSel = at;
-      _compSel = 0;
-      _maskDraw = null;
-      _maskAttach = false;
-      _maskPick = false;
-      _brushTool = null;
-      _maskZone = true;
-    });
-    _refresh();
-  }
-
-  /// « Visages » : cherche chaque visage de la photo (un visage = une pastille), même quand les corps se touchent.
-  Future<void> _maskFaces() async {
     final Uint8List? rgba = _srcRgba;
     if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
     setState(() => _aiBusy = true);
@@ -1348,7 +1272,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _facesFor = rgba;
       _faceSel = list.length == 1 ? 0 : -1;
     });
-    _say(list.length == 1 ? '1 visage repéré.' : '${list.length} visages repérés : touchez une pastille.');
+    _say(list.length == 1 ? '1 personne repérée.' : '${list.length} personnes repérées : touchez une pastille.');
   }
 
   /// Les pastilles des visages sont-elles à montrer (même photo que celle où on les a cherchés) ?
@@ -1357,28 +1281,50 @@ class _DevelopPageState extends State<DevelopPage> {
   /// Centre du visage [i] : sert d'identifiant du visage dans les masques de ses parties.
   List<double> _faceCenter(int i) => <double>[(_faces[i].x0 + _faces[i].x1) / 2, (_faces[i].y0 + _faces[i].y1) / 2];
 
-  /// Une partie de ce visage a-t-elle déjà un masque ?
-  bool _faceHasMask(int i) {
+  /// Numéro du masque déjà fait pour la personne [i] (`body` : sa silhouette ; sinon une partie de son visage), ou -1.
+  int _faceMaskIndex(int i, {required bool body}) {
     final List<double> c = _faceCenter(i);
-    for (final MaskMap m in _masks) {
-      final Map<String, dynamic>? comp = mainComp(m);
+    for (int k = 0; k < _masks.length; k++) {
+      final Map<String, dynamic>? comp = mainComp(_masks[k]);
       if (comp == null || '${comp['kind']}' != kBitmap) continue;
       final Object? ai = comp['ai'];
-      if (ai is! Map<String, dynamic> || !'${ai['what']}'.startsWith('face_')) continue;
+      if (ai is! Map<String, dynamic>) continue;
+      final String what = '${ai['what']}';
+      if (body ? what != 'person' : !what.startsWith('face_')) continue;
       final Object? pts = ai['points'];
       if (pts is! List<dynamic> || pts.isEmpty || pts.first is! List<dynamic>) continue;
       final List<dynamic> q = pts.first as List<dynamic>;
       if (q.length >= 2 && q[0] is num && q[1] is num && ((q[0] as num) - c[0]).abs() < 1e-4 && ((q[1] as num) - c[1]).abs() < 1e-4) {
-        return true;
+        return k;
       }
     }
-    return false;
+    return -1;
   }
 
-  /// Rangée de pastilles « Visages » (un visage = une pastille), puis les parties du visage choisi.
+  /// Silhouette de la personne [i] : son masque est choisi s'il existe, sinon il est créé (iPadOS peut y inclure une personne qui la touche).
+  void _maskBody(int i) {
+    final int at = _faceMaskIndex(i, body: true);
+    if (at < 0) {
+      final List<double> c = _faceCenter(i);
+      _maskAi('person', fx: c[0], fy: c[1], base: 'Personne ${i + 1}');
+      return;
+    }
+    setState(() {
+      _maskSel = at;
+      _compSel = 0;
+      _maskDraw = null;
+      _maskAttach = false;
+      _maskPick = false;
+      _brushTool = null;
+      _maskZone = true;
+    });
+    _refresh();
+  }
+
+  /// Rangée de pastilles : une par personne repérée.
   List<Widget> _faceTiles(TextStyle title, TextStyle hint) {
     return <Widget>[
-      Padding(padding: const EdgeInsets.only(top: 10, bottom: 4), child: Text('VISAGES REPÉRÉS', style: title)),
+      Padding(padding: const EdgeInsets.only(top: 10, bottom: 4), child: Text('PERSONNES REPÉRÉES', style: title)),
       SizedBox(
         height: 112,
         child: ListView(
@@ -1405,7 +1351,7 @@ class _DevelopPageState extends State<DevelopPage> {
                         ),
                       ),
                       const SizedBox(height: 2),
-                      Text('Visage ${i + 1}${_faceHasMask(i) ? ' ✓' : ''}', style: hint),
+                      Text('Personne ${i + 1}${_faceMaskIndex(i, body: true) >= 0 || _faceMaskIndex(i, body: false) >= 0 ? ' ✓' : ''}', style: hint),
                     ],
                   ),
                 ),
@@ -1420,11 +1366,21 @@ class _DevelopPageState extends State<DevelopPage> {
   List<Widget> _facePartChips(TextStyle title, TextStyle hint) {
     final bool chosen = _faceSel >= 0 && _faceSel < _faces.length;
     return <Widget>[
-      Padding(padding: const EdgeInsets.only(top: 6, bottom: 4), child: Text('PARTIES DU VISAGE', style: title)),
+      Padding(padding: const EdgeInsets.only(top: 6, bottom: 4), child: Text('SUR LA PERSONNE CHOISIE', style: title)),
       Wrap(
         spacing: 8,
         runSpacing: 4,
         children: <Widget>[
+          ActionChip(
+            avatar: const Icon(Icons.person_outline, size: 18),
+            label: const Text('Silhouette'),
+            onPressed: _aiBusy || !chosen ? null : () => _maskBody(_faceSel),
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.groups_outlined, size: 18),
+            label: const Text('Toutes les silhouettes'),
+            onPressed: _aiBusy ? null : () => _maskAi('person'),
+          ),
           for (final MapEntry<String, String> e in kFacePartNames.entries)
             ActionChip(
               label: Text(e.value),
@@ -1435,7 +1391,7 @@ class _DevelopPageState extends State<DevelopPage> {
       Padding(
         padding: const EdgeInsets.only(top: 4),
         child: Text(
-          chosen ? 'Pour le visage ${_faceSel + 1} (zones calculées par iPadOS).' : 'Touchez d\'abord la pastille d\'un visage.',
+          chosen ? 'Pour la personne ${_faceSel + 1} (zones calculées par iPadOS). Corps qui se touchent : la silhouette peut inclure le voisin.' : 'Touchez d\'abord la pastille d\'une personne.',
           style: hint,
         ),
       ),
@@ -1446,7 +1402,7 @@ class _DevelopPageState extends State<DevelopPage> {
   Future<void> _maskFacePart(String part) async {
     if (_aiBusy || _w == 0 || _h == 0) return;
     if (_faceSel < 0 || _faceSel >= _faces.length) {
-      _say('Choisissez d\'abord un visage (touchez sa pastille).');
+      _say('Choisissez d\'abord une personne (touchez sa pastille).');
       return;
     }
     final int which = _faceSel;
@@ -1496,76 +1452,12 @@ class _DevelopPageState extends State<DevelopPage> {
       });
       _commit();
       _refresh();
-      _say('${kFacePartNames[part]} : visage ${which + 1}.');
+      _say('${kFacePartNames[part]} : personne ${which + 1}.');
     } catch (e) {
       _say('Sélection impossible : $e');
     } finally {
       if (mounted) setState(() => _aiBusy = false);
     }
-  }
-
-  /// Rangée de pastilles dans le panneau : une par personne repérée, plus « Toutes ».
-  /// Toucher une pastille choisit le masque de cette personne, ou le crée.
-  List<Widget> _personTiles(TextStyle title, TextStyle hint) {
-    return <Widget>[
-      Padding(padding: const EdgeInsets.only(top: 10, bottom: 4), child: Text('PERSONNES REPÉRÉES', style: title)),
-      SizedBox(
-        height: 112,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          children: <Widget>[
-            for (int i = 0; i < _persons.length; i++)
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: _aiBusy ? null : () => _pickPerson(i),
-                  child: Column(
-                    children: <Widget>[
-                      Container(
-                        height: 92,
-                        padding: const EdgeInsets.all(2),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                              color: _personMaskIndex(_persons[i]) >= 0 && _personMaskIndex(_persons[i]) == _maskSel
-                                  ? const Color(0xFFF2A33A)
-                                  : Colors.transparent,
-                              width: 2),
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: RawImage(image: _personImgs[i], fit: BoxFit.contain),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text('Personne ${i + 1}${_personMaskIndex(_persons[i]) >= 0 ? ' ✓' : ''}', style: hint),
-                    ],
-                  ),
-                ),
-              ),
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: OutlinedButton(
-                onPressed: _aiBusy ? null : () => _maskAi('person'),
-                child: const Text('Toutes'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    ];
-  }
-
-  /// Petites images (120 px de haut) de chaque personne : la photo recadrée sur son cadre, un peu élargi.
-  Future<List<ui.Image>> _personThumbs(Uint8List rgba, List<VisionPerson> list) {
-    return _cropThumbs(
-      rgba,
-      <List<double>>[
-        for (final VisionPerson p in list) <double>[p.x0, p.y0, p.x1, p.y1],
-      ],
-      0.08,
-    );
   }
 
   /// Petites images (120 px de haut) de la photo recadrée sur chaque cadre [x0, y0, x1, y1] (fractions), élargi de [margin].
@@ -1952,22 +1844,6 @@ class _DevelopPageState extends State<DevelopPage> {
           Expanded(child: _aiButton('person', Icons.groups_outlined, ready)),
         ],
       ),
-      const SizedBox(height: 8),
-      Row(
-        children: <Widget>[
-          Expanded(
-            child: OutlinedButton.icon(
-              style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white24), minimumSize: const Size(48, 48)),
-              onPressed: ready && !_aiBusy ? _maskFaces : null,
-              icon: const Icon(Icons.face_outlined, size: 20),
-              label: const Text('Visages'),
-            ),
-          ),
-          const SizedBox(width: 8),
-          const Expanded(child: SizedBox()),
-        ],
-      ),
-      if (_personsShown) ..._personTiles(title, hint),
       if (_facesShown) ..._faceTiles(title, hint),
       if (_facesShown) ..._facePartChips(title, hint),
       Padding(padding: const EdgeInsets.only(top: 6), child: Text(guide, style: hint)),
