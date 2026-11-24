@@ -810,4 +810,15 @@ void main() {
     expect(at(other, 600, 560), 255); // vue par le voisin : il garde cette partie
     expect(at(other, 450, 560), 0);
   });
+
+  test('plans : rééchantillonnage et réunion', () {
+    final Uint8List src = Uint8List.fromList(<int>[0, 255, 0, 255]);
+    final Uint8List big = resamplePlane(src, 2, 2, 4, 4);
+    expect(big.length, 16);
+    expect(big[0], 0);
+    expect(big[3], 255);
+    final Uint8List a = Uint8List.fromList(<int>[10, 200, 0]);
+    unionPlanes(a, Uint8List.fromList(<int>[50, 100, 7]));
+    expect(a, <int>[50, 200, 7]);
+  });
 }

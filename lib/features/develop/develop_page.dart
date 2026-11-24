@@ -139,7 +139,8 @@ class _DevelopPageState extends State<DevelopPage> {
   List<VisionFace> _faces = <VisionFace>[]; // personnes repérées = un visage chacune (pastilles du panneau Masques)
   List<ui.Image> _faceImgs = <ui.Image>[];
   Uint8List? _facesFor; // la photo pour laquelle on les a cherchés
-  int _faceSel = -1; // visage choisi (indice dans `_faces`), -1 = aucun
+  Set<int> _selFaces = <int>{}; // personnes cochées (indices dans `_faces`)
+  Set<String> _selParts = <String>{}; // parties cochées : person | skin | eyes | … | hair | clothes | bodyskin
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
   String _newOp = 'add'; // comment la prochaine composante se combine : add | subtract | intersect
 
@@ -1271,9 +1272,10 @@ class _DevelopPageState extends State<DevelopPage> {
       _faces = list;
       _faceImgs = thumbs;
       _facesFor = rgba;
-      _faceSel = list.length == 1 ? 0 : -1;
+      _selFaces = <int>{for (int i = 0; i < list.length; i++) i};
+      _selParts = <String>{};
     });
-    _say(list.length == 1 ? '1 personne repérée.' : '${list.length} personnes repérées : touchez une pastille.');
+    _say(list.length == 1 ? '1 personne repérée.' : '${list.length} personnes repérées : « Toutes » ou une pastille, puis cochez.');
   }
 
   /// Les pastilles des visages sont-elles à montrer (même photo que celle où on les a cherchés) ?
@@ -1282,80 +1284,86 @@ class _DevelopPageState extends State<DevelopPage> {
   /// Centre du visage [i] : sert d'identifiant du visage dans les masques de ses parties.
   List<double> _faceCenter(int i) => <double>[(_faces[i].x0 + _faces[i].x1) / 2, (_faces[i].y0 + _faces[i].y1) / 2];
 
-  /// Numéro du masque déjà fait pour la personne [i] (`body` : sa silhouette ; sinon une partie de son visage), ou -1.
-  int _faceMaskIndex(int i, {required bool body}) {
+  /// La personne [i] figure-t-elle dans un masque déjà créé ?
+  bool _faceHasMask(int i) {
     final List<double> c = _faceCenter(i);
-    for (int k = 0; k < _masks.length; k++) {
-      final Map<String, dynamic>? comp = mainComp(_masks[k]);
+    for (final MaskMap m in _masks) {
+      final Map<String, dynamic>? comp = mainComp(m);
       if (comp == null || '${comp['kind']}' != kBitmap) continue;
       final Object? ai = comp['ai'];
       if (ai is! Map<String, dynamic>) continue;
-      final String what = '${ai['what']}';
-      if (body ? what != 'person' : !what.startsWith('face_')) continue;
       final Object? pts = ai['points'];
-      if (pts is! List<dynamic> || pts.isEmpty || pts.first is! List<dynamic>) continue;
-      final List<dynamic> q = pts.first as List<dynamic>;
-      if (q.length >= 2 && q[0] is num && q[1] is num && ((q[0] as num) - c[0]).abs() < 1e-4 && ((q[1] as num) - c[1]).abs() < 1e-4) {
-        return k;
+      if (pts is! List<dynamic>) continue;
+      for (final dynamic q in pts) {
+        if (q is List<dynamic> && q.length >= 2 && q[0] is num && q[1] is num && ((q[0] as num) - c[0]).abs() < 1e-4 && ((q[1] as num) - c[1]).abs() < 1e-4) {
+          return true;
+        }
       }
     }
-    return -1;
+    return false;
   }
 
-  /// Silhouette de la personne [i] : son masque est choisi s'il existe, sinon il est créé (iPadOS peut y inclure une personne qui la touche).
-  void _maskBody(int i) {
-    final int at = _faceMaskIndex(i, body: true);
-    if (at < 0) {
-      final List<double> c = _faceCenter(i);
-      _maskAi('person', fx: c[0], fy: c[1], base: 'Personne ${i + 1}');
-      return;
-    }
-    setState(() {
-      _maskSel = at;
-      _compSel = 0;
-      _maskDraw = null;
-      _maskAttach = false;
-      _maskPick = false;
-      _brushTool = null;
-      _maskZone = true;
-    });
-    _refresh();
-  }
+  static const Map<String, String> _kSelParts = <String, String>{
+    'person': 'Toute la personne',
+    'skin': 'Peau du visage',
+    'bodyskin': 'Peau du corps',
+    'eyes': 'Yeux',
+    'brows': 'Sourcils',
+    'lips': 'Lèvres',
+    'hair': 'Cheveux',
+    'clothes': 'Vêtements',
+  };
 
-  /// Rangée de pastilles : une par personne repérée.
+  /// Rangée de pastilles à la Lightroom : « Toutes les personnes » puis une pastille par personne (plusieurs possibles).
   List<Widget> _faceTiles(TextStyle title, TextStyle hint) {
+    final bool all = _selFaces.length == _faces.length;
+    const Color on = Color(0xFFF2A33A);
+    Widget tile(Widget picture, String label, bool selected, VoidCallback tap) => Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: _aiBusy ? null : tap,
+            child: Column(
+              children: <Widget>[
+                Container(
+                  height: 92,
+                  constraints: const BoxConstraints(minWidth: 70),
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: selected ? on : Colors.transparent, width: 2),
+                  ),
+                  child: ClipRRect(borderRadius: BorderRadius.circular(8), child: picture),
+                ),
+                const SizedBox(height: 2),
+                Text(label, style: hint),
+              ],
+            ),
+          ),
+        );
     return <Widget>[
-      Padding(padding: const EdgeInsets.only(top: 10, bottom: 4), child: Text('PERSONNES REPÉRÉES', style: title)),
+      Padding(padding: const EdgeInsets.only(top: 10, bottom: 4), child: Text('PERSONNES', style: title)),
       SizedBox(
         height: 112,
         child: ListView(
           scrollDirection: Axis.horizontal,
           children: <Widget>[
+            tile(
+              const SizedBox(width: 70, child: Center(child: Icon(Icons.groups_outlined, size: 34))),
+              'Toutes',
+              all,
+              () => setState(() => _selFaces = all ? <int>{} : <int>{for (int i = 0; i < _faces.length; i++) i}),
+            ),
             for (int i = 0; i < _faces.length; i++)
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: _aiBusy ? null : () => setState(() => _faceSel = i),
-                  child: Column(
-                    children: <Widget>[
-                      Container(
-                        height: 92,
-                        padding: const EdgeInsets.all(2),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: i == _faceSel ? const Color(0xFFF2A33A) : Colors.transparent, width: 2),
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: RawImage(image: _faceImgs[i], fit: BoxFit.contain),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text('Personne ${i + 1}${_faceMaskIndex(i, body: true) >= 0 || _faceMaskIndex(i, body: false) >= 0 ? ' ✓' : ''}', style: hint),
-                    ],
-                  ),
-                ),
+              tile(
+                RawImage(image: _faceImgs[i], fit: BoxFit.contain),
+                'Personne ${i + 1}${_faceHasMask(i) ? ' ✓' : ''}',
+                _selFaces.contains(i),
+                () => setState(() {
+                  final Set<int> n = <int>{..._selFaces};
+                  if (!n.remove(i)) n.add(i);
+                  _selFaces = n;
+                }),
               ),
           ],
         ),
@@ -1363,167 +1371,160 @@ class _DevelopPageState extends State<DevelopPage> {
     ];
   }
 
-  /// Boutons des parties du visage choisi.
+  /// Cases à cocher (comme Lightroom) puis « Annuler » / « Créer ».
   List<Widget> _facePartChips(TextStyle title, TextStyle hint) {
-    final bool chosen = _faceSel >= 0 && _faceSel < _faces.length;
+    final bool ready = _selFaces.isNotEmpty && _selParts.isNotEmpty && !_aiBusy;
     return <Widget>[
-      Padding(padding: const EdgeInsets.only(top: 6, bottom: 4), child: Text('SUR LA PERSONNE CHOISIE', style: title)),
+      Padding(padding: const EdgeInsets.only(top: 6, bottom: 4), child: Text('CE QUE LE MASQUE COUVRE', style: title)),
       Wrap(
-        spacing: 8,
-        runSpacing: 4,
         children: <Widget>[
-          ActionChip(
-            avatar: const Icon(Icons.person_outline, size: 18),
-            label: const Text('Silhouette'),
-            onPressed: _aiBusy || !chosen ? null : () => _maskBody(_faceSel),
-          ),
-          ActionChip(
-            avatar: const Icon(Icons.groups_outlined, size: 18),
-            label: const Text('Toutes les silhouettes'),
-            onPressed: _aiBusy ? null : () => _maskAi('person'),
-          ),
-          for (final MapEntry<String, String> e in kFacePartNames.entries)
-            ActionChip(
-              label: Text(e.value),
-              onPressed: _aiBusy || !chosen ? null : () => _maskFacePart(e.key),
+          for (final MapEntry<String, String> e in _kSelParts.entries)
+            SizedBox(
+              width: 200,
+              child: CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                title: Text(e.value),
+                value: _selParts.contains(e.key),
+                onChanged: _aiBusy
+                    ? null
+                    : (bool? v) => setState(() {
+                          final Set<String> n = <String>{..._selParts};
+                          if (v ?? false) {
+                            n.add(e.key);
+                          } else {
+                            n.remove(e.key);
+                          }
+                          _selParts = n;
+                        }),
+              ),
             ),
-          for (final MapEntry<String, String> e in kBodyPartNames.entries)
-            ActionChip(
-              label: Text(e.value),
-              onPressed: _aiBusy || !chosen ? null : () => _maskBodyPart(e.key),
-            ),
+        ],
+      ),
+      Row(
+        children: <Widget>[
+          TextButton(onPressed: _aiBusy || _selParts.isEmpty ? null : () => setState(() => _selParts = <String>{}), child: const Text('Annuler')),
+          const SizedBox(width: 8),
+          FilledButton(onPressed: ready ? _createSelection : null, child: const Text('Créer')),
         ],
       ),
       Padding(
         padding: const EdgeInsets.only(top: 4),
         child: Text(
-          chosen ? 'Pour la personne ${_faceSel + 1} (visage : iPadOS ; cheveux, vêtements, peau du corps : modèle MediaPipe, en essai). Corps qui se touchent : la silhouette peut inclure le voisin.' : 'Touchez d\'abord la pastille d\'une personne.',
+          _selFaces.isEmpty
+              ? 'Touchez « Toutes » ou une ou plusieurs pastilles.'
+              : 'Un seul masque pour ${_selFaces.length == _faces.length ? 'toutes les personnes' : _selFaces.length == 1 ? 'la personne ${_selFaces.first + 1}' : '${_selFaces.length} personnes'}. Visage : iPadOS ; cheveux, vêtements, peau du corps : modèle MediaPipe (essai). Corps qui se touchent : la silhouette peut inclure le voisin.',
           style: hint,
         ),
       ),
     ];
   }
 
-  /// Un masque pour une partie (peau, yeux, sourcils, lèvres) du visage choisi.
-  Future<void> _maskFacePart(String part) async {
-    if (_aiBusy || _w == 0 || _h == 0) return;
-    if (_faceSel < 0 || _faceSel >= _faces.length) {
-      _say('Choisissez d\'abord une personne (touchez sa pastille).');
-      return;
-    }
-    final int which = _faceSel;
+  /// Plan (pw×ph) d'une partie du visage de la personne [which], ou null si iPadOS ne l'a pas trouvée.
+  Uint8List? _facePartPlaneFor(int which, String part, int pw, int ph) {
     final VisionFace face = _faces[which];
-    setState(() => _aiBusy = true);
-    try {
-      final Map<String, List<double>> marks = <String, List<double>>{
-        ...face.parts,
-        'box': <double>[face.x0, face.y0, face.x1, face.y1],
-      };
-      final PartShape? shape = partShape(marks, part);
-      if (shape == null) {
-        _say('iPadOS n\'a pas trouvé ${kFacePartNames[part]!.toLowerCase()} sur ce visage.');
-        return;
-      }
-      final double aspect = _w / _h;
-      final int pw = aspect >= 1 ? 1024 : (1024 * aspect).round().clamp(64, 1024).toInt();
-      final int ph = aspect >= 1 ? (1024 / aspect).round().clamp(64, 1024).toInt() : 1024;
-      final Uint8List plane = blurPlane(fillShape(pw, ph, shape), pw, ph, (math.max(pw, ph) * 0.003).round().clamp(1, 12).toInt());
-      int covered = 0;
-      for (final int v in plane) {
-        if (v > 127) covered++;
-      }
-      if (covered == 0) {
-        _say('Zone trop petite pour être sélectionnée.');
-        return;
-      }
-      final String key = maskKey(plane);
-      MaskBitmaps.set(key, pw, ph, plane);
-      final MaskMap m = bitmapMask(
-        name: nextMaskName(_masks, kFacePartNames[part]!),
-        key: key,
-        pngBase64: planeToBase64(plane, pw, ph),
-        what: 'face_$part',
-      );
-      ((m['comps'] as List<dynamic>).first as Map<String, dynamic>)['ai']['points'] = <dynamic>[_faceCenter(which)];
-      setState(() {
-        _masks = <MaskMap>[..._masks, m];
-        _maskSel = _masks.length - 1;
-        _compSel = 0;
-        _maskDraw = null;
-        _maskAttach = false;
-        _maskPick = false;
-        _brushTool = null;
-        _before = false;
-        _maskZone = true;
-      });
-      _commit();
-      _refresh();
-      _say('${kFacePartNames[part]} : personne ${which + 1}.');
-    } catch (e) {
-      _say('Sélection impossible : $e');
-    } finally {
-      if (mounted) setState(() => _aiBusy = false);
-    }
+    final Map<String, List<double>> marks = <String, List<double>>{
+      ...face.parts,
+      'box': <double>[face.x0, face.y0, face.x1, face.y1],
+    };
+    final PartShape? shape = partShape(marks, part);
+    if (shape == null) return null;
+    return blurPlane(fillShape(pw, ph, shape), pw, ph, (math.max(pw, ph) * 0.003).round().clamp(1, 12).toInt());
   }
 
-  /// Un masque pour une partie du corps (cheveux, vêtements, peau du corps) de la personne choisie.
-  Future<void> _maskBodyPart(String part) async {
-    final Uint8List? rgba = _srcRgba;
-    if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
-    if (_faceSel < 0 || _faceSel >= _faces.length) {
-      _say('Choisissez d\'abord une personne (touchez sa pastille).');
-      return;
-    }
-    final int which = _faceSel;
+  /// Plan (pw×ph) cheveux / vêtements / peau du corps de la personne [which] ; message d'erreur dans [errors] si le modèle échoue.
+  Future<Uint8List?> _bodyPartPlaneFor(int which, String part, int pw, int ph, Uint8List rgba, List<String> errors) async {
     final VisionFace face = _faces[which];
-    final String label = kBodyPartNames[part]!;
+    final CropSquare crop = bodyCrop(face.x0, face.y0, face.x1, face.y1, _w, _h, part: part);
+    final VisionParts r = await VisionBridge.bodyParts(rgba, _w, _h, crop.x0, crop.y0, crop.side);
+    final Uint8List? probs = r.probs;
+    final String? error = r.error;
+    if (error != null || probs == null) {
+      errors.add(error ?? 'Parties du corps indisponibles.');
+      return null;
+    }
+    return bodyPartPlane(
+      probs: probs,
+      size: r.size,
+      cls: kBodyPartClass[part]!,
+      crop: crop,
+      anchor: partAnchor(part, face.x0, face.y0, face.x1, face.y1, _w, _h),
+      pw: pw,
+      ph: ph,
+      imgW: _w,
+      imgH: _h,
+      guide: grayPlane(rgba, _w, _h, pw, ph),
+      faces: <List<double>>[
+        for (final VisionFace f in _faces) <double>[(f.x0 + f.x1) / 2 * _w, (f.x1 - f.x0) * _w],
+      ],
+      self: which,
+    );
+  }
+
+  /// Silhouette de la personne [which] (Vision), rééchantillonnée en pw×ph.
+  Future<Uint8List?> _personPlaneFor(int which, int pw, int ph, Uint8List rgba, List<String> errors) async {
+    final List<double> c = _faceCenter(which);
+    final VisionMaskResult r = await VisionBridge.instanceMask(rgba, _w, _h, person: true, fx: c[0], fy: c[1]);
+    final Uint8List? mask = r.mask;
+    if (!r.ok || mask == null) {
+      errors.add(r.error ?? 'Détourage impossible.');
+      return null;
+    }
+    return resamplePlane(mask, r.width, r.height, pw, ph);
+  }
+
+  /// « Créer » : UN masque, réunion des parties cochées pour les personnes cochées.
+  Future<void> _createSelection() async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _aiBusy || _w == 0 || _h == 0 || _selFaces.isEmpty || _selParts.isEmpty) return;
+    final List<int> who = (_selFaces.where((int i) => i >= 0 && i < _faces.length).toList())..sort();
+    final List<String> parts = <String>[for (final String k in _kSelParts.keys) if (_selParts.contains(k)) k];
+    final double aspect = _w / _h;
+    final int pw = aspect >= 1 ? 1024 : (1024 * aspect).round().clamp(64, 1024).toInt();
+    final int ph = aspect >= 1 ? (1024 / aspect).round().clamp(64, 1024).toInt() : 1024;
     setState(() => _aiBusy = true);
     try {
-      final CropSquare crop = bodyCrop(face.x0, face.y0, face.x1, face.y1, _w, _h, part: part);
-      final VisionParts r = await VisionBridge.bodyParts(rgba, _w, _h, crop.x0, crop.y0, crop.side);
-      if (!mounted) return;
-      final Uint8List? probs = r.probs;
-      final String? error = r.error;
-      if (error != null || probs == null) {
-        _say(error ?? 'Parties du corps indisponibles.');
-        return;
+      final Uint8List plane = Uint8List(pw * ph);
+      final List<String> errors = <String>[];
+      final List<String> missing = <String>[];
+      for (final int i in who) {
+        for (final String part in parts) {
+          Uint8List? p;
+          if (part == 'person') {
+            p = await _personPlaneFor(i, pw, ph, rgba, errors);
+          } else if (kFacePartNames.containsKey(part)) {
+            p = _facePartPlaneFor(i, part, pw, ph);
+          } else {
+            p = await _bodyPartPlaneFor(i, part, pw, ph, rgba, errors);
+          }
+          if (!mounted) return;
+          if (p == null) {
+            missing.add('${_kSelParts[part]!.toLowerCase()} (personne ${i + 1})');
+          } else {
+            unionPlanes(plane, p);
+          }
+        }
       }
-      final double aspect = _w / _h;
-      final int pw = aspect >= 1 ? 1024 : (1024 * aspect).round().clamp(64, 1024).toInt();
-      final int ph = aspect >= 1 ? (1024 / aspect).round().clamp(64, 1024).toInt() : 1024;
-      final Uint8List plane = bodyPartPlane(
-        probs: probs,
-        size: r.size,
-        cls: kBodyPartClass[part]!,
-        crop: crop,
-        anchor: partAnchor(part, face.x0, face.y0, face.x1, face.y1, _w, _h),
-        pw: pw,
-        ph: ph,
-        imgW: _w,
-        imgH: _h,
-        guide: grayPlane(rgba, _w, _h, pw, ph),
-        faces: <List<double>>[
-          for (final VisionFace f in _faces) <double>[(f.x0 + f.x1) / 2 * _w, (f.x1 - f.x0) * _w],
-        ],
-        self: which,
-      );
       int covered = 0;
       for (final int v in plane) {
         if (v > 127) covered++;
       }
       if (covered == 0) {
-        _say('Le modèle n\'a pas trouvé : ${label.toLowerCase()} pour la personne ${which + 1}.');
+        _say(errors.isNotEmpty ? errors.first : 'Rien trouvé pour cette sélection.');
         return;
       }
+      final String who0 = who.length == _faces.length && who.length > 1 ? 'Tous' : who.length == 1 ? 'Personne ${who.first + 1}' : 'Personnes ${who.map((int i) => i + 1).join('+')}';
+      final String what0 = parts.length == 1 ? _kSelParts[parts.first]! : parts.map((String k) => _kSelParts[k]!).join(', ');
       final String key = maskKey(plane);
       MaskBitmaps.set(key, pw, ph, plane);
       final MaskMap m = bitmapMask(
-        name: nextMaskName(_masks, label),
+        name: nextMaskName(_masks, '$who0 · $what0'),
         key: key,
         pngBase64: planeToBase64(plane, pw, ph),
-        what: 'face_$part',
+        what: 'face_multi',
       );
-      ((m['comps'] as List<dynamic>).first as Map<String, dynamic>)['ai']['points'] = <dynamic>[_faceCenter(which)];
+      ((m['comps'] as List<dynamic>).first as Map<String, dynamic>)['ai']['points'] = <dynamic>[for (final int i in who) _faceCenter(i)];
       setState(() {
         _masks = <MaskMap>[..._masks, m];
         _maskSel = _masks.length - 1;
@@ -1534,10 +1535,11 @@ class _DevelopPageState extends State<DevelopPage> {
         _brushTool = null;
         _before = false;
         _maskZone = true;
+        _selParts = <String>{};
       });
       _commit();
       _refresh();
-      _say('$label : personne ${which + 1} (${(covered * 100 / plane.length).round()} % de l\'image).');
+      _say(missing.isEmpty ? 'Masque créé (${(covered * 100 / plane.length).round()} % de l\'image).' : 'Masque créé ; non trouvé : ${missing.join(', ')}.');
     } catch (e) {
       _say('Sélection impossible : $e');
     } finally {

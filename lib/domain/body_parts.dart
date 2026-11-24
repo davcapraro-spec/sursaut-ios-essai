@@ -267,3 +267,30 @@ Uint8List bodyPartPlane({
   }
   return out;
 }
+
+/// Rééchantillonne un plan 8 bits [sw]×[sh] en [dw]×[dh] (interpolation bilinéaire).
+Uint8List resamplePlane(Uint8List src, int sw, int sh, int dw, int dh) {
+  if (sw == dw && sh == dh) return Uint8List.fromList(src);
+  final Uint8List out = Uint8List(dw * dh);
+  for (int y = 0; y < dh; y++) {
+    final double fy = ((y + 0.5) * sh / dh - 0.5).clamp(0, sh - 1).toDouble();
+    final int y0 = fy.floor(), y1 = math.min(y0 + 1, sh - 1);
+    final double ty = fy - y0;
+    for (int x = 0; x < dw; x++) {
+      final double fx = ((x + 0.5) * sw / dw - 0.5).clamp(0, sw - 1).toDouble();
+      final int x0 = fx.floor(), x1 = math.min(x0 + 1, sw - 1);
+      final double tx = fx - x0;
+      final double a = src[y0 * sw + x0] * (1 - tx) + src[y0 * sw + x1] * tx;
+      final double b = src[y1 * sw + x0] * (1 - tx) + src[y1 * sw + x1] * tx;
+      out[y * dw + x] = (a * (1 - ty) + b * ty).round().clamp(0, 255).toInt();
+    }
+  }
+  return out;
+}
+
+/// Réunion (maximum) de plusieurs plans de même taille ; [into] reçoit le résultat.
+void unionPlanes(Uint8List into, Uint8List other) {
+  for (int i = 0; i < into.length; i++) {
+    if (other[i] > into[i]) into[i] = other[i];
+  }
+}
