@@ -12,13 +12,14 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:pencil_bridge/pencil_bridge.dart'
-    show VisionBridge, VisionFace, VisionFaces, VisionMaskResult;
+    show VisionBridge, VisionFace, VisionFaces, VisionMaskResult, VisionParts;
 import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
 import '../../domain/ai_masks.dart';
 import '../../common/app_version.dart';
 import '../../domain/crop_math.dart';
+import '../../domain/body_parts.dart';
 import '../../domain/face_parts.dart';
 import '../../domain/curves.dart';
 import '../../domain/develop_params.dart';
@@ -1386,12 +1387,17 @@ class _DevelopPageState extends State<DevelopPage> {
               label: Text(e.value),
               onPressed: _aiBusy || !chosen ? null : () => _maskFacePart(e.key),
             ),
+          for (final MapEntry<String, String> e in kBodyPartNames.entries)
+            ActionChip(
+              label: Text(e.value),
+              onPressed: _aiBusy || !chosen ? null : () => _maskBodyPart(e.key),
+            ),
         ],
       ),
       Padding(
         padding: const EdgeInsets.only(top: 4),
         child: Text(
-          chosen ? 'Pour la personne ${_faceSel + 1} (zones calculées par iPadOS). Corps qui se touchent : la silhouette peut inclure le voisin.' : 'Touchez d\'abord la pastille d\'une personne.',
+          chosen ? 'Pour la personne ${_faceSel + 1} (visage : iPadOS ; cheveux, vêtements, peau du corps : modèle MediaPipe, en essai). Corps qui se touchent : la silhouette peut inclure le voisin.' : 'Touchez d\'abord la pastille d\'une personne.',
           style: hint,
         ),
       ),
@@ -1453,6 +1459,80 @@ class _DevelopPageState extends State<DevelopPage> {
       _commit();
       _refresh();
       _say('${kFacePartNames[part]} : personne ${which + 1}.');
+    } catch (e) {
+      _say('Sélection impossible : $e');
+    } finally {
+      if (mounted) setState(() => _aiBusy = false);
+    }
+  }
+
+  /// Un masque pour une partie du corps (cheveux, vêtements, peau du corps) de la personne choisie.
+  Future<void> _maskBodyPart(String part) async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
+    if (_faceSel < 0 || _faceSel >= _faces.length) {
+      _say('Choisissez d\'abord une personne (touchez sa pastille).');
+      return;
+    }
+    final int which = _faceSel;
+    final VisionFace face = _faces[which];
+    final String label = kBodyPartNames[part]!;
+    setState(() => _aiBusy = true);
+    try {
+      final CropSquare crop = bodyCrop(face.x0, face.y0, face.x1, face.y1, _w, _h);
+      final VisionParts r = await VisionBridge.bodyParts(rgba, _w, _h, crop.x0, crop.y0, crop.side);
+      if (!mounted) return;
+      final Uint8List? probs = r.probs;
+      final String? error = r.error;
+      if (error != null || probs == null) {
+        _say(error ?? 'Parties du corps indisponibles.');
+        return;
+      }
+      final double aspect = _w / _h;
+      final int pw = aspect >= 1 ? 1024 : (1024 * aspect).round().clamp(64, 1024).toInt();
+      final int ph = aspect >= 1 ? (1024 / aspect).round().clamp(64, 1024).toInt() : 1024;
+      final Uint8List plane = bodyPartPlane(
+        probs: probs,
+        size: r.size,
+        cls: kBodyPartClass[part]!,
+        crop: crop,
+        anchor: partAnchor(part, face.x0, face.y0, face.x1, face.y1, _w, _h),
+        pw: pw,
+        ph: ph,
+        imgW: _w,
+        imgH: _h,
+      );
+      int covered = 0;
+      for (final int v in plane) {
+        if (v > 127) covered++;
+      }
+      if (covered == 0) {
+        _say('Le modèle n\'a pas trouvé : ${label.toLowerCase()} pour la personne ${which + 1}.');
+        return;
+      }
+      final String key = maskKey(plane);
+      MaskBitmaps.set(key, pw, ph, plane);
+      final MaskMap m = bitmapMask(
+        name: nextMaskName(_masks, label),
+        key: key,
+        pngBase64: planeToBase64(plane, pw, ph),
+        what: 'face_$part',
+      );
+      ((m['comps'] as List<dynamic>).first as Map<String, dynamic>)['ai']['points'] = <dynamic>[_faceCenter(which)];
+      setState(() {
+        _masks = <MaskMap>[..._masks, m];
+        _maskSel = _masks.length - 1;
+        _compSel = 0;
+        _maskDraw = null;
+        _maskAttach = false;
+        _maskPick = false;
+        _brushTool = null;
+        _before = false;
+        _maskZone = true;
+      });
+      _commit();
+      _refresh();
+      _say('$label : personne ${which + 1} (${(covered * 100 / plane.length).round()} % de l\'image).');
     } catch (e) {
       _say('Sélection impossible : $e');
     } finally {

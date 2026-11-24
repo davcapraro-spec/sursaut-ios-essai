@@ -156,11 +156,53 @@ class VisionFaces {
   final String? error;
 }
 
+/// Les parties du corps d'une zone de la photo : [classes] plans de [size] x [size] octets (probabilité x 255), classe par classe.
+/// Classes : 0 fond, 1 cheveux, 2 peau du corps, 3 peau du visage, 4 vêtements, 5 autres.
+class VisionParts {
+  const VisionParts({this.size = 0, this.probs, this.error});
+
+  static const int classes = 6;
+  final int size;
+  final Uint8List? probs;
+  final String? error;
+}
+
 /// Détourage par Vision (Apple) : sujet principal ou personnes, sans fichier de modèle (iPadOS 17 ou plus).
 class VisionBridge {
   VisionBridge._();
 
   static const MethodChannel _methods = MethodChannel('sursaut/vision/methods');
+
+  /// Les parties du corps dans le carré (`cropX`, `cropY`, `cropSide`, en pixels ; il peut dépasser la photo) : cheveux, peau, vêtements.
+  static Future<VisionParts> bodyParts(Uint8List rgba, int width, int height, int cropX, int cropY, int cropSide) async {
+    try {
+      final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>(
+        'bodyParts',
+        <String, Object?>{
+          'rgba': rgba,
+          'width': width,
+          'height': height,
+          'kind': 'body',
+          'cropX': cropX,
+          'cropY': cropY,
+          'cropSide': cropSide,
+        },
+      );
+      if (r == null) return const VisionParts(error: 'Pas de réponse des parties du corps.');
+      final Object? err = r['error'];
+      if (err != null) return VisionParts(error: err.toString());
+      final Object? size = r['size'];
+      final Object? probs = r['probs'];
+      if (size is! int || probs is! Uint8List || probs.length < size * size * VisionParts.classes) {
+        return const VisionParts(error: 'Réponse des parties du corps illisible.');
+      }
+      return VisionParts(size: size, probs: probs);
+    } on MissingPluginException {
+      return const VisionParts(error: 'Parties du corps indisponibles (pas un iPad).');
+    } on PlatformException catch (e) {
+      return VisionParts(error: e.message ?? e.code);
+    }
+  }
 
   /// Les visages de la photo avec leurs repères (yeux, sourcils, lèvres, contour).
   static Future<VisionFaces> faceParts(Uint8List rgba, int width, int height) async {

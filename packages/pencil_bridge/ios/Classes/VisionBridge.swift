@@ -14,7 +14,7 @@ final class VisionBridge {
       name: "sursaut/vision/methods",
       binaryMessenger: registrar.messenger())
     channel.setMethodCallHandler { call, result in
-      guard call.method == "instanceMask" || call.method == "listPersons" || call.method == "faceParts" else {
+      guard call.method == "instanceMask" || call.method == "listPersons" || call.method == "faceParts" || call.method == "bodyParts" else {
         result(FlutterMethodNotImplemented)
         return
       }
@@ -32,9 +32,15 @@ final class VisionBridge {
       let pixels = typed.data
       let listing = call.method == "listPersons"
       let faces = call.method == "faceParts"
+      let body = call.method == "bodyParts"
+      let cropX = args["cropX"] as? Int ?? 0
+      let cropY = args["cropY"] as? Int ?? 0
+      let cropSide = args["cropSide"] as? Int ?? 0
       DispatchQueue.global(qos: .userInitiated).async {
         let out: [String: Any]
-        if faces {
+        if body {
+          out = BodyPartsBridge.run(rgba: pixels, width: width, height: height, x0: cropX, y0: cropY, side: cropSide)
+        } else if faces {
           out = VisionBridge.faceParts(rgba: pixels, width: width, height: height)
         } else if listing {
           out = VisionBridge.listPersons(rgba: pixels, width: width, height: height)

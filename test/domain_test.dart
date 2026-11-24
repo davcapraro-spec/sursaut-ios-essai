@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:sursaut_essai/common/app_version.dart';
 import 'package:sursaut_essai/domain/ai_masks.dart';
+import 'package:sursaut_essai/domain/body_parts.dart';
 import 'package:sursaut_essai/domain/face_parts.dart';
 import 'package:sursaut_essai/domain/crop_math.dart';
 import 'dart:convert';
@@ -684,5 +685,63 @@ void main() {
       expect(plan[124 * 200 + 100], 0); // le trou de la bouche
       expect(plan[100 * 200 + 20], 0); // hors du visage
     }
+  });
+  test('parties du corps : zone gardée seulement si elle touche la personne', () {
+    const int w = 2000, h = 1000;
+    final CropSquare crop = bodyCrop(450 / w, 225 / h, 550 / w, 375 / h, w, h);
+    expect(crop.side, 900);
+    expect(crop.x0, 50);
+    expect(crop.y0, 45);
+    const int size = 256;
+    final double sc = size / crop.side;
+    final Uint8List probs = Uint8List(kBodyClasses * size * size);
+    for (int i = 0; i < size * size; i++) {
+      probs[i] = 255; // fond partout
+    }
+    void fill(int cls, int x0, int y0, int x1, int y1) {
+      for (int y = ((y0 - crop.y0) * sc).floor(); y < ((y1 - crop.y0) * sc).floor(); y++) {
+        for (int x = ((x0 - crop.x0) * sc).floor(); x < ((x1 - crop.x0) * sc).floor(); x++) {
+          if (x < 0 || y < 0 || x >= size || y >= size) continue;
+          for (int k = 0; k < kBodyClasses; k++) {
+            probs[k * size * size + y * size + x] = k == cls ? 255 : 0;
+          }
+        }
+      }
+    }
+
+    fill(1, 440, 180, 560, 260); // cheveux de la personne
+    fill(4, 400, 400, 600, 700); // vêtements de la personne
+    fill(1, 700, 180, 780, 260); // cheveux d'une autre personne
+    const int pw = 1000, ph = 500;
+    int at(Uint8List plane, double x, double y) => plane[(y * ph / h).toInt() * pw + (x * pw / w).toInt()];
+
+    final List<double> ancHair = partAnchor('hair', 450 / w, 225 / h, 550 / w, 375 / h, w, h);
+    expect(ancHair[0], closeTo(420, 1e-9));
+    expect(ancHair[1], closeTo(120, 1e-9));
+    expect(ancHair[2], closeTo(580, 1e-9));
+    expect(ancHair[3], closeTo(300, 1e-9));
+    final Uint8List hair = bodyPartPlane(
+        probs: probs, size: size, cls: kBodyPartClass['hair']!, crop: crop, anchor: ancHair, pw: pw, ph: ph, imgW: w, imgH: h);
+    expect(at(hair, 500, 220), 255); // ses cheveux
+    expect(at(hair, 740, 220), 0); // ceux du voisin, écartés
+    expect(at(hair, 500, 300), 0); // le visage
+    expect(at(hair, 500, 500), 0); // les vêtements
+
+    final Uint8List clothes = bodyPartPlane(
+        probs: probs,
+        size: size,
+        cls: kBodyPartClass['clothes']!,
+        crop: crop,
+        anchor: partAnchor('clothes', 450 / w, 225 / h, 550 / w, 375 / h, w, h),
+        pw: pw,
+        ph: ph,
+        imgW: w,
+        imgH: h);
+    expect(at(clothes, 500, 500), 255);
+    expect(at(clothes, 500, 300), 0);
+    // rien de cette classe près de la personne : zone vide
+    final Uint8List none = bodyPartPlane(
+        probs: probs, size: size, cls: kBodyPartClass['bodyskin']!, crop: crop, anchor: partAnchor('bodyskin', 450 / w, 225 / h, 550 / w, 375 / h, w, h), pw: pw, ph: ph, imgW: w, imgH: h);
+    expect(none.every((int v) => v == 0), isTrue);
   });
 }
