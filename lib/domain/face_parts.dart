@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-/// Zones d'un visage (peau, yeux, sourcils, lèvres) dessinées à partir des repères de Vision (iPadOS).
+/// Zones d'un visage (peau, yeux, sourcils, lèvres) dessinées à partir des repères de Vision (iPadOS, une soixantaine de points par visage), avec des courbes lissées.
 ///
 /// Les points sont des suites x, y, x, y… en fractions de la photo (origine en haut à gauche).
 
@@ -47,7 +47,65 @@ List<double> thickLine(List<double> pts, double half) {
   ];
 }
 
-/// Le contour du visage de Vision s'arrête vers les tempes : on le prolonge vers le haut pour couvrir le front.
+double _cr(double p0, double p1, double p2, double p3, double t) {
+  final double t2 = t * t, t3 = t2 * t;
+  return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+}
+
+/// Courbe fermée lisse (Catmull-Rom) qui passe par les points : chaque côté est remplacé par [steps] petits segments.
+List<double> smoothClosed(List<double> pts, {int steps = 6}) {
+  final int n = pts.length ~/ 2;
+  if (n < 3) return List<double>.of(pts);
+  final List<double> out = <double>[];
+  for (int i = 0; i < n; i++) {
+    final int i0 = (i - 1 + n) % n, i1 = i, i2 = (i + 1) % n, i3 = (i + 2) % n;
+    for (int k = 0; k < steps; k++) {
+      final double t = k / steps;
+      out.add(_cr(pts[2 * i0], pts[2 * i1], pts[2 * i2], pts[2 * i3], t));
+      out.add(_cr(pts[2 * i0 + 1], pts[2 * i1 + 1], pts[2 * i2 + 1], pts[2 * i3 + 1], t));
+    }
+  }
+  return out;
+}
+
+/// Courbe ouverte lisse (Catmull-Rom) qui passe par les points, extrémités comprises.
+List<double> smoothOpen(List<double> pts, {int steps = 6}) {
+  final int n = pts.length ~/ 2;
+  if (n < 3) return List<double>.of(pts);
+  final List<double> out = <double>[];
+  for (int i = 0; i < n - 1; i++) {
+    final int i0 = math.max(i - 1, 0), i1 = i, i2 = i + 1, i3 = math.min(i + 2, n - 1);
+    for (int k = 0; k < steps; k++) {
+      final double t = k / steps;
+      out.add(_cr(pts[2 * i0], pts[2 * i1], pts[2 * i2], pts[2 * i3], t));
+      out.add(_cr(pts[2 * i0 + 1], pts[2 * i1 + 1], pts[2 * i2 + 1], pts[2 * i3 + 1], t));
+    }
+  }
+  out.add(pts[2 * n - 2]);
+  out.add(pts[2 * n - 1]);
+  return out;
+}
+
+/// Un sourcil : la ligne lissée, épaissie de [half] au milieu et effilée aux deux bouts, devient un polygone.
+List<double> taperLine(List<double> pts, double half) {
+  if (pts.length < 4) return <double>[];
+  final List<double> c = smoothOpen(pts);
+  final int n = c.length ~/ 2;
+  final List<double> out = <double>[];
+  for (int i = 0; i < n; i++) {
+    final double h = half * (0.3 + 0.7 * math.sin(math.pi * i / (n - 1)));
+    out.add(c[2 * i]);
+    out.add(c[2 * i + 1] - h);
+  }
+  for (int i = n - 1; i >= 0; i--) {
+    final double h = half * (0.3 + 0.7 * math.sin(math.pi * i / (n - 1)));
+    out.add(c[2 * i]);
+    out.add(c[2 * i + 1] + h);
+  }
+  return out;
+}
+
+/// Le contour du visage de Vision s'arrête vers les tempes : on le prolonge par un arc d'ellipse au-dessus des sourcils pour couvrir le front.
 List<double> foreheadFace(List<double> contour, List<double> brows) {
   final int n = contour.length ~/ 2;
   if (n < 3 || brows.length < 4) return <double>[];
@@ -59,9 +117,20 @@ List<double> foreheadFace(List<double> contour, List<double> brows) {
     chin = math.max(chin, contour[i]);
   }
   final double top = math.max(0.0, browTop - (chin - browTop) * 0.45);
-  final double xa = contour[0], xb = contour[2 * n - 2];
-  final double ia = xa + (xb - xa) * 0.1, ib = xb - (xb - xa) * 0.1;
-  return <double>[...contour, ib, top, ia, top];
+  final double xa = contour[0], ya = contour[1], xb = contour[2 * n - 2], yb = contour[2 * n - 1];
+  final double cx = (xa + xb) / 2, cy = (ya + yb) / 2;
+  final double rx = (xb - xa).abs() / 2;
+  final double ry = math.max(0.0, cy - top);
+  final bool lastIsRight = xb > xa;
+  const int m = 14;
+  final List<double> arc = <double>[];
+  for (int k = 1; k < m; k++) {
+    final double th = math.pi * k / m;
+    final double a = lastIsRight ? th : math.pi - th;
+    arc.add(cx + rx * math.cos(a));
+    arc.add(cy - ry * math.sin(a));
+  }
+  return <double>[...contour, ...arc];
 }
 
 /// La zone de la partie [part] pour un visage décrit par ses repères (`box` = x0, y0, x1, y1 ; `leftEye`, `rightEye`,
@@ -74,24 +143,25 @@ PartShape? partShape(Map<String, List<double>> f, String part) {
       ];
   final List<double> box = g('box');
   if (box.length < 4) return null;
-  final double half = (box[3] - box[1]) * 0.035;
+  final double half = (box[3] - box[1]) * 0.03;
+  List<double> eye(String k, double scale) => smoothClosed(scalePoly(g(k), scale));
   PartShape? shape;
   if (part == 'eyes') {
-    shape = PartShape(solid(<List<double>>[scalePoly(g('leftEye'), 1.4), scalePoly(g('rightEye'), 1.4)]), const <List<double>>[]);
+    shape = PartShape(solid(<List<double>>[eye('leftEye', 1.2), eye('rightEye', 1.2)]), const <List<double>>[]);
   } else if (part == 'brows') {
-    shape = PartShape(solid(<List<double>>[thickLine(g('leftBrow'), half), thickLine(g('rightBrow'), half)]), const <List<double>>[]);
+    shape = PartShape(solid(<List<double>>[taperLine(g('leftBrow'), half), taperLine(g('rightBrow'), half)]), const <List<double>>[]);
   } else if (part == 'lips') {
-    shape = PartShape(solid(<List<double>>[g('outerLips')]), solid(<List<double>>[g('innerLips')]));
+    shape = PartShape(solid(<List<double>>[smoothClosed(g('outerLips'))]), solid(<List<double>>[smoothClosed(g('innerLips'))]));
   } else if (part == 'skin') {
     final List<double> brows = <double>[...g('leftBrow'), ...g('rightBrow')];
     shape = PartShape(
-      solid(<List<double>>[foreheadFace(g('contour'), brows)]),
+      solid(<List<double>>[smoothClosed(foreheadFace(g('contour'), brows), steps: 3)]),
       solid(<List<double>>[
-        scalePoly(g('leftEye'), 1.7),
-        scalePoly(g('rightEye'), 1.7),
-        thickLine(g('leftBrow'), half * 1.6),
-        thickLine(g('rightBrow'), half * 1.6),
-        scalePoly(g('outerLips'), 1.15),
+        eye('leftEye', 1.45),
+        eye('rightEye', 1.45),
+        taperLine(g('leftBrow'), half * 1.5),
+        taperLine(g('rightBrow'), half * 1.5),
+        smoothClosed(scalePoly(g('outerLips'), 1.12)),
       ]),
     );
   }

@@ -5,6 +5,7 @@ import 'package:sursaut_essai/domain/ai_masks.dart';
 import 'package:sursaut_essai/domain/face_parts.dart';
 import 'package:sursaut_essai/domain/crop_math.dart';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -626,5 +627,62 @@ void main() {
     expect(yeux, isNotNull);
     expect(yeux!.add.length, 2);
     expect(kFacePartNames.keys, containsAll(<String>['skin', 'eyes', 'brows', 'lips']));
+  });
+  test('contours du visage : courbes lissées, sourcils effilés, front en arc', () {
+    // une courbe fermée lissée passe par ses points de départ et a `steps` fois plus de points
+    const List<double> carre = <double>[0.2, 0.2, 0.8, 0.2, 0.8, 0.8, 0.2, 0.8];
+    final List<double> lisse = smoothClosed(carre, steps: 4);
+    expect(lisse.length, 4 * 4 * 2);
+    expect(lisse[0], closeTo(0.2, 1e-9));
+    expect(lisse[1], closeTo(0.2, 1e-9));
+    // une courbe ouverte garde ses deux extrémités
+    final List<double> ouvert = smoothOpen(<double>[0.1, 0.5, 0.2, 0.4, 0.3, 0.5], steps: 4);
+    expect(ouvert.length, 18);
+    expect(ouvert[16], closeTo(0.3, 1e-9));
+    expect(ouvert[17], closeTo(0.5, 1e-9));
+    // un sourcil : épais (2 x demi-épaisseur) au milieu, 30 % aux bouts
+    final List<double> sourcil = taperLine(<double>[0.1, 0.5, 0.2, 0.4, 0.3, 0.5], 0.02);
+    expect(sourcil.length, 52);
+    expect(sourcil[39] - sourcil[13], closeTo(0.04, 1e-9));
+    expect(sourcil[51] - sourcil[1], closeTo(0.012, 1e-9));
+    expect(taperLine(<double>[0.1, 0.5], 0.02), isEmpty);
+
+    // un visage de 17 points de contour (d'une tempe à l'autre par le menton), dans les deux sens
+    final List<double> contour = <double>[
+      for (int i = 0; i <= 16; i++) ...<double>[
+        0.5 + 0.14 * math.cos(math.pi * 0.08 + i * math.pi * 0.84 / 16),
+        0.45 + 0.2 * math.sin(math.pi * 0.08 + i * math.pi * 0.84 / 16),
+      ],
+    ];
+    final List<double> inverse = <double>[
+      for (int i = contour.length ~/ 2 - 1; i >= 0; i--) ...<double>[contour[2 * i], contour[2 * i + 1]],
+    ];
+    const List<double> gSourcil = <double>[0.40, 0.42, 0.43, 0.405, 0.47, 0.41];
+    const List<double> dSourcil = <double>[0.53, 0.41, 0.57, 0.405, 0.60, 0.42];
+    for (final List<double> sens in <List<double>>[contour, inverse]) {
+      final List<double> front = foreheadFace(sens, <double>[...gSourcil, ...dSourcil]);
+      expect(front.length, (17 + 13) * 2);
+      double haut = 1;
+      for (int i = 1; i < front.length; i += 2) {
+        haut = math.min(haut, front[i]);
+      }
+      expect(haut, closeTo(0.29475, 1e-6)); // le front monte au-dessus des sourcils, quel que soit le sens du contour
+      final PartShape? peau = partShape(<String, List<double>>{
+        'box': <double>[0.36, 0.29, 0.64, 0.65],
+        'contour': sens,
+        'leftBrow': gSourcil,
+        'rightBrow': dSourcil,
+        'leftEye': <double>[0.41, 0.46, 0.43, 0.45, 0.46, 0.46, 0.43, 0.47],
+        'rightEye': <double>[0.54, 0.46, 0.57, 0.45, 0.59, 0.46, 0.57, 0.47],
+        'outerLips': <double>[0.45, 0.62, 0.5, 0.60, 0.55, 0.62, 0.5, 0.65],
+      }, 'skin');
+      expect(peau, isNotNull);
+      final Uint8List plan = fillShape(200, 200, peau!);
+      expect(plan[110 * 200 + 88], 255); // la joue
+      expect(plan[68 * 200 + 100], 255); // le front
+      expect(plan[92 * 200 + 86], 0); // le trou de l'œil
+      expect(plan[124 * 200 + 100], 0); // le trou de la bouche
+      expect(plan[100 * 200 + 20], 0); // hors du visage
+    }
   });
 }

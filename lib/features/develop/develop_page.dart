@@ -138,6 +138,10 @@ class _DevelopPageState extends State<DevelopPage> {
   List<VisionPerson> _persons = <VisionPerson>[]; // personnes repérées (pastilles du panneau Masques)
   List<ui.Image> _personImgs = <ui.Image>[];
   Uint8List? _personsFor; // la photo pour laquelle on les a cherchées
+  List<VisionFace> _faces = <VisionFace>[]; // visages repérés (pastilles « Visages »), indépendants des silhouettes des personnes
+  List<ui.Image> _faceImgs = <ui.Image>[];
+  Uint8List? _facesFor; // la photo pour laquelle on les a cherchés
+  int _faceSel = -1; // visage choisi (indice dans `_faces`), -1 = aucun
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
   String _newOp = 'add'; // comment la prochaine composante se combine : add | subtract | intersect
 
@@ -1310,28 +1314,111 @@ class _DevelopPageState extends State<DevelopPage> {
     _refresh();
   }
 
-  /// La personne du masque choisi (masque « Personne » ou masque d'une partie de son visage), sinon l'unique personne repérée.
-  VisionPerson? get _targetPerson {
-    final MaskMap? m = _maskSelected;
-    final Map<String, dynamic>? c = m == null ? null : mainComp(m);
-    final Object? ai = c?['ai'];
-    if (ai is Map<String, dynamic>) {
-      final String what = '${ai['what']}';
-      final Object? pts = ai['points'];
-      if ((what == 'person' || what.startsWith('face_')) && pts is List<dynamic> && pts.isNotEmpty && pts.first is List<dynamic>) {
-        final List<dynamic> q = pts.first as List<dynamic>;
-        if (q.length >= 2 && q[0] is num && q[1] is num) {
-          for (final VisionPerson p in _persons) {
-            if (((q[0] as num) - p.px).abs() < 1e-4 && ((q[1] as num) - p.py).abs() < 1e-4) return p;
-          }
-        }
-      }
+  /// « Visages » : cherche chaque visage de la photo (un visage = une pastille), même quand les corps se touchent.
+  Future<void> _maskFaces() async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
+    setState(() => _aiBusy = true);
+    VisionFaces found = const VisionFaces();
+    try {
+      found = await VisionBridge.faceParts(rgba, _w, _h);
+    } finally {
+      if (mounted) setState(() => _aiBusy = false);
     }
-    return _persons.length == 1 ? _persons.first : null;
+    if (!mounted) return;
+    final String? error = found.error;
+    if (error != null) {
+      _say(error);
+      return;
+    }
+    // de gauche à droite
+    final List<VisionFace> list = List<VisionFace>.of(found.faces);
+    list.sort((VisionFace a, VisionFace b) => (a.x0 + a.x1).compareTo(b.x0 + b.x1));
+    final List<ui.Image> thumbs = await _cropThumbs(
+      rgba,
+      <List<double>>[
+        for (final VisionFace f in list) <double>[f.x0, f.y0, f.x1, f.y1],
+      ],
+      0.35,
+    );
+    if (!mounted) return;
+    setState(() {
+      _faces = list;
+      _faceImgs = thumbs;
+      _facesFor = rgba;
+      _faceSel = list.length == 1 ? 0 : -1;
+    });
+    _say(list.length == 1 ? '1 visage repéré.' : '${list.length} visages repérés : touchez une pastille.');
   }
 
-  /// Boutons des parties du visage, pour la personne dont le masque est choisi.
+  /// Les pastilles des visages sont-elles à montrer (même photo que celle où on les a cherchés) ?
+  bool get _facesShown => _faces.isNotEmpty && identical(_facesFor, _srcRgba) && _faceImgs.length == _faces.length;
+
+  /// Centre du visage [i] : sert d'identifiant du visage dans les masques de ses parties.
+  List<double> _faceCenter(int i) => <double>[(_faces[i].x0 + _faces[i].x1) / 2, (_faces[i].y0 + _faces[i].y1) / 2];
+
+  /// Une partie de ce visage a-t-elle déjà un masque ?
+  bool _faceHasMask(int i) {
+    final List<double> c = _faceCenter(i);
+    for (final MaskMap m in _masks) {
+      final Map<String, dynamic>? comp = mainComp(m);
+      if (comp == null || '${comp['kind']}' != kBitmap) continue;
+      final Object? ai = comp['ai'];
+      if (ai is! Map<String, dynamic> || !'${ai['what']}'.startsWith('face_')) continue;
+      final Object? pts = ai['points'];
+      if (pts is! List<dynamic> || pts.isEmpty || pts.first is! List<dynamic>) continue;
+      final List<dynamic> q = pts.first as List<dynamic>;
+      if (q.length >= 2 && q[0] is num && q[1] is num && ((q[0] as num) - c[0]).abs() < 1e-4 && ((q[1] as num) - c[1]).abs() < 1e-4) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Rangée de pastilles « Visages » (un visage = une pastille), puis les parties du visage choisi.
+  List<Widget> _faceTiles(TextStyle title, TextStyle hint) {
+    return <Widget>[
+      Padding(padding: const EdgeInsets.only(top: 10, bottom: 4), child: Text('VISAGES REPÉRÉS', style: title)),
+      SizedBox(
+        height: 112,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          children: <Widget>[
+            for (int i = 0; i < _faces.length; i++)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: _aiBusy ? null : () => setState(() => _faceSel = i),
+                  child: Column(
+                    children: <Widget>[
+                      Container(
+                        height: 92,
+                        padding: const EdgeInsets.all(2),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: i == _faceSel ? const Color(0xFFF2A33A) : Colors.transparent, width: 2),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: RawImage(image: _faceImgs[i], fit: BoxFit.contain),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text('Visage ${i + 1}${_faceHasMask(i) ? ' ✓' : ''}', style: hint),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    ];
+  }
+
+  /// Boutons des parties du visage choisi.
   List<Widget> _facePartChips(TextStyle title, TextStyle hint) {
+    final bool chosen = _faceSel >= 0 && _faceSel < _faces.length;
     return <Widget>[
       Padding(padding: const EdgeInsets.only(top: 6, bottom: 4), child: Text('PARTIES DU VISAGE', style: title)),
       Wrap(
@@ -1341,77 +1428,31 @@ class _DevelopPageState extends State<DevelopPage> {
           for (final MapEntry<String, String> e in kFacePartNames.entries)
             ActionChip(
               label: Text(e.value),
-              onPressed: _aiBusy ? null : () => _maskFacePart(e.key),
+              onPressed: _aiBusy || !chosen ? null : () => _maskFacePart(e.key),
             ),
         ],
       ),
       Padding(
         padding: const EdgeInsets.only(top: 4),
         child: Text(
-          _targetPerson == null ? 'Touchez d\'abord la pastille d\'une personne.' : 'Pour la personne choisie (zones calculées par iPadOS).',
+          chosen ? 'Pour le visage ${_faceSel + 1} (zones calculées par iPadOS).' : 'Touchez d\'abord la pastille d\'un visage.',
           style: hint,
         ),
       ),
     ];
   }
 
-  /// Un masque pour une partie du visage (peau, yeux, sourcils, lèvres) de la personne choisie.
+  /// Un masque pour une partie (peau, yeux, sourcils, lèvres) du visage choisi.
   Future<void> _maskFacePart(String part) async {
-    final Uint8List? rgba = _srcRgba;
-    if (rgba == null || _aiBusy || _w == 0 || _h == 0) return;
-    final VisionPerson? who = _targetPerson;
-    if (who == null) {
-      _say('Choisissez d\'abord une personne (touchez sa pastille).');
+    if (_aiBusy || _w == 0 || _h == 0) return;
+    if (_faceSel < 0 || _faceSel >= _faces.length) {
+      _say('Choisissez d\'abord un visage (touchez sa pastille).');
       return;
     }
+    final int which = _faceSel;
+    final VisionFace face = _faces[which];
     setState(() => _aiBusy = true);
     try {
-      final VisionFaces found = await VisionBridge.faceParts(rgba, _w, _h);
-      if (!mounted) return;
-      final String? error = found.error;
-      if (error != null) {
-        _say(error);
-        return;
-      }
-      // le visage de cette personne : son centre est dans le masque de la personne (sinon dans son cadre) ; le plus grand s'il y en a plusieurs
-      Uint8List? body;
-      int bw = 0, bh = 0;
-      final int at = _personMaskIndex(who);
-      Object? bodyPng;
-      if (at >= 0) {
-        final Map<String, dynamic>? bodyComp = mainComp(_masks[at]);
-        if (bodyComp != null) bodyPng = bodyComp['png'];
-      }
-      if (bodyPng is String && bodyPng.isNotEmpty) {
-        final (Uint8List, int, int)? d = pngToPlane(base64Decode(bodyPng));
-        if (d != null) {
-          body = d.$1;
-          bw = d.$2;
-          bh = d.$3;
-        }
-      }
-      VisionFace? face;
-      double best = 0;
-      for (final VisionFace f in found.faces) {
-        final double cx = (f.x0 + f.x1) / 2, cy = (f.y0 + f.y1) / 2;
-        final double size = (f.x1 - f.x0) * (f.y1 - f.y0);
-        final bool mine;
-        if (body != null) {
-          final int bx = (cx * bw).floor().clamp(0, bw - 1).toInt();
-          final int by = (cy * bh).floor().clamp(0, bh - 1).toInt();
-          mine = body[by * bw + bx] > 127;
-        } else {
-          mine = cx >= who.x0 && cx <= who.x1 && cy >= who.y0 && cy <= who.y1;
-        }
-        if (mine && size > best) {
-          face = f;
-          best = size;
-        }
-      }
-      if (face == null) {
-        _say('Aucun visage repéré pour cette personne.');
-        return;
-      }
       final Map<String, List<double>> marks = <String, List<double>>{
         ...face.parts,
         'box': <double>[face.x0, face.y0, face.x1, face.y1],
@@ -1424,7 +1465,7 @@ class _DevelopPageState extends State<DevelopPage> {
       final double aspect = _w / _h;
       final int pw = aspect >= 1 ? 1024 : (1024 * aspect).round().clamp(64, 1024).toInt();
       final int ph = aspect >= 1 ? (1024 / aspect).round().clamp(64, 1024).toInt() : 1024;
-      final Uint8List plane = blurPlane(fillShape(pw, ph, shape), pw, ph, (math.max(pw, ph) * 0.004).round().clamp(1, 12).toInt());
+      final Uint8List plane = blurPlane(fillShape(pw, ph, shape), pw, ph, (math.max(pw, ph) * 0.003).round().clamp(1, 12).toInt());
       int covered = 0;
       for (final int v in plane) {
         if (v > 127) covered++;
@@ -1441,9 +1482,7 @@ class _DevelopPageState extends State<DevelopPage> {
         pngBase64: planeToBase64(plane, pw, ph),
         what: 'face_$part',
       );
-      ((m['comps'] as List<dynamic>).first as Map<String, dynamic>)['ai']['points'] = <dynamic>[
-        <double>[who.px, who.py]
-      ];
+      ((m['comps'] as List<dynamic>).first as Map<String, dynamic>)['ai']['points'] = <dynamic>[_faceCenter(which)];
       setState(() {
         _masks = <MaskMap>[..._masks, m];
         _maskSel = _masks.length - 1;
@@ -1457,6 +1496,7 @@ class _DevelopPageState extends State<DevelopPage> {
       });
       _commit();
       _refresh();
+      _say('${kFacePartNames[part]} : visage ${which + 1}.');
     } catch (e) {
       _say('Sélection impossible : $e');
     } finally {
@@ -1518,15 +1558,26 @@ class _DevelopPageState extends State<DevelopPage> {
   }
 
   /// Petites images (120 px de haut) de chaque personne : la photo recadrée sur son cadre, un peu élargi.
-  Future<List<ui.Image>> _personThumbs(Uint8List rgba, List<VisionPerson> list) async {
+  Future<List<ui.Image>> _personThumbs(Uint8List rgba, List<VisionPerson> list) {
+    return _cropThumbs(
+      rgba,
+      <List<double>>[
+        for (final VisionPerson p in list) <double>[p.x0, p.y0, p.x1, p.y1],
+      ],
+      0.08,
+    );
+  }
+
+  /// Petites images (120 px de haut) de la photo recadrée sur chaque cadre [x0, y0, x1, y1] (fractions), élargi de [margin].
+  Future<List<ui.Image>> _cropThumbs(Uint8List rgba, List<List<double>> boxes, double margin) async {
     const int th = 120;
     final List<ui.Image> out = <ui.Image>[];
-    for (final VisionPerson p in list) {
-      final double mx = (p.x1 - p.x0) * 0.08, my = (p.y1 - p.y0) * 0.08;
-      final int sx0 = ((p.x0 - mx) * _w).floor().clamp(0, _w - 1).toInt();
-      final int sy0 = ((p.y0 - my) * _h).floor().clamp(0, _h - 1).toInt();
-      final int sx1 = ((p.x1 + mx) * _w).ceil().clamp(sx0 + 1, _w).toInt();
-      final int sy1 = ((p.y1 + my) * _h).ceil().clamp(sy0 + 1, _h).toInt();
+    for (final List<double> b in boxes) {
+      final double mx = (b[2] - b[0]) * margin, my = (b[3] - b[1]) * margin;
+      final int sx0 = ((b[0] - mx) * _w).floor().clamp(0, _w - 1).toInt();
+      final int sy0 = ((b[1] - my) * _h).floor().clamp(0, _h - 1).toInt();
+      final int sx1 = ((b[2] + mx) * _w).ceil().clamp(sx0 + 1, _w).toInt();
+      final int sy1 = ((b[3] + my) * _h).ceil().clamp(sy0 + 1, _h).toInt();
       final int cw = sx1 - sx0, ch = sy1 - sy0;
       final int tw = (cw * th / ch).round().clamp(24, 240).toInt();
       final Uint8List px = Uint8List(tw * th * 4);
@@ -1901,8 +1952,24 @@ class _DevelopPageState extends State<DevelopPage> {
           Expanded(child: _aiButton('person', Icons.groups_outlined, ready)),
         ],
       ),
+      const SizedBox(height: 8),
+      Row(
+        children: <Widget>[
+          Expanded(
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white24), minimumSize: const Size(48, 48)),
+              onPressed: ready && !_aiBusy ? _maskFaces : null,
+              icon: const Icon(Icons.face_outlined, size: 20),
+              label: const Text('Visages'),
+            ),
+          ),
+          const SizedBox(width: 8),
+          const Expanded(child: SizedBox()),
+        ],
+      ),
       if (_personsShown) ..._personTiles(title, hint),
-      if (_personsShown) ..._facePartChips(title, hint),
+      if (_facesShown) ..._faceTiles(title, hint),
+      if (_facesShown) ..._facePartChips(title, hint),
       Padding(padding: const EdgeInsets.only(top: 6), child: Text(guide, style: hint)),
       if (idx.isNotEmpty) ...<Widget>[
         const Padding(padding: EdgeInsets.only(top: 14, bottom: 2), child: Text('MASQUES', style: title)),
