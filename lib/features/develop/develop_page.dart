@@ -149,6 +149,7 @@ class _DevelopPageState extends State<DevelopPage> {
   int _samPlaneW = 0, _samPlaneH = 0;
   Set<int> _selFaces = <int>{}; // personnes cochées (indices dans `_faces`)
   Set<String> _selParts = <String>{}; // parties cochées : person | skin | eyes | … | hair | clothes | bodyskin
+  bool _maskCardOpen = true; // carte « Masque » sur la photo : dépliée ou réduite à une pastille
   bool? _maskShapeOpen; // section « Forme du masque » : ouverte ou fermée à la main (null = automatique)
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
   String _newOp = 'add'; // comment la prochaine composante se combine : add | subtract | intersect
@@ -1776,20 +1777,7 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Bouton « Objet au toucher », puis ses choix quand la sélection au toucher est en cours.
   List<Widget> _samBlock(TextStyle title, TextStyle hint, bool ready) {
-    if (!_samOn) {
-      return <Widget>[
-        const SizedBox(height: 8),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white24), minimumSize: const Size(48, 48)),
-            onPressed: ready && !_aiBusy ? _samStart : null,
-            icon: _aiBusy ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.touch_app_outlined, size: 20),
-            label: const Text('Objet au toucher (SAM 2.1, en essai)'),
-          ),
-        ),
-      ];
-    }
+    if (!_samOn) return const <Widget>[];
     return <Widget>[
       const SizedBox(height: 8),
       Text('OBJET AU TOUCHER', style: title),
@@ -2109,34 +2097,6 @@ class _DevelopPageState extends State<DevelopPage> {
               ? Icons.colorize
               : Icons.gradient;
 
-  Widget _maskKindButton(String kind, bool ready) {
-    final bool on = (kind == kBrush && _brushTool != null) || (_maskDraw == kind && !_maskAttach) || (kind == kColor && _maskPick && _maskPickNew);
-    return OutlinedButton.icon(
-      style: OutlinedButton.styleFrom(
-        backgroundColor: on ? const Color(0xFF33291A) : null,
-        side: BorderSide(color: on ? const Color(0xFFF2A33A) : Colors.white24),
-        minimumSize: const Size(48, 48),
-      ),
-      onPressed: ready ? () => _maskNew(kind) : null,
-      icon: Icon(_kindIcon(kind), size: 20),
-      label: Text(_kindShort[kind]!),
-    );
-  }
-
-  Widget _aiButton(String what, IconData icon, bool ready) {
-    return OutlinedButton.icon(
-      style: OutlinedButton.styleFrom(
-        side: const BorderSide(color: Colors.white24),
-        minimumSize: const Size(48, 48),
-      ),
-      onPressed: ready && !_aiBusy ? () => (what == 'person' ? _maskPersons() : _maskAi(what)) : null,
-      icon: _aiBusy
-          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-          : Icon(icon, size: 20),
-      label: Text(kAiNames[what]!),
-    );
-  }
-
   List<Widget> _masksPanel(bool ready) {
     final List<int> idx = <int>[
       for (int i = 0; i < _masks.length; i++)
@@ -2165,46 +2125,17 @@ class _DevelopPageState extends State<DevelopPage> {
             ? 'Posez le doigt là où l\'effet est plein, glissez jusqu\'où il s\'arrête, puis levez le doigt.'
             : _maskDraw == kRadial
                 ? 'Posez le doigt au centre, glissez jusqu\'au bord, puis levez le doigt.'
-                : 'Touchez un type : les dégradés se tracent au doigt, les plages se règlent avec des curseurs.';
+                : '';
     return <Widget>[
       if (_facesShown) ..._faceTiles(title, hint),
       if (_facesShown) ..._facePartChips(title, hint),
-      const SizedBox(height: 12),
-      const Text('NOUVEAU MASQUE', style: title),
-      const SizedBox(height: 6),
-      Row(
-        children: <Widget>[
-          Expanded(child: _maskKindButton(kLinear, ready)),
-          const SizedBox(width: 8),
-          Expanded(child: _maskKindButton(kRadial, ready)),
-        ],
-      ),
-      const SizedBox(height: 8),
-      Row(
-        children: <Widget>[
-          Expanded(child: _maskKindButton(kLuminance, ready)),
-          const SizedBox(width: 8),
-          Expanded(child: _maskKindButton(kColor, ready)),
-        ],
-      ),
-      const SizedBox(height: 8),
-      Row(
-        children: <Widget>[
-          Expanded(child: _maskKindButton(kBrush, ready)),
-          const SizedBox(width: 8),
-          Expanded(child: _aiButton('subject', Icons.person_outline, ready)),
-        ],
-      ),
-      const SizedBox(height: 8),
-      Row(
-        children: <Widget>[
-          Expanded(child: _aiButton('background', Icons.landscape_outlined, ready)),
-          const SizedBox(width: 8),
-          Expanded(child: _aiButton('person', Icons.groups_outlined, ready)),
-        ],
-      ),
+      if (idx.isEmpty && !_samOn)
+        const Padding(
+          padding: EdgeInsets.only(top: 12),
+          child: Text('Pas encore de masque : touchez « Nouveau masque » sur la photo.', style: hint),
+        ),
       ..._samBlock(title, hint, ready),
-      Padding(padding: const EdgeInsets.only(top: 6), child: Text(guide, style: hint)),
+      if (guide.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 6), child: Text(guide, style: hint)),
       if (idx.isNotEmpty) ...<Widget>[
         const Padding(padding: EdgeInsets.only(top: 14, bottom: 2), child: Text('MASQUES', style: title)),
         for (final int i in idx)
@@ -3002,6 +2933,146 @@ class _DevelopPageState extends State<DevelopPage> {
         _toolButton('crop', Icons.crop, 'Recadrer', onTap: ready && !_cropMode ? _enterCrop : null),
       ];
 
+  // -- Carte « Masque » sur la photo : Nouveau masque, Ajouter, Soustraire ------------------------
+  List<PopupMenuEntry<String>> _cardItems({required bool withAi}) {
+    PopupMenuItem<String> it(String v, IconData icon, String label) => PopupMenuItem<String>(
+          value: v,
+          child: Row(children: <Widget>[Icon(icon, size: 20), const SizedBox(width: 10), Text(label)]),
+        );
+    return <PopupMenuEntry<String>>[
+      it('sam', Icons.touch_app_outlined, 'Au toucher (IA)'),
+      if (withAi) ...<PopupMenuEntry<String>>[
+        it('subject', Icons.person_outline, kAiNames['subject']!),
+        it('background', Icons.landscape_outlined, kAiNames['background']!),
+        it('person', Icons.groups_outlined, kAiNames['person']!),
+      ],
+      it(kBrush, _kindIcon(kBrush), _kindShort[kBrush]!),
+      it(kLinear, _kindIcon(kLinear), _kindShort[kLinear]!),
+      it(kRadial, _kindIcon(kRadial), _kindShort[kRadial]!),
+      it(kLuminance, _kindIcon(kLuminance), _kindShort[kLuminance]!),
+      it(kColor, _kindIcon(kColor), _kindShort[kColor]!),
+    ];
+  }
+
+  void _cardNew(String v) {
+    if (v == 'sam') {
+      _samStart();
+    } else if (v == 'subject' || v == 'background') {
+      _maskAi(v);
+    } else if (v == 'person') {
+      _maskPersons();
+    } else {
+      _maskNew(v);
+    }
+  }
+
+  /// « Ajouter à la zone » ou « Soustraire » : une composante de plus pour le masque choisi.
+  void _cardCombine(String op, String v) {
+    setState(() => _newOp = op);
+    if (v == 'sam') {
+      _samEdit().then((_) {
+        if (mounted) setState(() => _samAdd = op == 'add');
+      });
+      return;
+    }
+    _maskAddComp(v);
+  }
+
+  Widget _cardButton(String label, IconData icon, {bool primary = false}) => Container(
+        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 6),
+        decoration: BoxDecoration(
+          color: primary ? const Color(0xFF33291A) : null,
+          border: Border.all(color: primary ? const Color(0xFFF2A33A) : Colors.white24),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Icon(icon, size: 18, color: primary ? const Color(0xFFF2A33A) : null),
+            const SizedBox(width: 6),
+            Flexible(child: Text(label, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, color: primary ? const Color(0xFFF2A33A) : null))),
+          ],
+        ),
+      );
+
+  Widget _maskCard() {
+    if (!_maskCardOpen) {
+      return Material(
+        color: const Color(0xE61C1C1E),
+        borderRadius: BorderRadius.circular(18),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: () => setState(() => _maskCardOpen = true),
+          child: const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[Icon(Icons.gradient, size: 18), SizedBox(width: 6), Text('Masque', style: TextStyle(fontSize: 13))]),
+          ),
+        ),
+      );
+    }
+    final MaskMap? sel = _maskSelected;
+    final bool canSam = sel != null && _samEditablePoints != null && !_samOn;
+    return Container(
+      width: 168,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: const Color(0xE61C1C1E),
+        border: Border.all(color: Colors.white24),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              const Expanded(child: Text('Masque', style: TextStyle(fontSize: 12, color: Colors.white60))),
+              InkWell(
+                onTap: () => setState(() => _maskCardOpen = false),
+                child: const Padding(padding: EdgeInsets.all(2), child: Icon(Icons.expand_less, size: 20, color: Colors.white60)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          PopupMenuButton<String>(
+            tooltip: 'Nouveau masque',
+            enabled: !_aiBusy,
+            onSelected: _cardNew,
+            itemBuilder: (BuildContext context) => _cardItems(withAi: true),
+            child: _cardButton('Nouveau masque', Icons.add, primary: true),
+          ),
+          if (sel != null) ...<Widget>[
+            const SizedBox(height: 6),
+            PopupMenuButton<String>(
+              tooltip: 'Ajouter à la zone',
+              enabled: !_aiBusy,
+              onSelected: (String v) => _cardCombine('add', v),
+              itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                for (final PopupMenuEntry<String> e in _cardItems(withAi: false))
+                  if (!(e is PopupMenuItem<String> && e.value == 'sam' && !canSam)) e,
+              ],
+              child: _cardButton('Ajouter à la zone', Icons.add),
+            ),
+            const SizedBox(height: 6),
+            PopupMenuButton<String>(
+              tooltip: 'Soustraire de la zone',
+              enabled: !_aiBusy,
+              onSelected: (String v) => _cardCombine('subtract', v),
+              itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                for (final PopupMenuEntry<String> e in _cardItems(withAi: false))
+                  if (!(e is PopupMenuItem<String> && e.value == 'sam' && !canSam)) e,
+              ],
+              child: _cardButton('Soustraire', Icons.remove),
+            ),
+            const SizedBox(height: 4),
+            Text('Masque : ${sel['name'] ?? ''}', maxLines: 1, overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center, style: const TextStyle(fontSize: 11, color: Colors.white60)),
+          ],
+        ],
+      ),
+    );
+  }
+
   /// La photo, avec l'histogramme en haut à droite (ou sa pastille quand il est masqué).
   Widget _photoStack() {
     final Widget area = _photoArea();
@@ -3012,9 +3083,16 @@ class _DevelopPageState extends State<DevelopPage> {
         Positioned(
           top: 12,
           right: 12,
-          child: _histVisible
-              ? HistogramView(data: _hist, luminosity: _histLum, onMode: _setHistMode, onHide: () => _setHistVisible(false))
-              : HistogramChip(onShow: () => _setHistVisible(true)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              _histVisible
+                  ? HistogramView(data: _hist, luminosity: _histLum, onMode: _setHistMode, onHide: () => _setHistVisible(false))
+                  : HistogramChip(onShow: () => _setHistVisible(true)),
+              if (_tool == 'masks') ...<Widget>[const SizedBox(height: 8), _maskCard()],
+            ],
+          ),
         ),
       ],
     );
