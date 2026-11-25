@@ -897,6 +897,27 @@ void main() {
     expect(cleanPlane(pl, pw, ph, 0), same(pl)); // rayon nul : inchangé
   });
 
+  test('fermeture : les petits trous sont bouchés, les zones éloignées restent séparées', () {
+    const int pw = 100, ph = 60;
+    final Uint8List pl = Uint8List(pw * ph);
+    void rect(int x0, int y0, int x1, int y1, int v) {
+      for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+          pl[y * pw + x] = v;
+        }
+      }
+    }
+
+    rect(10, 10, 40, 50, 255); // zone avec un trou
+    rect(20, 25, 23, 28, 0); // trou de 3 pixels (une fleur de la combinaison)
+    rect(70, 10, 90, 50, 255); // autre zone, à 30 pixels
+    final Uint8List c = closePlane(pl, pw, ph, 3);
+    expect(c[26 * pw + 21], 255); // trou bouché
+    expect(c[30 * pw + 55], 0); // l'espace entre les zones reste vide
+    expect(c[30 * pw + 25], 255);
+    expect(closePlane(pl, pw, ph, 0), same(pl));
+  });
+
   test('peau du corps par la couleur : étend les taches du modèle sur la couleur du visage, pas sur le reste', () {
     const int size = 64;
     final Uint8List cmap = Uint8List(size * size);

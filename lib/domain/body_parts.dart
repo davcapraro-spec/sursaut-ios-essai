@@ -363,13 +363,14 @@ Uint8List bodyPartPlane({
   } else if (queue.isEmpty) {
     return out;
   }
-  // 3. probabilité de la classe dans les zones gardées, remise à l'échelle de la photo (bilinéaire), puis contraste autour de 50 %
+  // 3. zones gardées (pixels où la classe est la plus probable : pleine valeur, même si sa probabilité est sous 50 % sur un bord ou un motif),
+  // remises à l'échelle de la photo (bilinéaire), puis contraste autour de 50 %
   final Uint8List soft = Uint8List(n);
   final List<List<double>>? all = faces;
   final bool split = all != null && all.length > 1 && self >= 0 && self < all.length;
   if (hairNear) {
     for (int i = 0; i < n; i++) {
-      if (keep[i] == 1) soft[i] = probs[cls * n + i];
+      if (keep[i] == 1) soft[i] = 255;
     }
   } else if (split) {
     // Attribution par zone (et non par bande verticale) : chaque zone connexe va à la personne dont le visage est le plus proche ;
@@ -429,7 +430,7 @@ Uint8List bodyPartPlane({
               near = k;
             }
           }
-          if (near == self) soft[i] = probs[cls * n + i];
+          if (near == self) soft[i] = 255;
         }
         continue;
       }
@@ -440,12 +441,12 @@ Uint8List bodyPartPlane({
       final bool shared = cls == kBodyPartClass['clothes'] && (touched & (touched - 1)) != 0;
       if (owner != self || shared) continue;
       for (final int i in q) {
-        soft[i] = skinMode ? 255 : probs[cls * n + i];
+        soft[i] = 255;
       }
     }
   } else {
     for (int i = 0; i < n; i++) {
-      if (keep[i] == 1) soft[i] = skinMode ? 255 : probs[cls * n + i];
+      if (keep[i] == 1) soft[i] = 255;
     }
   }
   final double px = pw / imgW, py = ph / imgH;
@@ -593,4 +594,10 @@ Uint8List cleanPlane(Uint8List plane, int pw, int ph, int r, {double minShare = 
     if (l != 0 && sizes[l] >= biggest * minShare) out[i] = o[i];
   }
   return out;
+}
+
+/// Bouche les petits trous d'un plan (fermeture : dilatation puis érosion, carré de rayon [r]) sans fusionner des zones éloignées de plus de 2 x [r].
+Uint8List closePlane(Uint8List plane, int pw, int ph, int r) {
+  if (plane.length < pw * ph || pw <= 0 || ph <= 0 || r < 1) return plane;
+  return _morph(_morph(plane, pw, ph, r, false), pw, ph, r, true);
 }

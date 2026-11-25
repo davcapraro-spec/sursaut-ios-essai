@@ -1569,11 +1569,12 @@ class _DevelopPageState extends State<DevelopPage> {
     if (blob == null) return null;
     final Uint8List? mine = sils[which];
     final Uint8List out = Uint8List(pw * ph);
+    final int rc = (pw * 0.006).round().clamp(2, 12).toInt();
     if (mine != null) {
       for (int i = 0; i < out.length; i++) {
         out[i] = math.min(blob[i], mine[i]);
       }
-      return out;
+      return closePlane(out, pw, ph, rc);
     }
     int without = 0;
     for (final Uint8List? s in sils) {
@@ -1588,7 +1589,7 @@ class _DevelopPageState extends State<DevelopPage> {
       }
       out[i] = (blob[i] * (255 - other) / 255).round();
     }
-    final Uint8List clean = cleanPlane(out, pw, ph, (pw * 0.016).round().clamp(3, 40).toInt());
+    final Uint8List clean = closePlane(cleanPlane(out, pw, ph, (pw * 0.016).round().clamp(3, 40).toInt()), pw, ph, rc);
     final VisionFace f = _faces[which];
     final double faceArea = (f.x1 - f.x0) * pw * (f.y1 - f.y0) * ph;
     int covered = 0;
