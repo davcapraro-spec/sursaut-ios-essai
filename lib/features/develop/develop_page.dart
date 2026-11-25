@@ -1503,46 +1503,98 @@ class _DevelopPageState extends State<DevelopPage> {
     );
   }
 
-  /// Vêtements d'une personne collée aux autres : le modèle les fond en une seule zone. SAM 2.1 isole la silhouette de la personne
-  /// (points sur son visage et son buste, points négatifs sur les autres) ; elle n'est gardée que si elle est plausible. Rend null sinon.
-  Future<Uint8List?> _clothesSamFor(int which, int pw, int ph, Uint8List rgba, List<String> errors) async {
+  /// Silhouettes SAM 2.1 de chaque personne (null si aucune n'est plausible). Deux jeux de points positifs sont essayés (colonne sous le
+  /// visage ; épaules), avec des points négatifs sur les autres personnes ; une silhouette n'est gardée que si elle est plausible et ne
+  /// recouvre pas celle d'une personne déjà acceptée.
+  Future<List<Uint8List?>> _samSilhouettes(int pw, int ph, Uint8List rgba, List<String> errors) async {
+    final List<Uint8List?> out = List<Uint8List?>.filled(_faces.length, null);
     final String? e = await VisionBridge.samEncode(rgba, _w, _h, identityHashCode(rgba));
     if (e != null) {
       errors.add(e);
-      return null;
+      return out;
     }
     double c01(double v) => v.clamp(0.0, 1.0).toDouble();
-    final VisionFace f = _faces[which];
-    final double fh = f.y1 - f.y0, cx = (f.x0 + f.x1) / 2;
-    final List<List<double>> pts = <List<double>>[
-      <double>[cx, c01((f.y0 + f.y1) / 2), 1],
-      <double>[cx, c01(f.y1 + 0.9 * fh), 1],
-      <double>[cx, c01(f.y1 + 1.8 * fh), 1],
-    ];
-    final List<List<double>> others = <List<double>>[];
-    for (int k = 0; k < _faces.length; k++) {
-      if (k == which) continue;
-      final VisionFace g = _faces[k];
-      final double gh = g.y1 - g.y0, gx = (g.x0 + g.x1) / 2;
-      pts.add(<double>[gx, c01((g.y0 + g.y1) / 2), 0]);
-      pts.add(<double>[gx, c01(g.y1 + 0.9 * gh), 0]);
-      others.add(<double>[g.x0, g.y0, g.x1, g.y1]);
-    }
-    final VisionSam r = await VisionBridge.samDecode(samLimitPoints(pts));
-    final Float32List? logits = r.logits;
-    if (r.error != null || logits == null) {
-      errors.add(r.error ?? 'SAM 2.1 : pas de masque.');
-      return null;
-    }
-    final Uint8List sam = samPlane(logits: logits, size: r.size, pw: pw, ph: ph, guide: grayPlane(rgba, _w, _h, pw, ph));
-    if (!samPersonPlausible(sam, pw, ph, <double>[f.x0, f.y0, f.x1, f.y1], others)) return null;
-    final Uint8List? blob = await _bodyPartPlaneFor(which, 'clothes', pw, ph, rgba, errors, whole: true);
-    if (blob == null) return null;
-    final Uint8List out = Uint8List(pw * ph);
-    for (int i = 0; i < out.length; i++) {
-      out[i] = math.min(blob[i], sam[i]);
+    final Uint8List guide = grayPlane(rgba, _w, _h, pw, ph);
+    final List<Uint8List> accepted = <Uint8List>[];
+    for (int w = 0; w < _faces.length; w++) {
+      final VisionFace f = _faces[w];
+      final double fw = f.x1 - f.x0, fh = f.y1 - f.y0, cx = (f.x0 + f.x1) / 2, cy = (f.y0 + f.y1) / 2;
+      final List<List<double>> neg = <List<double>>[];
+      final List<List<double>> others = <List<double>>[];
+      for (int k = 0; k < _faces.length; k++) {
+        if (k == w) continue;
+        final VisionFace g = _faces[k];
+        final double gh = g.y1 - g.y0, gx = (g.x0 + g.x1) / 2;
+        neg.add(<double>[gx, c01((g.y0 + g.y1) / 2), 0]);
+        neg.add(<double>[gx, c01(g.y1 + 0.8 * gh), 0]);
+        neg.add(<double>[gx, c01(g.y1 + 1.6 * gh), 0]);
+        others.add(<double>[g.x0, g.y0, g.x1, g.y1]);
+      }
+      final List<List<List<double>>> tries = <List<List<double>>>[
+        <List<double>>[
+          <double>[cx, c01(cy), 1],
+          <double>[cx, c01(f.y1 + 0.9 * fh), 1],
+          <double>[cx, c01(f.y1 + 1.8 * fh), 1],
+        ],
+        <List<double>>[
+          <double>[cx, c01(cy), 1],
+          <double>[c01(cx - 1.3 * fw), c01(f.y1 + 0.8 * fh), 1],
+          <double>[c01(cx + 1.5 * fw), c01(f.y1 + 0.8 * fh), 1],
+          <double>[c01(cx + 1.5 * fw), c01(f.y1 + 2.5 * fh), 1],
+          <double>[c01(cx + 1.2 * fw), c01(f.y1 + 4 * fh), 1],
+        ],
+      ];
+      for (final List<List<double>> pos in tries) {
+        final VisionSam r = await VisionBridge.samDecode(samLimitPoints(<List<double>>[...pos, ...neg]));
+        final Float32List? logits = r.logits;
+        if (r.error != null || logits == null) {
+          errors.add(r.error ?? 'SAM 2.1 : pas de masque.');
+          return out;
+        }
+        final Uint8List sam = samPlane(logits: logits, size: r.size, pw: pw, ph: ph, guide: guide);
+        if (samPersonPlausible(sam, pw, ph, <double>[f.x0, f.y0, f.x1, f.y1], others, accepted: accepted)) {
+          out[w] = sam;
+          accepted.add(sam);
+          break;
+        }
+      }
     }
     return out;
+  }
+
+  /// Vêtements de la personne [which] quand le modèle les fond avec ceux des autres : silhouette SAM de la personne si elle est valide ;
+  /// sinon, si elle est la seule sans silhouette, la zone commune moins les silhouettes des autres. Rend null dans les autres cas.
+  Future<Uint8List?> _clothesFromSil(int which, List<Uint8List?> sils, int pw, int ph, Uint8List rgba, List<String> errors) async {
+    final Uint8List? blob = await _bodyPartPlaneFor(which, 'clothes', pw, ph, rgba, errors, whole: true);
+    if (blob == null) return null;
+    final Uint8List? mine = sils[which];
+    final Uint8List out = Uint8List(pw * ph);
+    if (mine != null) {
+      for (int i = 0; i < out.length; i++) {
+        out[i] = math.min(blob[i], mine[i]);
+      }
+      return out;
+    }
+    int without = 0;
+    for (final Uint8List? s in sils) {
+      if (s == null) without++;
+    }
+    if (without != 1) return null; // plusieurs personnes sans silhouette : la soustraction serait ambiguë
+    for (int i = 0; i < out.length; i++) {
+      int other = 0;
+      for (int k = 0; k < sils.length; k++) {
+        final Uint8List? s = sils[k];
+        if (k != which && s != null && s[i] > other) other = s[i];
+      }
+      out[i] = (blob[i] * (255 - other) / 255).round();
+    }
+    final VisionFace f = _faces[which];
+    final double faceArea = (f.x1 - f.x0) * pw * (f.y1 - f.y0) * ph;
+    int covered = 0;
+    for (final int v in out) {
+      if (v > 127) covered++;
+    }
+    return covered >= 2 * faceArea ? out : null;
   }
 
   /// Silhouette de la personne [which] (Vision), rééchantillonnée en pw×ph.
@@ -1571,6 +1623,7 @@ class _DevelopPageState extends State<DevelopPage> {
       final Uint8List plane = Uint8List(pw * ph);
       final List<String> errors = <String>[];
       final List<String> missing = <String>[];
+      List<Uint8List?>? sils;
       for (final int i in who) {
         for (final String part in parts) {
           Uint8List? p;
@@ -1581,7 +1634,8 @@ class _DevelopPageState extends State<DevelopPage> {
           } else {
             p = await _bodyPartPlaneFor(i, part, pw, ph, rgba, errors);
             if (part == 'clothes' && p != null && _faces.length > 1 && !p.any((int v) => v > 127)) {
-              p = await _clothesSamFor(i, pw, ph, rgba, errors);
+              sils ??= await _samSilhouettes(pw, ph, rgba, errors);
+              p = await _clothesFromSil(i, sils, pw, ph, rgba, errors);
               if (p != null && !p.any((int v) => v > 127)) p = null;
             }
           }

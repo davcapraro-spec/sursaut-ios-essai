@@ -921,9 +921,19 @@ void main() {
     }
 
     expect(samPersonPlausible(box(30, 5, 60, 80), pw, ph, face, others), isTrue);
-    expect(samPersonPlausible(box(30, 5, 85, 80), pw, ph, face, others), isFalse); // contient le visage d'un autre
+    expect(samPersonPlausible(box(30, 5, 85, 80), pw, ph, face, others), isFalse); // couvre le visage d'un autre
     expect(samPersonPlausible(box(42, 12, 48, 30), pw, ph, face, others), isFalse); // bande étroite, pas de vrai corps
-    expect(samPersonPlausible(box(60, 5, 90, 80), pw, ph, face, others), isFalse); // ne contient pas son visage
+    expect(samPersonPlausible(box(60, 5, 90, 80), pw, ph, face, others), isFalse); // ne couvre pas son visage
+    // un trou au centre du visage (lunettes) ne gêne pas
+    final Uint8List trou = box(30, 5, 60, 80);
+    for (int y = 14; y < 17; y++) {
+      for (int x = 44; x < 47; x++) {
+        trou[y * pw + x] = 0;
+      }
+    }
+    expect(samPersonPlausible(trou, pw, ph, face, others), isTrue);
+    // une silhouette qui recouvre celle d'une autre personne déjà acceptée est refusée
+    expect(samPersonPlausible(box(30, 5, 60, 80), pw, ph, face, others, accepted: <Uint8List>[box(30, 20, 60, 80)]), isFalse);
   });
 
   test('plans : rééchantillonnage et réunion', () {

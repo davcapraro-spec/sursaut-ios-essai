@@ -133,22 +133,48 @@ List<List<double>> samLimitPoints(List<List<double>> pts, {int max = kSamMaxPoin
   return <List<double>>[lastIn, ...kept.sublist(1)];
 }
 
-/// Une silhouette SAM est-elle plausible pour la personne dont le visage est [face] ([x0, y0, x1, y1], fractions) ? Elle doit contenir
-/// le centre de son visage, aucun centre de visage des [others], et un vrai corps sous le menton (au moins 3,5 fois la surface du visage).
-bool samPersonPlausible(Uint8List plane, int pw, int ph, List<double> face, List<List<double>> others) {
+/// Une silhouette SAM est-elle plausible pour la personne dont le visage est [face] ([x0, y0, x1, y1], fractions) ? Elle doit couvrir
+/// au moins la moitié du cadre de son visage (le centre peut tomber sur un trou : lunettes), presque aucun cadre de visage des [others],
+/// un vrai corps sous le menton (au moins 2,5 fois la surface du visage), et ne pas recouvrir (plus de 25 %) une silhouette déjà
+/// acceptée pour une autre personne ([accepted]).
+bool samPersonPlausible(Uint8List plane, int pw, int ph, List<double> face, List<List<double>> others, {List<Uint8List> accepted = const <Uint8List>[]}) {
   if (plane.length < pw * ph || pw <= 0 || ph <= 0) return false;
-  bool at(double fx, double fy) => plane[(fy * ph).floor().clamp(0, ph - 1).toInt() * pw + (fx * pw).floor().clamp(0, pw - 1).toInt()] > 127;
-  if (!at((face[0] + face[2]) / 2, (face[1] + face[3]) / 2)) return false;
-  for (final List<double> o in others) {
-    if (at((o[0] + o[2]) / 2, (o[1] + o[3]) / 2)) return false;
+  double cover(List<double> b) {
+    final int x0 = (b[0] * pw).floor().clamp(0, pw).toInt(), x1 = (b[2] * pw).ceil().clamp(0, pw).toInt();
+    final int y0 = (b[1] * ph).floor().clamp(0, ph).toInt(), y1 = (b[3] * ph).ceil().clamp(0, ph).toInt();
+    if (x1 <= x0 || y1 <= y0) return 0;
+    int c = 0;
+    for (int y = y0; y < y1; y++) {
+      for (int x = x0; x < x1; x++) {
+        if (plane[y * pw + x] > 127) c++;
+      }
+    }
+    return c / ((x1 - x0) * (y1 - y0));
   }
-  final int y0 = (face[3] * ph).ceil().clamp(0, ph).toInt();
-  int area = 0;
-  for (int y = y0; y < ph; y++) {
+
+  if (cover(face) < 0.5) return false;
+  for (final List<double> o in others) {
+    if (cover(o) > 0.25) return false;
+  }
+  final int yb = (face[3] * ph).ceil().clamp(0, ph).toInt();
+  int area = 0, total = 0;
+  for (int i = 0; i < pw * ph; i++) {
+    if (plane[i] > 127) total++;
+  }
+  for (int y = yb; y < ph; y++) {
     for (int x = 0; x < pw; x++) {
       if (plane[y * pw + x] > 127) area++;
     }
   }
   final double faceArea = (face[2] - face[0]) * pw * (face[3] - face[1]) * ph;
-  return faceArea > 0 && area / faceArea >= 3.5;
+  if (faceArea <= 0 || area / faceArea < 2.5) return false;
+  for (final Uint8List a in accepted) {
+    if (a.length < pw * ph) continue;
+    int both = 0;
+    for (int i = 0; i < pw * ph; i++) {
+      if (plane[i] > 127 && a[i] > 127) both++;
+    }
+    if (total > 0 && both / total > 0.25) return false;
+  }
+  return true;
 }
