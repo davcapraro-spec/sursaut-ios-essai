@@ -887,12 +887,12 @@ void main() {
     }
 
     rect(40, 10, 80, 50); // le vrai corps
-    rect(34, 10, 40, 50); // bande fine collée (6 pixels)
+    rect(20, 28, 40, 34); // bande fine qui dépasse du corps (6 pixels de large)
     rect(85, 20, 95, 30); // petit îlot séparé
     final Uint8List c = cleanPlane(pl, pw, ph, 3);
     expect(c[30 * pw + 60], 255);
     expect(c[30 * pw + 41], 255); // le coin du corps est gardé
-    expect(c[30 * pw + 36], 0);
+    expect(c[30 * pw + 25], 0); // la bande fine a disparu
     expect(c[25 * pw + 90], 0);
     expect(cleanPlane(pl, pw, ph, 0), same(pl)); // rayon nul : inchangé
   });
