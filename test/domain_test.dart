@@ -875,6 +875,28 @@ void main() {
     expect(at(lost, 690, 230), 0);
   });
 
+  test('nettoyage d\'une soustraction : bandes fines et petits îlots supprimés', () {
+    const int pw = 100, ph = 60;
+    final Uint8List pl = Uint8List(pw * ph);
+    void rect(int x0, int y0, int x1, int y1) {
+      for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+          pl[y * pw + x] = 255;
+        }
+      }
+    }
+
+    rect(40, 10, 80, 50); // le vrai corps
+    rect(34, 10, 40, 50); // bande fine collée (6 pixels)
+    rect(85, 20, 95, 30); // petit îlot séparé
+    final Uint8List c = cleanPlane(pl, pw, ph, 3);
+    expect(c[30 * pw + 60], 255);
+    expect(c[30 * pw + 41], 255); // le coin du corps est gardé
+    expect(c[30 * pw + 36], 0);
+    expect(c[25 * pw + 90], 0);
+    expect(cleanPlane(pl, pw, ph, 0), same(pl)); // rayon nul : inchangé
+  });
+
   test('peau du corps par la couleur : étend les taches du modèle sur la couleur du visage, pas sur le reste', () {
     const int size = 64;
     final Uint8List cmap = Uint8List(size * size);

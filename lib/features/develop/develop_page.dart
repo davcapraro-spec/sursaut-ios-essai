@@ -1588,13 +1588,14 @@ class _DevelopPageState extends State<DevelopPage> {
       }
       out[i] = (blob[i] * (255 - other) / 255).round();
     }
+    final Uint8List clean = cleanPlane(out, pw, ph, (pw * 0.016).round().clamp(3, 40).toInt());
     final VisionFace f = _faces[which];
     final double faceArea = (f.x1 - f.x0) * pw * (f.y1 - f.y0) * ph;
     int covered = 0;
-    for (final int v in out) {
+    for (final int v in clean) {
       if (v > 127) covered++;
     }
-    return covered >= 2 * faceArea ? out : null;
+    return covered >= 2 * faceArea ? clean : null;
   }
 
   /// Silhouette de la personne [which] (Vision), rééchantillonnée en pw×ph.

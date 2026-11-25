@@ -517,3 +517,77 @@ void unionPlanes(Uint8List into, Uint8List other) {
     if (other[i] > into[i]) into[i] = other[i];
   }
 }
+
+Uint8List _morph(Uint8List src, int pw, int ph, int r, bool minMode) {
+  final Uint8List tmp = Uint8List(pw * ph), out = Uint8List(pw * ph);
+  for (int y = 0; y < ph; y++) {
+    for (int x = 0; x < pw; x++) {
+      int v = minMode ? 255 : 0;
+      for (int k = math.max(0, x - r); k <= math.min(pw - 1, x + r); k++) {
+        final int c = src[y * pw + k];
+        if (minMode ? c < v : c > v) v = c;
+      }
+      tmp[y * pw + x] = v;
+    }
+  }
+  for (int y = 0; y < ph; y++) {
+    for (int x = 0; x < pw; x++) {
+      int v = minMode ? 255 : 0;
+      for (int k = math.max(0, y - r); k <= math.min(ph - 1, y + r); k++) {
+        final int c = tmp[k * pw + x];
+        if (minMode ? c < v : c > v) v = c;
+      }
+      out[y * pw + x] = v;
+    }
+  }
+  return out;
+}
+
+/// Nettoie un plan obtenu par soustraction : une ouverture (érosion puis dilatation, carré de rayon [r]) supprime les bandes plus fines que
+/// 2 x [r] + 1 pixels (résidus le long des bords des autres silhouettes), puis seules les zones d'au moins [minShare] de la plus grande sont gardées.
+Uint8List cleanPlane(Uint8List plane, int pw, int ph, int r, {double minShare = 0.15}) {
+  if (plane.length < pw * ph || pw <= 0 || ph <= 0 || r < 1) return plane;
+  final Uint8List o = _morph(_morph(plane, pw, ph, r, true), pw, ph, r, false);
+  final Int32List lab = Int32List(pw * ph);
+  final List<int> sizes = <int>[0];
+  for (int s0 = 0; s0 < pw * ph; s0++) {
+    if (o[s0] <= 127 || lab[s0] != 0) continue;
+    final int id = sizes.length;
+    int count = 0;
+    final List<int> q = <int>[s0];
+    lab[s0] = id;
+    int h = 0;
+    while (h < q.length) {
+      final int i = q[h++];
+      count++;
+      final int x = i % pw, y = i ~/ pw;
+      if (x > 0 && o[i - 1] > 127 && lab[i - 1] == 0) {
+        lab[i - 1] = id;
+        q.add(i - 1);
+      }
+      if (x < pw - 1 && o[i + 1] > 127 && lab[i + 1] == 0) {
+        lab[i + 1] = id;
+        q.add(i + 1);
+      }
+      if (y > 0 && o[i - pw] > 127 && lab[i - pw] == 0) {
+        lab[i - pw] = id;
+        q.add(i - pw);
+      }
+      if (y < ph - 1 && o[i + pw] > 127 && lab[i + pw] == 0) {
+        lab[i + pw] = id;
+        q.add(i + pw);
+      }
+    }
+    sizes.add(count);
+  }
+  int biggest = 0;
+  for (final int c in sizes) {
+    if (c > biggest) biggest = c;
+  }
+  final Uint8List out = Uint8List(pw * ph);
+  for (int i = 0; i < pw * ph; i++) {
+    final int l = lab[i];
+    if (l != 0 && sizes[l] >= biggest * minShare) out[i] = o[i];
+  }
+  return out;
+}
