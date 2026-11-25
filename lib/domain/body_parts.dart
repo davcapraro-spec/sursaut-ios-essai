@@ -325,7 +325,33 @@ Uint8List bodyPartPlane({
       skinMode = true;
     }
   }
+  // cheveux de plusieurs personnes : chaque pixel de la classe « cheveux » va à la tête la plus proche (rayon limité à 1,8 largeur de visage) ;
+  // plus fiable que le choix par zones, qui dépend de la position exacte des cadres des visages
+  final bool hairNear = cls == kBodyPartClass['hair'] && faces != null && faces.length > 1 && self >= 0 && self < faces.length;
+  if (hairNear) {
+    for (int i = 0; i < n; i++) {
+      if (isCls[i] != 1) continue;
+      final double phx = crop.x0 + ((i % size) + 0.5) / sc, phy = crop.y0 + ((i ~/ size) + 0.5) / sc;
+      int near = 0;
+      double nd = double.infinity;
+      for (int k = 0; k < faces.length; k++) {
+        final double dx = phx - faces[k][0], dy = phy - faces[k][1];
+        final double d = math.sqrt(dx * dx + dy * dy) / math.max(1.0, faces[k][2]);
+        if (d < nd) {
+          nd = d;
+          near = k;
+        }
+      }
+      keep[i] = (near == self && nd < 1.8) ? 1 : 0;
+    }
+  }
   if (skinMode) {
+    bool any = false;
+    for (int i = 0; i < n && !any; i++) {
+      any = keep[i] == 1;
+    }
+    if (!any) return out;
+  } else if (hairNear) {
     bool any = false;
     for (int i = 0; i < n && !any; i++) {
       any = keep[i] == 1;
@@ -338,7 +364,11 @@ Uint8List bodyPartPlane({
   final Uint8List soft = Uint8List(n);
   final List<List<double>>? all = faces;
   final bool split = all != null && all.length > 1 && self >= 0 && self < all.length;
-  if (split) {
+  if (hairNear) {
+    for (int i = 0; i < n; i++) {
+      if (keep[i] == 1) soft[i] = probs[cls * n + i];
+    }
+  } else if (split) {
     // Attribution par zone (et non par bande verticale) : chaque zone connexe va à la personne dont le visage est le plus proche ;
     // une zone de vêtements qui touche les ancres de plusieurs personnes (corps collés) ne peut pas être répartie : elle est écartée.
     final Int32List lab = Int32List(n);

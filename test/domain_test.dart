@@ -858,6 +858,21 @@ void main() {
     expect(at(m0, 690, 230), 0);
     expect(at(m1, 690, 230), 255);
     expect(at(m1, 470, 230), 0);
+    // même si le cadre du visage est décalé et que la zone ne touche pas l'ancre : les cheveux sont trouvés par la tête la plus proche
+    final Uint8List lost = bodyPartPlane(
+        probs: probs,
+        size: size,
+        cls: 1,
+        crop: crop,
+        anchor: <double>[0, 0, 10, 10],
+        pw: pw,
+        ph: ph,
+        imgW: iw,
+        imgH: ih,
+        faces: <List<double>>[<double>[500, 330, 120], <double>[640, 300, 100]],
+        self: 0);
+    expect(at(lost, 470, 230), 255);
+    expect(at(lost, 690, 230), 0);
   });
 
   test('peau du corps par la couleur : étend les taches du modèle sur la couleur du visage, pas sur le reste', () {
