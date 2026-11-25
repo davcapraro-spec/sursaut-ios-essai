@@ -826,6 +826,72 @@ void main() {
     expect(at(other, 470, 560), 0);
   });
 
+  test('peau du corps par la couleur : étend les taches du modèle sur la couleur du visage, pas sur le reste', () {
+    const int size = 64;
+    final Uint8List cmap = Uint8List(size * size);
+    final Uint8List rgba = Uint8List(size * size * 4);
+    for (int y = 0; y < size; y++) {
+      for (int x = 0; x < size; x++) {
+        final int o = (y * size + x) * 4;
+        rgba[o + 3] = 255;
+        rgba[o] = 90;
+        rgba[o + 1] = 90;
+        rgba[o + 2] = 90;
+      }
+    }
+    void paint(int x, int y, int cls, List<int> c) {
+      final int i = y * size + x;
+      cmap[i] = cls;
+      rgba[i * 4] = c[0];
+      rgba[i * 4 + 1] = c[1];
+      rgba[i * 4 + 2] = c[2];
+    }
+
+    const List<int> peau = <int>[205, 150, 125], bleu = <int>[40, 60, 200];
+    for (int y = 5; y < 25; y++) {
+      for (int x = 20; x < 40; x++) {
+        paint(x, y, 3, peau); // visage
+      }
+    }
+    for (int x = 10; x < 13; x++) {
+      paint(x, 40, 2, peau); // tache reconnue par le modèle
+    }
+    for (int x = 13; x < 19; x++) {
+      paint(x, 40, 4, peau); // main que le modèle a classée en vêtements
+    }
+    for (int x = 19; x < 25; x++) {
+      paint(x, 40, 4, bleu); // vrai vêtement
+    }
+    final Uint8List? k = skinKeep(cmap, size, const CropSquare(0, 0, size), rgba, size, size, <double>[30, 15, 20]);
+    expect(k, isNotNull);
+    expect(k![40 * size + 11], 1);
+    expect(k[40 * size + 16], 1); // étendue sur la couleur de la peau
+    expect(k[40 * size + 22], 0); // pas sur le bleu
+    expect(k[15 * size + 30], 0); // le visage lui-même n'en fait pas partie
+    // un visage trop petit pour calibrer : pas de résultat
+    expect(skinKeep(cmap, size, const CropSquare(0, 0, size), rgba, size, size, <double>[5, 60, 4]), isNull);
+  });
+
+  test('silhouette SAM plausible : visage dedans, autres dehors, vrai corps dessous', () {
+    const int pw = 100, ph = 100;
+    final List<double> face = <double>[0.4, 0.1, 0.5, 0.2];
+    final List<List<double>> others = <List<double>>[<double>[0.7, 0.1, 0.8, 0.2]];
+    Uint8List box(int x0, int y0, int x1, int y1) {
+      final Uint8List p = Uint8List(pw * ph);
+      for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+          p[y * pw + x] = 255;
+        }
+      }
+      return p;
+    }
+
+    expect(samPersonPlausible(box(30, 5, 60, 80), pw, ph, face, others), isTrue);
+    expect(samPersonPlausible(box(30, 5, 85, 80), pw, ph, face, others), isFalse); // contient le visage d'un autre
+    expect(samPersonPlausible(box(42, 12, 48, 30), pw, ph, face, others), isFalse); // bande étroite, pas de vrai corps
+    expect(samPersonPlausible(box(60, 5, 90, 80), pw, ph, face, others), isFalse); // ne contient pas son visage
+  });
+
   test('plans : rééchantillonnage et réunion', () {
     final Uint8List src = Uint8List.fromList(<int>[0, 255, 0, 255]);
     final Uint8List big = resamplePlane(src, 2, 2, 4, 4);

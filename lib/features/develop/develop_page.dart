@@ -1467,7 +1467,7 @@ class _DevelopPageState extends State<DevelopPage> {
   }
 
   /// Plan (pw×ph) cheveux / vêtements / peau du corps de la personne [which] ; message d'erreur dans [errors] si le modèle échoue.
-  Future<Uint8List?> _bodyPartPlaneFor(int which, String part, int pw, int ph, Uint8List rgba, List<String> errors) async {
+  Future<Uint8List?> _bodyPartPlaneFor(int which, String part, int pw, int ph, Uint8List rgba, List<String> errors, {bool whole = false}) async {
     final VisionFace face = _faces[which];
     final CropSquare crop = bodyCrop(face.x0, face.y0, face.x1, face.y1, _w, _h, part: part);
     final VisionParts r = await VisionBridge.bodyParts(rgba, _w, _h, crop.x0, crop.y0, crop.side);
@@ -1488,14 +1488,61 @@ class _DevelopPageState extends State<DevelopPage> {
       imgW: _w,
       imgH: _h,
       guide: grayPlane(rgba, _w, _h, pw, ph),
-      faces: <List<double>>[
-        for (final VisionFace f in _faces) <double>[(f.x0 + f.x1) / 2 * _w, (f.y0 + f.y1) / 2 * _h, (f.x1 - f.x0) * _w],
-      ],
-      anchors: <List<double>>[
-        for (final VisionFace f in _faces) partAnchor(part, f.x0, f.y0, f.x1, f.y1, _w, _h),
-      ],
-      self: which,
+      faces: whole
+          ? null
+          : <List<double>>[
+              for (final VisionFace f in _faces) <double>[(f.x0 + f.x1) / 2 * _w, (f.y0 + f.y1) / 2 * _h, (f.x1 - f.x0) * _w],
+            ],
+      anchors: whole
+          ? null
+          : <List<double>>[
+              for (final VisionFace f in _faces) partAnchor(part, f.x0, f.y0, f.x1, f.y1, _w, _h),
+            ],
+      rgba: rgba,
+      self: whole ? 0 : which,
     );
+  }
+
+  /// Vêtements d'une personne collée aux autres : le modèle les fond en une seule zone. SAM 2.1 isole la silhouette de la personne
+  /// (points sur son visage et son buste, points négatifs sur les autres) ; elle n'est gardée que si elle est plausible. Rend null sinon.
+  Future<Uint8List?> _clothesSamFor(int which, int pw, int ph, Uint8List rgba, List<String> errors) async {
+    final String? e = await VisionBridge.samEncode(rgba, _w, _h, identityHashCode(rgba));
+    if (e != null) {
+      errors.add(e);
+      return null;
+    }
+    double c01(double v) => v.clamp(0.0, 1.0).toDouble();
+    final VisionFace f = _faces[which];
+    final double fh = f.y1 - f.y0, cx = (f.x0 + f.x1) / 2;
+    final List<List<double>> pts = <List<double>>[
+      <double>[cx, c01((f.y0 + f.y1) / 2), 1],
+      <double>[cx, c01(f.y1 + 0.9 * fh), 1],
+      <double>[cx, c01(f.y1 + 1.8 * fh), 1],
+    ];
+    final List<List<double>> others = <List<double>>[];
+    for (int k = 0; k < _faces.length; k++) {
+      if (k == which) continue;
+      final VisionFace g = _faces[k];
+      final double gh = g.y1 - g.y0, gx = (g.x0 + g.x1) / 2;
+      pts.add(<double>[gx, c01((g.y0 + g.y1) / 2), 0]);
+      pts.add(<double>[gx, c01(g.y1 + 0.9 * gh), 0]);
+      others.add(<double>[g.x0, g.y0, g.x1, g.y1]);
+    }
+    final VisionSam r = await VisionBridge.samDecode(samLimitPoints(pts));
+    final Float32List? logits = r.logits;
+    if (r.error != null || logits == null) {
+      errors.add(r.error ?? 'SAM 2.1 : pas de masque.');
+      return null;
+    }
+    final Uint8List sam = samPlane(logits: logits, size: r.size, pw: pw, ph: ph, guide: grayPlane(rgba, _w, _h, pw, ph));
+    if (!samPersonPlausible(sam, pw, ph, <double>[f.x0, f.y0, f.x1, f.y1], others)) return null;
+    final Uint8List? blob = await _bodyPartPlaneFor(which, 'clothes', pw, ph, rgba, errors, whole: true);
+    if (blob == null) return null;
+    final Uint8List out = Uint8List(pw * ph);
+    for (int i = 0; i < out.length; i++) {
+      out[i] = math.min(blob[i], sam[i]);
+    }
+    return out;
   }
 
   /// Silhouette de la personne [which] (Vision), rééchantillonnée en pw×ph.
@@ -1533,6 +1580,10 @@ class _DevelopPageState extends State<DevelopPage> {
             p = _facePartPlaneFor(i, part, pw, ph);
           } else {
             p = await _bodyPartPlaneFor(i, part, pw, ph, rgba, errors);
+            if (part == 'clothes' && p != null && _faces.length > 1 && !p.any((int v) => v > 127)) {
+              p = await _clothesSamFor(i, pw, ph, rgba, errors);
+              if (p != null && !p.any((int v) => v > 127)) p = null;
+            }
           }
           if (!mounted) return;
           if (p == null) {

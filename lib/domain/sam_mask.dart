@@ -132,3 +132,23 @@ List<List<double>> samLimitPoints(List<List<double>> pts, {int max = kSamMaxPoin
   final List<double> lastIn = pts.lastWhere((List<double> q) => q[2] >= 0.5, orElse: () => pts.last);
   return <List<double>>[lastIn, ...kept.sublist(1)];
 }
+
+/// Une silhouette SAM est-elle plausible pour la personne dont le visage est [face] ([x0, y0, x1, y1], fractions) ? Elle doit contenir
+/// le centre de son visage, aucun centre de visage des [others], et un vrai corps sous le menton (au moins 3,5 fois la surface du visage).
+bool samPersonPlausible(Uint8List plane, int pw, int ph, List<double> face, List<List<double>> others) {
+  if (plane.length < pw * ph || pw <= 0 || ph <= 0) return false;
+  bool at(double fx, double fy) => plane[(fy * ph).floor().clamp(0, ph - 1).toInt() * pw + (fx * pw).floor().clamp(0, pw - 1).toInt()] > 127;
+  if (!at((face[0] + face[2]) / 2, (face[1] + face[3]) / 2)) return false;
+  for (final List<double> o in others) {
+    if (at((o[0] + o[2]) / 2, (o[1] + o[3]) / 2)) return false;
+  }
+  final int y0 = (face[3] * ph).ceil().clamp(0, ph).toInt();
+  int area = 0;
+  for (int y = y0; y < ph; y++) {
+    for (int x = 0; x < pw; x++) {
+      if (plane[y * pw + x] > 127) area++;
+    }
+  }
+  final double faceArea = (face[2] - face[0]) * pw * (face[3] - face[1]) * ph;
+  return faceArea > 0 && area / faceArea >= 3.5;
+}

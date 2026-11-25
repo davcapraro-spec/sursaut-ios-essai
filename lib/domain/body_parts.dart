@@ -125,6 +125,118 @@ List<double> partAnchor(String part, double fx0, double fy0, double fx1, double 
   }
 }
 
+double _lin(int v) {
+  final double c = v / 255;
+  return c <= 0.04045 ? c / 12.92 : math.pow((c + 0.055) / 1.055, 2.4).toDouble();
+}
+
+double _labF(double t) => t > 0.008856 ? math.pow(t, 1 / 3).toDouble() : 7.787 * t + 16 / 116;
+
+Uint8List _erode4(Uint8List m, int size) {
+  final Uint8List o = Uint8List(m.length);
+  for (int y = 1; y < size - 1; y++) {
+    for (int x = 1; x < size - 1; x++) {
+      final int i = y * size + x;
+      if (m[i] == 1 && m[i - 1] == 1 && m[i + 1] == 1 && m[i - size] == 1 && m[i + size] == 1) o[i] = 1;
+    }
+  }
+  return o;
+}
+
+/// Peau du corps par la couleur : la couleur de la peau du visage de cette personne (a et b de Lab) sert de référence ; à partir des taches
+/// que le modèle a reconnues comme peau du corps (mains, cou), la zone s'étend (10 pixels du modèle au plus) sur les pixels de cette couleur.
+/// [cmap] : classe la plus probable de chaque pixel du modèle ; [face] : [centre x, centre y, largeur] du visage en pixels de la photo.
+/// Rend null si le visage ne donne pas assez de pixels pour calibrer.
+Uint8List? skinKeep(Uint8List cmap, int size, CropSquare crop, Uint8List rgba, int imgW, int imgH, List<double> face) {
+  final int n = size * size;
+  if (cmap.length < n || rgba.length < imgW * imgH * 4 || crop.side <= 0) return null;
+  final double sc = size / crop.side;
+  final Float64List ll = Float64List(n), la = Float64List(n), lb = Float64List(n);
+  for (int y = 0; y < size; y++) {
+    final int py = (crop.y0 + (y + 0.5) / sc).floor().clamp(0, imgH - 1).toInt();
+    for (int x = 0; x < size; x++) {
+      final int px = (crop.x0 + (x + 0.5) / sc).floor().clamp(0, imgW - 1).toInt();
+      final int o = (py * imgW + px) * 4;
+      final double r = _lin(rgba[o]), g = _lin(rgba[o + 1]), b = _lin(rgba[o + 2]);
+      final double fx = _labF((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047);
+      final double fy = _labF(0.2126 * r + 0.7152 * g + 0.0722 * b);
+      final double fz = _labF((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883);
+      final int i = y * size + x;
+      ll[i] = 116 * fy - 16;
+      la[i] = 500 * (fx - fy);
+      lb[i] = 200 * (fy - fz);
+    }
+  }
+  final double cx = (face[0] - crop.x0) * sc, cy = (face[1] - crop.y0) * sc, rad = face[2] * sc * 0.9;
+  Uint8List ref = Uint8List(n);
+  for (int y = 0; y < size; y++) {
+    for (int x = 0; x < size; x++) {
+      final double dx = x - cx, dy = y - cy;
+      if (cmap[y * size + x] == 3 && dx * dx + dy * dy < rad * rad) ref[y * size + x] = 1;
+    }
+  }
+  ref = _erode4(_erode4(ref, size), size);
+  int cnt = 0;
+  double ma = 0, mb = 0;
+  for (int i = 0; i < n; i++) {
+    if (ref[i] == 1) {
+      cnt++;
+      ma += la[i];
+      mb += lb[i];
+    }
+  }
+  if (cnt < 30) return null;
+  ma /= cnt;
+  mb /= cnt;
+  double saa = 2, sab = 0, sbb = 2;
+  for (int i = 0; i < n; i++) {
+    if (ref[i] == 1) {
+      final double da = la[i] - ma, db = lb[i] - mb;
+      saa += da * da / cnt;
+      sab += da * db / cnt;
+      sbb += db * db / cnt;
+    }
+  }
+  final double det = saa * sbb - sab * sab;
+  if (det <= 1e-9) return null;
+  final double iaa = sbb / det, iab = -sab / det, ibb = saa / det;
+  bool cand(int i) {
+    final int c = cmap[i];
+    if (c == 0 || c == 1 || c == 3 || ll[i] <= 24) return false;
+    final double da = la[i] - ma, db = lb[i] - mb;
+    return math.sqrt(math.max(0, iaa * da * da + 2 * iab * da * db + ibb * db * db)) < 2.5;
+  }
+
+  final Uint8List keep = Uint8List(n);
+  final Int16List dist = Int16List(n);
+  final List<int> queue = <int>[];
+  for (int i = 0; i < n; i++) {
+    if (cmap[i] == 2) {
+      keep[i] = 1;
+      queue.add(i);
+    }
+  }
+  int head = 0;
+  while (head < queue.length) {
+    final int i = queue[head++];
+    if (dist[i] >= 10) continue;
+    final int x = i % size, y = i ~/ size;
+    void tryAt(int j) {
+      if (keep[j] == 0 && cand(j)) {
+        keep[j] = 1;
+        dist[j] = dist[i] + 1;
+        queue.add(j);
+      }
+    }
+
+    if (x > 0) tryAt(i - 1);
+    if (x < size - 1) tryAt(i + 1);
+    if (y > 0) tryAt(i - size);
+    if (y < size - 1) tryAt(i + size);
+  }
+  return keep;
+}
+
 /// L'image de la partie [cls] (255 dedans, 0 dehors, bords adoucis), de [pw] x [ph] octets pour une photo de [imgW] x [imgH].
 ///
 /// [probs] : [kBodyClasses] plans de [size] x [size] octets (probabilité x 255) du carré [crop]. Une zone de la classe
@@ -145,6 +257,7 @@ Uint8List bodyPartPlane({
   Uint8List? guide,
   List<List<double>>? faces,
   List<List<double>>? anchors,
+  Uint8List? rgba,
   int self = 0,
 }) {
   final int n = size * size;
@@ -152,6 +265,7 @@ Uint8List bodyPartPlane({
   if (probs.length < n * kBodyClasses || cls < 0 || cls >= kBodyClasses || crop.side <= 0) return out;
   // 1. pixels dont la classe est la plus probable
   final Uint8List isCls = Uint8List(n);
+  final Uint8List cmap = Uint8List(n);
   for (int i = 0; i < n; i++) {
     int best = 0, bv = probs[i];
     for (int k = 1; k < kBodyClasses; k++) {
@@ -161,6 +275,7 @@ Uint8List bodyPartPlane({
         best = k;
       }
     }
+    cmap[i] = best;
     if (best == cls) isCls[i] = 1;
   }
   // 2. zones qui touchent le rectangle voulu (parcours en largeur, 4 voisins)
@@ -201,7 +316,24 @@ Uint8List bodyPartPlane({
       queue.add(i + size);
     }
   }
-  if (queue.isEmpty) return out;
+  // peau du corps : le modèle ne reconnaît que quelques taches ; la zone est étendue par la couleur de la peau du visage de la personne
+  bool skinMode = false;
+  if (cls == kBodyPartClass['bodyskin'] && rgba != null && faces != null && self >= 0 && self < faces.length) {
+    final Uint8List? sk = skinKeep(cmap, size, crop, rgba, imgW, imgH, faces[self]);
+    if (sk != null) {
+      keep.setAll(0, sk);
+      skinMode = true;
+    }
+  }
+  if (skinMode) {
+    bool any = false;
+    for (int i = 0; i < n && !any; i++) {
+      any = keep[i] == 1;
+    }
+    if (!any) return out;
+  } else if (queue.isEmpty) {
+    return out;
+  }
   // 3. probabilité de la classe dans les zones gardées, remise à l'échelle de la photo (bilinéaire), puis contraste autour de 50 %
   final Uint8List soft = Uint8List(n);
   final List<List<double>>? all = faces;
@@ -256,12 +388,12 @@ Uint8List bodyPartPlane({
       final bool shared = cls == kBodyPartClass['clothes'] && (touched & (touched - 1)) != 0;
       if (owner != self || shared) continue;
       for (final int i in q) {
-        soft[i] = probs[cls * n + i];
+        soft[i] = skinMode ? 255 : probs[cls * n + i];
       }
     }
   } else {
     for (int i = 0; i < n; i++) {
-      if (keep[i] == 1) soft[i] = probs[cls * n + i];
+      if (keep[i] == 1) soft[i] = skinMode ? 255 : probs[cls * n + i];
     }
   }
   final double px = pw / imgW, py = ph / imgH;
