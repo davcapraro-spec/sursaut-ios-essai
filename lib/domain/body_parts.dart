@@ -381,6 +381,25 @@ Uint8List bodyPartPlane({
           q.add(i + size);
         }
       }
+      // cheveux : une zone qui touche les ancres de plusieurs personnes (têtes collées) est répartie pixel par pixel, chaque pixel allant
+      // à la tête la plus proche (les têtes sont rondes et séparées, contrairement aux vêtements)
+      if (cls == kBodyPartClass['hair'] && (touched & (touched - 1)) != 0) {
+        for (final int i in q) {
+          final double phx = crop.x0 + ((i % size) + 0.5) / sc, phy = crop.y0 + ((i ~/ size) + 0.5) / sc;
+          int near = 0;
+          double nd = double.infinity;
+          for (int k = 0; k < all.length; k++) {
+            final double dx = phx - all[k][0], dy = phy - all[k][1];
+            final double d = math.sqrt(dx * dx + dy * dy) / math.max(1.0, all[k][2]);
+            if (d < nd) {
+              nd = d;
+              near = k;
+            }
+          }
+          if (near == self) soft[i] = probs[cls * n + i];
+        }
+        continue;
+      }
       int owner = 0;
       for (int k = 1; k < all.length; k++) {
         if (bd[k] < bd[owner]) owner = k;

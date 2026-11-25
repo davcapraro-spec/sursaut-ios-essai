@@ -826,6 +826,40 @@ void main() {
     expect(at(other, 470, 560), 0);
   });
 
+  test('cheveux de têtes collées : une zone commune est répartie entre les deux têtes', () {
+    const int size = 256, iw = 2000, ih = 1000, pw = 1000, ph = 500;
+    const CropSquare crop = CropSquare(400, 100, 512);
+    final double sc = size / crop.side;
+    final Uint8List probs = Uint8List(kBodyClasses * size * size);
+    for (int y = 0; y < size; y++) {
+      for (int x = 0; x < size; x++) {
+        final double px = crop.x0 + (x + 0.5) / sc, py = crop.y0 + (y + 0.5) / sc;
+        final bool hair = py >= 200 && py <= 260 && px >= 440 && px <= 700;
+        probs[(hair ? 1 : 0) * size * size + y * size + x] = 255;
+      }
+    }
+    final List<double> a0 = <double>[400, 150, 580, 330], a1 = <double>[560, 150, 740, 330];
+    Uint8List run(int self) => bodyPartPlane(
+        probs: probs,
+        size: size,
+        cls: 1,
+        crop: crop,
+        anchor: self == 0 ? a0 : a1,
+        pw: pw,
+        ph: ph,
+        imgW: iw,
+        imgH: ih,
+        faces: <List<double>>[<double>[500, 300, 100], <double>[640, 300, 100]],
+        anchors: <List<double>>[a0, a1],
+        self: self);
+    int at(Uint8List plane, double x, double y) => plane[(y * ph / ih).toInt() * pw + (x * pw / iw).toInt()];
+    final Uint8List m0 = run(0), m1 = run(1);
+    expect(at(m0, 470, 230), 255);
+    expect(at(m0, 690, 230), 0);
+    expect(at(m1, 690, 230), 255);
+    expect(at(m1, 470, 230), 0);
+  });
+
   test('peau du corps par la couleur : étend les taches du modèle sur la couleur du visage, pas sur le reste', () {
     const int size = 64;
     final Uint8List cmap = Uint8List(size * size);
