@@ -325,24 +325,27 @@ Uint8List bodyPartPlane({
       skinMode = true;
     }
   }
-  // cheveux de plusieurs personnes : chaque pixel de la classe « cheveux » va à la tête la plus proche (rayon limité à 1,8 largeur de visage) ;
+  // cheveux de plusieurs personnes : chaque pixel de la classe « cheveux » va à la tête la plus proche (rayon limité à 1,8 largeur de visage, mesuré depuis le centre de la tête) ;
   // plus fiable que le choix par zones, qui dépend de la position exacte des cadres des visages
   final bool hairNear = cls == kBodyPartClass['hair'] && faces != null && faces.length > 1 && self >= 0 && self < faces.length;
   if (hairNear) {
     for (int i = 0; i < n; i++) {
       if (isCls[i] != 1) continue;
       final double phx = crop.x0 + ((i % size) + 0.5) / sc, phy = crop.y0 + ((i ~/ size) + 0.5) / sc;
+      // distance brute au centre de la tête (un peu au-dessus du centre du visage : les cheveux sont surtout au-dessus) ;
+      // normalisée par la largeur, elle favoriserait les grands visages et déborderait sur les cheveux des voisins
       int near = 0;
-      double nd = double.infinity;
+      double nd = double.infinity, own = double.infinity;
       for (int k = 0; k < faces.length; k++) {
-        final double dx = phx - faces[k][0], dy = phy - faces[k][1];
-        final double d = math.sqrt(dx * dx + dy * dy) / math.max(1.0, faces[k][2]);
+        final double dx = phx - faces[k][0], dy = phy - (faces[k][1] - 0.3 * faces[k][2]);
+        final double d = math.sqrt(dx * dx + dy * dy);
+        if (k == self) own = d;
         if (d < nd) {
           nd = d;
           near = k;
         }
       }
-      keep[i] = (near == self && nd < 1.8) ? 1 : 0;
+      keep[i] = (near == self && own < 1.8 * math.max(1.0, faces[self][2])) ? 1 : 0;
     }
   }
   if (skinMode) {
