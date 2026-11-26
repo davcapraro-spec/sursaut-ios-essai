@@ -200,7 +200,7 @@ int? neighborChoice(List<int> sorted, int cur, int dir) {
 }
 
 /// Trie les choix d'une propriété : « + » va toujours vers la valeur la plus haute.
-/// ISO : AUTO en tête puis croissant. Ouverture : ƒ croissant (plus fermé). Vitesse : durée croissante (plus lent).
+/// ISO : AUTO en tête puis croissant. Ouverture : ƒ croissant (plus fermé). Vitesse : durée décroissante (« + » = plus rapide, « − » = plus lent).
 List<int> sortedChoices(int code, List<int> choices) {
   final List<int> c = List<int>.of(choices.toSet());
   switch (code) {
@@ -218,7 +218,7 @@ List<int> sortedChoices(int code, List<int> choices) {
         final int den = x & 0xFFFF;
         return den == 0 ? 0 : ((x >> 16) & 0xFFFF) / den;
       }
-      c.sort((int a, int b) => d(a).compareTo(d(b)));
+      c.sort((int a, int b) => d(b).compareTo(d(a)));
     default:
       c.sort();
   }

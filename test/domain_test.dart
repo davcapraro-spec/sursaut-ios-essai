@@ -1178,7 +1178,9 @@ void main() {
       final List<int> iso = sortedChoices(kPropIso, <int>[200, 0xFFFFFF, 100, 400, 100]);
       expect(iso, <int>[0xFFFFFF, 100, 200, 400]);
       final List<int> sh = sortedChoices(kPropShutter, <int>[0x1007D, 0x10064, (2 << 16) | 1]);
-      expect(sh, <int>[0x1007D, 0x10064, (2 << 16) | 1]);
+      expect(sh, <int>[(2 << 16) | 1, 0x10064, 0x1007D]);
+      expect(neighborChoice(sh, 0x10064, 1), 0x1007D);
+      expect(neighborChoice(sh, 0x10064, -1), (2 << 16) | 1);
       expect(neighborChoice(iso, 200, 1), 400);
       expect(neighborChoice(iso, 200, -1), 100);
       expect(neighborChoice(iso, 400, 1), isNull);
