@@ -47,7 +47,10 @@ import 'spot_overlay.dart';
 /// L'écran ne calcule aucune image : il demande le rendu au moteur. Les règles
 /// (réglages, historique, fichier de retouche, calcul du cadre) sont dans `domain/`.
 class DevelopPage extends StatefulWidget {
-  const DevelopPage({super.key});
+  const DevelopPage({super.key, this.openPath});
+
+  /// Photo à ouvrir dès l'arrivée (par exemple celle qui vient d'être reçue de l'appareil).
+  final String? openPath;
 
   @override
   State<DevelopPage> createState() => _DevelopPageState();
@@ -183,6 +186,18 @@ class _DevelopPageState extends State<DevelopPage> {
     super.initState();
     _info = EngineInfo.probe();
     _loadPrefs();
+    final String? first = widget.openPath;
+    if (first != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        try {
+          await _openPicked(first, first.split('/').last);
+        } catch (e) {
+          if (mounted) setState(() => _loading = '');
+          _say('Ouverture impossible : $e');
+        }
+      });
+    }
   }
 
   Future<File> _prefsFile() async {

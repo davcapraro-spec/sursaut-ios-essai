@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../common/app_version.dart';
+import '../features/capture/capture_page.dart';
 import '../features/develop/develop_page.dart';
-import '../features/diagnostics/camera_bench/camera_bench_page.dart';
 import '../features/diagnostics/diagnostics_page.dart';
 
 /// Accueil : les trois parties de l'application.
@@ -78,8 +78,8 @@ class HomePage extends StatelessWidget {
                       _Tile(
                         icon: Icons.usb,
                         title: 'Capturer',
-                        subtitle: 'Piloter l\'appareil par câble USB-C (banc d\'essai)',
-                        onTap: () => _open(context, const CameraBenchPage()),
+                        subtitle: 'Piloter l\'appareil par câble USB-C : réglages, déclenchement, réception',
+                        onTap: () => _open(context, const CapturePage()),
                       ),
                       _Tile(
                         icon: Icons.speed,

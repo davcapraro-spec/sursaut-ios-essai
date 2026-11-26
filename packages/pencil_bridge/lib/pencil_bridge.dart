@@ -76,12 +76,44 @@ class CameraBridge {
 
   /// Les lignes de compte rendu envoyées par le code natif.
   static Stream<String> get lines {
-    return _events.receiveBroadcastStream().map((Object? raw) {
+    return _events.receiveBroadcastStream().where((Object? raw) => raw is! Map || raw.containsKey('line')).map((Object? raw) {
       if (raw is Map) {
         return raw['line']?.toString() ?? '';
       }
       return raw?.toString() ?? '';
     });
+  }
+
+  /// Les événements structurés du mode connecté : état de l'appareil, photo reçue, réglage confirmé.
+  static Stream<CameraLiveEvent> get liveEvents {
+    return _events
+        .receiveBroadcastStream()
+        .where((Object? raw) => raw is Map && !raw.containsKey('line'))
+        .map((Object? raw) => CameraLiveEvent.fromMap(raw! as Map<Object?, Object?>));
+  }
+
+  /// État actuel de l'appareil (sans rien demander à l'appareil).
+  static Future<CameraLiveState> liveSnapshot() async {
+    try {
+      final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>('liveSnapshot');
+      return CameraLiveState.fromMap(r ?? <Object?, Object?>{});
+    } on MissingPluginException {
+      return const CameraLiveState();
+    } on PlatformException {
+      return const CameraLiveState();
+    }
+  }
+
+  /// Règle une propriété de l'appareil ; la confirmation arrive par [liveEvents] (`kind == 'set'`).
+  static Future<String?> liveSet(int code, int value) async {
+    try {
+      await _methods.invokeMethod<void>('liveSet', <String, Object>{'code': code, 'value': value});
+      return null;
+    } on MissingPluginException {
+      return 'pont natif absent (pas un iPad)';
+    } on PlatformException catch (e) {
+      return e.message ?? e.code;
+    }
   }
 
   /// Extrait l'aperçu JPEG du dernier fichier reçu. Renvoie son chemin, ou null.
@@ -105,6 +137,88 @@ class CameraBridge {
     } on PlatformException catch (e) {
       return e.message ?? e.code;
     }
+  }
+}
+
+/// Une propriété de l'appareil : valeur actuelle, droits, choix proposés.
+class CameraLiveProp {
+  const CameraLiveProp({required this.cur, this.writable = false, this.enabled = true, this.choices = const <int>[]});
+
+  final int cur;
+  final bool writable;
+  final bool enabled;
+  final List<int> choices;
+}
+
+/// Photographie de l'état de l'appareil connecté.
+class CameraLiveState {
+  const CameraLiveState({
+    this.found = false,
+    this.session = false,
+    this.ready = false,
+    this.name,
+    this.received = 0,
+    this.lastFile,
+    this.props = const <int, CameraLiveProp>{},
+  });
+
+  final bool found;
+  final bool session;
+
+  /// Poignée de main PTP 3 faite : les réglages et le déclenchement sont possibles.
+  final bool ready;
+  final String? name;
+  final int received;
+  final String? lastFile;
+  final Map<int, CameraLiveProp> props;
+
+  factory CameraLiveState.fromMap(Map<Object?, Object?> m) {
+    final Map<int, CameraLiveProp> props = <int, CameraLiveProp>{};
+    final Object? raw = m['props'];
+    if (raw is Map) {
+      raw.forEach((Object? k, Object? v) {
+        final int? code = int.tryParse('$k');
+        if (code == null || v is! Map) return;
+        final Object? ch = v['ch'];
+        props[code] = CameraLiveProp(
+          cur: (v['cur'] as num?)?.toInt() ?? 0,
+          writable: v['w'] == true,
+          enabled: v['on'] != false,
+          choices: ch is List ? ch.whereType<num>().map((num n) => n.toInt()).toList() : const <int>[],
+        );
+      });
+    }
+    return CameraLiveState(
+      found: m['found'] == true,
+      session: m['session'] == true,
+      ready: m['ready'] == true,
+      name: m['name'] as String?,
+      received: (m['received'] as num?)?.toInt() ?? 0,
+      lastFile: m['lastFile'] as String?,
+      props: props,
+    );
+  }
+}
+
+/// Événement du mode connecté : `state` (nouvel état), `photo` (fichier reçu), `set` (réglage confirmé ou refusé).
+class CameraLiveEvent {
+  const CameraLiveEvent(this.kind, {this.state, this.data = const <String, Object?>{}});
+
+  final String kind;
+  final CameraLiveState? state;
+  final Map<String, Object?> data;
+
+  factory CameraLiveEvent.fromMap(Map<Object?, Object?> m) {
+    if (m['state'] is Map) {
+      return CameraLiveEvent('state', state: CameraLiveState.fromMap(m['state']! as Map<Object?, Object?>));
+    }
+    for (final String k in <String>['photo', 'set']) {
+      final Object? v = m[k];
+      if (v is Map) {
+        return CameraLiveEvent(k, data: v.map((Object? a, Object? b) => MapEntry<String, Object?>('$a', b)));
+      }
+    }
+    return const CameraLiveEvent('inconnu');
   }
 }
 

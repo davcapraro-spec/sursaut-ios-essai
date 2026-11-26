@@ -11,6 +11,7 @@ import 'dart:math' as math;
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:sursaut_essai/domain/camera_format.dart';
 import 'package:sursaut_essai/domain/curves.dart';
 import 'package:sursaut_essai/domain/histogram.dart';
 import 'package:sursaut_essai/domain/lama_prep.dart';
@@ -1120,6 +1121,40 @@ void main() {
       final Uint8List g = lamaShowHole(img, m);
       expect(g[(256 * kLamaSide + 256) * 4], 128);
       expect(g[0], 10);
+    });
+  });
+
+  group('Réglages de l\'appareil', () {
+    test('ISO, ouverture, vitesse : codages vérifiés sur l\'A7 IV', () {
+      expect(formatIso(100), '100');
+      expect(formatIso(0xFFFFFF), 'AUTO');
+      expect(formatIso(0x1000000 | 3200), '3200');
+      expect(formatAperture(0x276), 'ƒ/6,3');
+      expect(formatAperture(0x230), 'ƒ/5,6');
+      expect(formatAperture(400), 'ƒ/4');
+      expect(formatShutter(0x10064), '1/100');
+      expect(formatShutter(0x1007D), '1/125');
+      expect(formatShutter((5 << 16) | 10), '0,5"');
+      expect(formatShutter((30 << 16) | 1), '30"');
+      expect(formatShutter(0), '—');
+    });
+
+    test('batterie et valeur brute', () {
+      expect(batteryPercent(87), 87);
+      expect(batteryPercent(0xFF), -1);
+      expect(formatRaw(0x11), '0x11');
+    });
+
+    test('choix voisins et tri', () {
+      final List<int> iso = sortedChoices(kPropIso, <int>[200, 0xFFFFFF, 100, 400, 100]);
+      expect(iso, <int>[0xFFFFFF, 100, 200, 400]);
+      final List<int> sh = sortedChoices(kPropShutter, <int>[0x1007D, 0x10064, (2 << 16) | 1]);
+      expect(sh, <int>[0x1007D, 0x10064, (2 << 16) | 1]);
+      expect(neighborChoice(iso, 200, 1), 400);
+      expect(neighborChoice(iso, 200, -1), 100);
+      expect(neighborChoice(iso, 400, 1), isNull);
+      expect(neighborChoice(iso, 999, 1), isNull);
+      expect(neighborChoice(<int>[], 1, 1), isNull);
     });
   });
 }

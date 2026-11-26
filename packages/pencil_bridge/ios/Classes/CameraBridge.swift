@@ -24,6 +24,17 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   private var lastValues: [Int: Int] = [:]
   private var protocol3 = false
   private var afterRead: (() -> Void)? = nil
+  // Mode connecté (écran « Capturer »)
+  private var liveReady = false
+  private var lastChoices: [Int: [Int]] = [:]
+  private var lastSizes: [Int: Int] = [:]
+  private var lastWritable: [Int: Bool] = [:]
+  private var lastEnabled: [Int: Bool] = [:]
+  private var lastFilePath: String? = nil
+  private var liveRefreshing = false
+  private var liveRefreshAgain = false
+  private var liveBusy = false
+  private var pendingSet: (code: Int, value: Int, ok: Bool, since: Date)? = nil
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let instance = CameraBridge()
@@ -45,7 +56,26 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       result(previewLast())
       return
     }
+    if call.method == "liveSnapshot" {
+      result(liveSnapshot())
+      return
+    }
+    if call.method == "liveSet" {
+      guard let a = call.arguments as? [String: Any], let code = a["code"] as? Int, let value = a["value"] as? Int else {
+        result(FlutterError(code: "args", message: "liveSet : code et value attendus", details: nil))
+        return
+      }
+      liveSet(code, value)
+      result(nil)
+      return
+    }
     switch call.method {
+    case "liveStart": start()
+    case "liveOpen": openSession()
+    case "liveHandshake": sonyConnect3()
+    case "liveRefresh": liveRefresh()
+    case "liveShoot": liveShoot()
+    case "liveStop": liveStop()
     case "start": start()
     case "openSession": openSession()
     case "ptpInfo": ptpInfo()
@@ -150,6 +180,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
 
   public func deviceBrowser(_ browser: ICDeviceBrowser, didRemove device: ICDevice, moreGoing: Bool) {
     log("Appareil retiré : \(device.name ?? "?")")
+    liveReady = false
     if device == camera { camera = nil }
   }
 
@@ -174,11 +205,13 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   }
 
   @objc(device:didCloseSessionWithError:) public func device(_ device: ICDevice, didCloseSessionWithError error: Error?) {
+    liveReady = false
     log("Session fermée" + (error.map { " (erreur : \($0.localizedDescription))" } ?? ""))
   }
 
   @objc(didRemoveDevice:) public func didRemove(_ device: ICDevice) {
     log("Appareil débranché.")
+    liveReady = false
     if device == camera { camera = nil }
   }
 
@@ -285,6 +318,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
 
   private func runSteps(_ steps: [(UInt16, [UInt32], String)], _ index: Int) {
     if index >= steps.count {
+      liveReady = protocol3
       log("Séquence terminée. Prenez maintenant une photo au déclencheur et guettez « ÉVÉNEMENT PTP ».")
       return
     }
@@ -369,6 +403,8 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
           try body.write(to: dir.appendingPathComponent(name))
           message += " · enregistré : \(name)"
           self.receivedCount += 1
+          self.lastFilePath = dir.appendingPathComponent(name).path
+          self.emitPhoto(name, body.count, seconds)
         } catch {
           message += " · écriture impossible : \(error.localizedDescription)"
         }
@@ -523,6 +559,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       }
       guard let def = rd(size), let cur = rd(size), let form = rd(1) else { break }
       var choices = ""
+      var lists0: [UInt64] = []
       if form == 1 {
         if let lo = rd(size), let hi = rd(size), let st = rd(size) {
           choices = " · plage \(hex(Int(truncatingIfNeeded: lo)))…\(hex(Int(truncatingIfNeeded: hi))) pas \(hex(Int(truncatingIfNeeded: st)))"
@@ -540,6 +577,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
           for _ in 0..<Int(k) { if let v = rd(size) { vals.append(v) } }
           lists.append(vals)
         }
+        lists0 = lists.first ?? []
         if let l = lists.first, !l.isEmpty {
           let shown = l.prefix(14).map { hex(Int(truncatingIfNeeded: $0)) }.joined(separator: " ")
           choices = " · \(l.count) choix : \(shown)\(l.count > 14 ? " …" : "")"
@@ -548,12 +586,18 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       count += 1
       if Int(truncatingIfNeeded: code) == 0xD21E { lastISO = Int(truncatingIfNeeded: cur) }
       lastValues[Int(truncatingIfNeeded: code)] = Int(truncatingIfNeeded: cur)
+      lastSizes[Int(truncatingIfNeeded: code)] = size
+      lastWritable[Int(truncatingIfNeeded: code)] = (getSet == 1)
+      lastEnabled[Int(truncatingIfNeeded: code)] = (enabled == 1)
+      lastChoices[Int(truncatingIfNeeded: code)] = (form == 2) ? (lists0.map { Int(truncatingIfNeeded: $0) }) : []
       if !quiet || watch.contains(Int(truncatingIfNeeded: code)) { log("  \(hex(Int(truncatingIfNeeded: code))) \(propName(Int(truncatingIfNeeded: code))) · type \(type) · \(getSet == 1 ? "modifiable" : "lecture seule") · \(enabled == 1 ? "actif" : "inactif") · défaut \(hex(Int(truncatingIfNeeded: def))) · ACTUEL \(hex(Int(truncatingIfNeeded: cur)))\(interp(Int(truncatingIfNeeded: code), cur))\(choices)") }
     }
     if !quiet { log("RÉGLAGES : \(count) propriété(s) lue(s). Fichier brut : reglages_0x9209.bin (dans le partage).") }
     let callback = afterRead
     afterRead = nil
     quietSettings = false
+    emitState()
+    resolvePendingSet()
     callback?()
   }
 
@@ -898,6 +942,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     }
     let text = params.map { hex($0) }.joined(separator: " ")
     log("ÉVÉNEMENT PTP \(hex(code))" + (params.isEmpty ? "" : " · paramètres : \(text)"))
+    if code == 0xC203 && liveReady { liveRefresh() }
     if code == 0xC201, let first = params.first {
       lastHandle = first
       log("  → objet annoncé : \(hex(first)) : lecture automatique…")
@@ -953,6 +998,128 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       }
     }
     log(message)
+  }
+
+
+  // MARK: - Mode connecté (écran « Capturer »)
+
+  /// Propriétés que l'écran de capture présente.
+  private let liveCodes: [Int] = [0xD21E, 0x5007, 0xD20D, 0x5005, 0x500E, 0x5010, 0x500A, 0x5013, 0xD222, 0xD218, 0xD20F]
+
+  /// État complet pour Dart : appareil, session, poignée de main, réglages (valeur, droits, choix).
+  private func liveSnapshot() -> [String: Any] {
+    var props: [String: Any] = [:]
+    for c in liveCodes {
+      guard let cur = lastValues[c] else { continue }
+      props[String(c)] = [
+        "cur": cur,
+        "w": lastWritable[c] ?? false,
+        "on": lastEnabled[c] ?? true,
+        "size": lastSizes[c] ?? 0,
+        "ch": lastChoices[c] ?? [],
+      ] as [String: Any]
+    }
+    var out: [String: Any] = [
+      "found": camera != nil,
+      "session": camera?.hasOpenSession ?? false,
+      "ready": liveReady,
+      "received": receivedCount,
+      "props": props,
+    ]
+    if let n = camera?.name { out["name"] = n }
+    if let p = lastFilePath { out["lastFile"] = p }
+    return out
+  }
+
+  private func emitState() {
+    let snap = liveSnapshot()
+    DispatchQueue.main.async { [weak self] in
+      self?.sink?(["state": snap])
+    }
+  }
+
+  private func emitPhoto(_ name: String, _ bytes: Int, _ seconds: Double) {
+    DispatchQueue.main.async { [weak self] in
+      self?.sink?(["photo": ["name": name, "bytes": bytes, "seconds": seconds]])
+    }
+  }
+
+  private func emitSet(_ code: Int, _ wanted: Int, _ ok: Bool, _ now: Int) {
+    DispatchQueue.main.async { [weak self] in
+      self?.sink?(["set": ["code": code, "wanted": wanted, "ok": ok, "now": now]])
+    }
+  }
+
+  /// Relit tous les réglages (silencieux). Une relecture demandée pendant une autre est refaite juste après.
+  private func liveRefresh() {
+    guard camera != nil, protocol3 else { return }
+    if liveRefreshing {
+      liveRefreshAgain = true
+      return
+    }
+    liveRefreshing = true
+    readSettings(quiet: true, watch: []) { [weak self] in
+      guard let self = self else { return }
+      self.liveRefreshing = false
+      if self.liveRefreshAgain {
+        self.liveRefreshAgain = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.liveRefresh() }
+      }
+    }
+    // Si l'appareil ne répond pas, ne pas rester bloqué.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { [weak self] in
+      guard let self = self else { return }
+      if self.liveRefreshing && self.afterRead == nil { self.liveRefreshing = false }
+    }
+  }
+
+  /// Règle une propriété (SetExtDevicePropValue 0x9205), relit, et dit si l'appareil a pris la valeur.
+  private func liveSet(_ code: Int, _ value: Int) {
+    guard camera != nil, protocol3, liveCodes.contains(code), let size = lastSizes[code], size == 2 || size == 4 else {
+      emitSet(code, value, false, lastValues[code] ?? -1)
+      return
+    }
+    guard lastWritable[code] == true else {
+      emitSet(code, value, false, lastValues[code] ?? -1)
+      return
+    }
+    let payload = size == 2 ? le16(UInt16(truncatingIfNeeded: value)) : le32(UInt32(truncatingIfNeeded: value))
+    sendPTP(opcode: 0x9205, params: [UInt32(code), 0], label: "RÉGLAGE \(hex(code)) → \(hex(value))", handler: nil, outData: payload, done: { [weak self] ok in
+      guard let self = self else { return }
+      self.pendingSet = (code, value, ok, Date())
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.liveRefresh() }
+    })
+  }
+
+  /// Après une relecture : le changement demandé est-il pris ? Réponse dès que la valeur correspond,
+  /// ou au bout de 2,5 s (sinon on relit encore).
+  private func resolvePendingSet() {
+    guard let p = pendingSet else { return }
+    let now = lastValues[p.code] ?? -1
+    if now == p.value {
+      pendingSet = nil
+      emitSet(p.code, p.value, p.ok, now)
+    } else if Date().timeIntervalSince(p.since) > 2.5 || !p.ok {
+      pendingSet = nil
+      emitSet(p.code, p.value, false, now)
+    } else {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.liveRefresh() }
+    }
+  }
+
+  /// Déclenche une photo ; l'événement 0xC201 déclenche ensuite la lecture automatique du fichier.
+  private func liveShoot() {
+    guard camera != nil, liveReady else { return }
+    if liveBusy { return }
+    liveBusy = true
+    sonyShoot(then: { [weak self] in
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.liveBusy = false }
+    })
+  }
+
+  private func liveStop() {
+    liveReady = false
+    camera?.requestCloseSession()
   }
 
   // MARK: - 5. État
