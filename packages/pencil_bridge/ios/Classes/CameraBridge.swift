@@ -1,6 +1,7 @@
 import Flutter
 import UIKit
 import ImageCaptureCore
+import Photos
 
 /// Pont « appareil photo » de Sursaut iPad (essai S2).
 ///
@@ -426,6 +427,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
           message += " · enregistré : \(name)"
           self.receivedCount += 1
           self.lastFilePath = dir.appendingPathComponent(name).path
+          self.keepReceivedPhoto(dir.appendingPathComponent(name), name)
           self.streamPaused = false
           self.emitPhoto(name, body.count, seconds)
         } catch {
@@ -434,6 +436,40 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       }
       self.log(message)
     })
+  }
+
+  /// Garde la photo reçue : copie dans « Photos reçues » (visible dans Fichiers > Sur mon iPad > Sursaut)
+  /// et ajout à la photothèque (Photos). Le dossier de réception (caches) peut être vidé par iPadOS.
+  private func keepReceivedPhoto(_ src: URL, _ name: String) {
+    let fm = FileManager.default
+    if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+      let dir = docs.appendingPathComponent("Photos reçues", isDirectory: true)
+      try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+      let dst = dir.appendingPathComponent(name)
+      try? fm.removeItem(at: dst)
+      do {
+        try fm.copyItem(at: src, to: dst)
+        log("  copiée dans Fichiers > Sursaut > Photos reçues : \(name)")
+      } catch {
+        log("  copie dans Fichiers impossible : \(error.localizedDescription)")
+      }
+    }
+    PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
+      guard status == .authorized || status == .limited else {
+        DispatchQueue.main.async { self?.log("  Photos : accès refusé (Réglages > Sursaut > Photos).") }
+        return
+      }
+      PHPhotoLibrary.shared().performChanges({
+        let request = PHAssetCreationRequest.forAsset()
+        let options = PHAssetResourceCreationOptions()
+        options.shouldMoveFile = false
+        request.addResource(with: .photo, fileURL: src, options: options)
+      }, completionHandler: { ok, error in
+        DispatchQueue.main.async {
+          self?.log(ok ? "  ajoutée à la photothèque (Photos) : \(name)" : "  ajout à Photos impossible : \(error?.localizedDescription ?? "erreur inconnue")")
+        }
+      })
+    }
   }
 
   // MARK: - 9. Déclencher depuis l'iPad (Sony 0x9207, expérimental)
