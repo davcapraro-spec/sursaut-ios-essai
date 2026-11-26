@@ -213,6 +213,24 @@ List<int> sortedChoices(int code, List<int> choices) {
       c.sort();
     case kPropExposureComp:
       c.sort((int a, int b) => signed16(a).compareTo(signed16(b)));
+    case kPropFocusMode:
+      // Ordre logique : manuel, puis AF ponctuel, continu, auto, puis les autres.
+      const List<int> order = <int>[0x0001, 0x8006, 0x0002, 0x8004, 0x8005, 0x0003, 0x8007, 0x8008, 0x8009];
+      int r(int x) {
+        final int i = order.indexOf(x);
+        return i < 0 ? 100 + x : i;
+      }
+      c.sort((int a, int b) => r(a).compareTo(r(b)));
+    case kPropWhiteBalance:
+      // Auto, puis lumière du jour, nuageux, ombre, incandescent, fluorescents, flash, température de couleur, perso.
+      const List<int> order = <int>[
+        0x0002, 0x0004, 0x8010, 0x8011, 0x0006, 0x0005, 0x8001, 0x8002, 0x8003, 0x8004, 0x0007, 0x8012, 0x8020, 0x8021, 0x8022, 0x8023, 0x0003, 0x0001, 0x8030
+      ];
+      int r(int x) {
+        final int i = order.indexOf(x);
+        return i < 0 ? 100 + x : i;
+      }
+      c.sort((int a, int b) => r(a).compareTo(r(b)));
     case kPropShutter:
       double d(int x) {
         final int den = x & 0xFFFF;

@@ -416,6 +416,8 @@ class _CapturePageState extends State<CapturePage> {
           _SettingRow(label: 'Vitesse', code: kPropShutter, st: s, pending: _pending, fmt: _fmt, onStep: _step),
           _SettingRow(label: 'ISO', code: kPropIso, st: s, pending: _pending, fmt: _fmt, onStep: _step),
           _SettingRow(label: 'Compens.', code: kPropExposureComp, st: s, pending: _pending, fmt: _fmt, onStep: _step),
+          _SettingRow(label: 'Mise au point', code: kPropFocusMode, st: s, pending: _pending, fmt: _fmt, onStep: _step),
+          _SettingRow(label: 'Bal. blancs', code: kPropWhiteBalance, st: s, pending: _pending, fmt: _fmt, onStep: _step),
           const SizedBox(height: 8),
           _ReadOnlyBlock(st: s, fmt: _fmt),
           const SizedBox(height: 12),
@@ -509,8 +511,6 @@ class _ReadOnlyBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     const List<(int, String)> rows = <(int, String)>[
       (kPropExposureMode, 'Mode d\'exposition'),
-      (kPropWhiteBalance, 'Balance des blancs'),
-      (kPropFocusMode, 'Mise au point'),
       (kPropDrive, 'Entraînement'),
       (kPropDestination, 'Destination'),
     ];

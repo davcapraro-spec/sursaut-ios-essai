@@ -1181,6 +1181,8 @@ void main() {
       expect(sh, <int>[(2 << 16) | 1, 0x10064, 0x1007D]);
       expect(neighborChoice(sh, 0x10064, 1), 0x1007D);
       expect(neighborChoice(sh, 0x10064, -1), (2 << 16) | 1);
+      expect(sortedChoices(kPropFocusMode, <int>[0x8004, 0x2, 0x1, 0x8005]), <int>[0x1, 0x2, 0x8004, 0x8005]);
+      expect(sortedChoices(kPropWhiteBalance, <int>[0x8011, 0x2, 0x8012, 0x4]), <int>[0x2, 0x4, 0x8011, 0x8012]);
       expect(neighborChoice(iso, 200, 1), 400);
       expect(neighborChoice(iso, 200, -1), 100);
       expect(neighborChoice(iso, 400, 1), isNull);
