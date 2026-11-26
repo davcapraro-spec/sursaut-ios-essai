@@ -1148,6 +1148,26 @@ void main() {
       expect(formatExposureMode(0x50001), '0x50001');
     });
 
+    test('compensation, balance des blancs, mise au point, destination, entraînement', () {
+      expect(formatExposureComp(0), '0 EV');
+      expect(formatExposureComp(1000), '+1 EV');
+      expect(formatExposureComp(667), '+0,7 EV');
+      expect(formatExposureComp(333), '+0,3 EV');
+      expect(formatExposureComp(0xFC18), '−1 EV');
+      expect(formatExposureComp(0xEC78), '−5 EV');
+      expect(signed16(0xFFFF), -1);
+      expect(formatWhiteBalance(0x2), 'Auto');
+      expect(formatWhiteBalance(0x8011), 'Ombre');
+      expect(formatWhiteBalance(0x1234), '0x1234');
+      expect(formatFocusMode(0x2), 'AF-S');
+      expect(formatFocusMode(0x8004), 'AF-C');
+      expect(formatDestination(0x11), 'iPad + carte');
+      expect(formatDrive(0x1), 'Vue par vue');
+      expect(formatDrive(0x38004), 'Retardateur 10 s');
+      final List<int> comp = sortedChoices(kPropExposureComp, <int>[0x3E8, 0, 0xFC18]);
+      expect(comp, <int>[0xFC18, 0, 0x3E8]);
+    });
+
     test('batterie et valeur brute', () {
       expect(batteryPercent(87), 87);
       expect(batteryPercent(0xFF), -1);

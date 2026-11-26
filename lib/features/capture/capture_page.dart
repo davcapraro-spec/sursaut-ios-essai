@@ -236,6 +236,16 @@ class _CapturePageState extends State<CapturePage> {
         return formatShutterCode(v);
       case kPropExposureMode:
         return formatExposureMode(v);
+      case kPropExposureComp:
+        return formatExposureComp(v);
+      case kPropWhiteBalance:
+        return formatWhiteBalance(v);
+      case kPropFocusMode:
+        return formatFocusMode(v);
+      case kPropDestination:
+        return formatDestination(v);
+      case kPropDrive:
+        return formatDrive(v);
       default:
         return formatRaw(v);
     }
@@ -405,6 +415,7 @@ class _CapturePageState extends State<CapturePage> {
           _SettingRow(label: 'Ouverture', code: kPropAperture, st: s, pending: _pending, fmt: _fmt, onStep: _step),
           _SettingRow(label: 'Vitesse', code: kPropShutter, st: s, pending: _pending, fmt: _fmt, onStep: _step),
           _SettingRow(label: 'ISO', code: kPropIso, st: s, pending: _pending, fmt: _fmt, onStep: _step),
+          _SettingRow(label: 'Compens.', code: kPropExposureComp, st: s, pending: _pending, fmt: _fmt, onStep: _step),
           const SizedBox(height: 8),
           _ReadOnlyBlock(st: s, fmt: _fmt),
           const SizedBox(height: 12),
@@ -498,9 +509,9 @@ class _ReadOnlyBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     const List<(int, String)> rows = <(int, String)>[
       (kPropExposureMode, 'Mode d\'exposition'),
-      (kPropExposureComp, 'Compensation'),
       (kPropWhiteBalance, 'Balance des blancs'),
       (kPropFocusMode, 'Mise au point'),
+      (kPropDrive, 'Entraînement'),
       (kPropDestination, 'Destination'),
     ];
     final List<Widget> chips = <Widget>[];
@@ -511,7 +522,7 @@ class _ReadOnlyBlock extends StatelessWidget {
     }
     if (chips.isEmpty) return const SizedBox.shrink();
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-      const Text('Lus sur l\'appareil (valeurs brutes, sens à confirmer)', style: TextStyle(fontSize: 12, color: Colors.white60)),
+      const Text('Lus sur l\'appareil (noms d\'après la référence Sony)', style: TextStyle(fontSize: 12, color: Colors.white60)),
       const SizedBox(height: 4),
       Wrap(spacing: 6, runSpacing: 0, children: chips),
     ]);

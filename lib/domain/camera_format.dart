@@ -66,6 +66,119 @@ String formatExposureMode(int cur) {
   }
 }
 
+/// Compensation d'exposition : entier signé sur 16 bits = valeur réelle en EV × 1000 (référence Sony :
+/// 0xEC78 = −5,0 EV, 0x1388 = +5,0 EV). Lu dans la référence ; pas encore relevé sur l'A7 IV.
+int signed16(int cur) {
+  final int v = cur & 0xFFFF;
+  return v > 0x7FFF ? v - 0x10000 : v;
+}
+
+String formatExposureComp(int cur) {
+  final int v = signed16(cur);
+  if (v == 0) return '0 EV';
+  final double ev = v.abs() / 1000.0;
+  final String t = (ev - ev.roundToDouble()).abs() < 0.05 ? ev.roundToDouble().toStringAsFixed(0) : ev.toStringAsFixed(1);
+  return '${v < 0 ? '−' : '+'}${t.replaceAll('.', ',')} EV';
+}
+
+/// Balance des blancs (0x5005) : table de la référence Sony ; 2 = auto confirmé par la lecture du banc (20/11).
+String formatWhiteBalance(int cur) {
+  switch (cur & 0xFFFF) {
+    case 0x0001:
+      return 'Manuelle';
+    case 0x0002:
+      return 'Auto';
+    case 0x0003:
+      return 'Une touche';
+    case 0x0004:
+      return 'Lumière du jour';
+    case 0x0005:
+      return 'Fluorescent';
+    case 0x0006:
+      return 'Incandescent';
+    case 0x0007:
+      return 'Flash';
+    case 0x8001:
+      return 'Fluo : blanc chaud';
+    case 0x8002:
+      return 'Fluo : blanc froid';
+    case 0x8003:
+      return 'Fluo : blanc jour';
+    case 0x8004:
+      return 'Fluo : lumière du jour';
+    case 0x8010:
+      return 'Nuageux';
+    case 0x8011:
+      return 'Ombre';
+    case 0x8012:
+      return 'Température de couleur';
+    case 0x8020:
+      return 'Perso 1';
+    case 0x8021:
+      return 'Perso 2';
+    case 0x8022:
+      return 'Perso 3';
+    case 0x8023:
+      return 'Perso';
+    case 0x8030:
+      return 'Sous l\'eau auto';
+    default:
+      return formatRaw(cur);
+  }
+}
+
+/// Mode de mise au point (0x500A) : table de la référence Sony.
+String formatFocusMode(int cur) {
+  switch (cur & 0xFFFF) {
+    case 0x0001:
+      return 'MF';
+    case 0x0002:
+      return 'AF-S';
+    case 0x0003:
+      return 'Macro auto';
+    case 0x8004:
+      return 'AF-C';
+    case 0x8005:
+      return 'AF-A';
+    case 0x8006:
+      return 'DMF';
+    case 0x8007:
+      return 'MF inversée';
+    case 0x8008:
+      return 'AF-D';
+    case 0x8009:
+      return 'Pré-réglée';
+    default:
+      return formatRaw(cur);
+  }
+}
+
+/// Destination de la photo (0xD222) : 0x11 (iPad + carte) mesuré au banc le 20/11 ; les deux autres lus dans la référence.
+String formatDestination(int cur) {
+  switch (cur & 0xFFFF) {
+    case 0x0001:
+      return 'iPad';
+    case 0x0010:
+      return 'Carte';
+    case 0x0011:
+      return 'iPad + carte';
+    default:
+      return formatRaw(cur);
+  }
+}
+
+/// Entraînement (0x5013) : 0x1 (vue par vue) relevé au banc ; les autres codes lus dans la référence.
+String formatDrive(int cur) {
+  final int v = cur & 0xFFFFFFFF;
+  if (v == 0x00000001) return 'Vue par vue';
+  if (v == 0x00010002 || (v >= 0x00018010 && v <= 0x00018017)) return 'Rafale';
+  if (v == 0x00020003) return 'Intervallomètre';
+  if (v == 0x00038003) return 'Retardateur 5 s';
+  if (v == 0x00038004) return 'Retardateur 10 s';
+  if (v == 0x00038005) return 'Retardateur 2 s';
+  return formatRaw(cur);
+}
+
 /// Batterie : octet signé en pourcentage (VÉRIFIÉ sur l'A7 IV : l'écran de l'iPad affiche le même pourcentage que le boîtier).
 int batteryPercent(int cur) {
   final int b = cur & 0xFF;
@@ -98,6 +211,8 @@ List<int> sortedChoices(int code, List<int> choices) {
       });
     case kPropAperture:
       c.sort();
+    case kPropExposureComp:
+      c.sort((int a, int b) => signed16(a).compareTo(signed16(b)));
     case kPropShutter:
       double d(int x) {
         final int den = x & 0xFFFF;
