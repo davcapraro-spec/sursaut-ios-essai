@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:pencil_bridge/pencil_bridge.dart';
@@ -218,6 +219,17 @@ class _CapturePageState extends State<CapturePage> {
     if (p == null || !p.writable || _pending.contains(code)) return;
     final int? next = neighborChoice(sortedChoices(code, p.choices), p.cur, dir);
     if (next == null) return;
+    await _setValue(code, next);
+  }
+
+  /// Choix direct dans un menu déroulant.
+  Future<void> _pick(int code, int value) async {
+    final CameraLiveProp? p = _st.props[code];
+    if (p == null || !p.writable || _pending.contains(code) || value == p.cur) return;
+    await _setValue(code, value);
+  }
+
+  Future<void> _setValue(int code, int next) async {
     setState(() => _pending.add(code));
     final String? err = await CameraBridge.liveSet(code, next);
     if (err != null && mounted) {
@@ -307,6 +319,15 @@ class _CapturePageState extends State<CapturePage> {
     return a;
   }
 
+  /// Texte d'aide au-dessus de l'image, avec la zone du point (pour savoir d'où vient le cadre en pointillés).
+  String _areaCaption() {
+    final List<int>? raw = _st.area;
+    final List<int> a = _focusArea();
+    final bool real = raw != null && raw.length >= 4 && a[0] == raw[0] && a[1] == raw[1] && a[2] == raw[2] && a[3] == raw[3];
+    final String zone = 'x ${a[0]}–${a[2]}, y ${a[1]}–${a[3]}';
+    return 'Touchez l\'image pour placer le point · cadre en pointillés = zone permise ($zone, ${real ? 'lue sur l\'appareil' : 'toute l\'image, non précisée par l\'appareil'})';
+  }
+
   Widget _buildPreview() {
     final CameraLiveFrame? f = _frame;
     final String? photo = _previewPath;
@@ -346,7 +367,7 @@ class _CapturePageState extends State<CapturePage> {
                 const Positioned(
                   left: 12,
                   top: 10,
-                  child: Text('Touchez l\'image pour placer le point de mise au point', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  child: Text(_areaCaption(), style: const TextStyle(color: Colors.white70, fontSize: 13)),
                 ),
               if (f != null && photo != null)
                 Positioned(
@@ -416,8 +437,9 @@ class _CapturePageState extends State<CapturePage> {
           _SettingRow(label: 'Vitesse', code: kPropShutter, st: s, pending: _pending, fmt: _fmt, onStep: _step),
           _SettingRow(label: 'ISO', code: kPropIso, st: s, pending: _pending, fmt: _fmt, onStep: _step),
           _SettingRow(label: 'Compens.', code: kPropExposureComp, st: s, pending: _pending, fmt: _fmt, onStep: _step),
-          _SettingRow(label: 'Mise au point', code: kPropFocusMode, st: s, pending: _pending, fmt: _fmt, onStep: _step),
-          _SettingRow(label: 'Bal. blancs', code: kPropWhiteBalance, st: s, pending: _pending, fmt: _fmt, onStep: _step),
+          _MenuRow(label: 'Mise au point', code: kPropFocusMode, st: s, pending: _pending, fmt: _fmt, onPick: _pick),
+          _MenuRow(label: 'Bal. blancs', code: kPropWhiteBalance, st: s, pending: _pending, fmt: _fmt, onPick: _pick),
+          _MenuRow(label: 'Entraînement', code: kPropDrive, st: s, pending: _pending, fmt: _fmt, onPick: _pick),
           const SizedBox(height: 8),
           _ReadOnlyBlock(st: s, fmt: _fmt),
           const SizedBox(height: 12),
@@ -500,6 +522,70 @@ class _SettingRow extends StatelessWidget {
   }
 }
 
+/// Réglage à choisir dans un menu déroulant : les valeurs proposées sont celles que l'appareil accepte à cet instant.
+class _MenuRow extends StatelessWidget {
+  const _MenuRow({
+    required this.label,
+    required this.code,
+    required this.st,
+    required this.pending,
+    required this.fmt,
+    required this.onPick,
+  });
+
+  final String label;
+  final int code;
+  final CameraLiveState st;
+  final Set<int> pending;
+  final String Function(int, int) fmt;
+  final Future<void> Function(int, int) onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final CameraLiveProp? p = st.props[code];
+    final bool busy = pending.contains(code);
+    final List<int> sorted = p == null ? <int>[] : sortedChoices(code, p.choices);
+    final bool can = p != null && p.writable && p.enabled && !busy && sorted.length > 1;
+    final Widget value = busy
+        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+        : Row(mainAxisAlignment: MainAxisAlignment.center, mainAxisSize: MainAxisSize.min, children: <Widget>[
+            Flexible(
+              child: Text(
+                p == null ? '—' : fmt(code, p.cur),
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600, color: can ? Colors.white : Colors.white54),
+              ),
+            ),
+            if (can) const Icon(Icons.arrow_drop_down, size: 30),
+          ]);
+    return Card(
+      color: kPanel,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(children: <Widget>[
+          SizedBox(width: 110, child: Text(label)),
+          Expanded(
+            child: SizedBox(
+              height: 44,
+              child: can
+                  ? PopupMenuButton<int>(
+                      tooltip: label,
+                      initialValue: p.cur,
+                      onSelected: (int v) => onPick(code, v),
+                      itemBuilder: (BuildContext context) => <PopupMenuEntry<int>>[
+                        for (final int v in sorted) PopupMenuItem<int>(value: v, child: Text(fmt(code, v))),
+                      ],
+                      child: Center(child: value),
+                    )
+                  : Center(child: value),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
 /// Réglages lus mais dont le sens n'est pas encore confirmé : valeur brute, sans interprétation.
 class _ReadOnlyBlock extends StatelessWidget {
   const _ReadOnlyBlock({required this.st, required this.fmt});
@@ -511,7 +597,6 @@ class _ReadOnlyBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     const List<(int, String)> rows = <(int, String)>[
       (kPropExposureMode, 'Mode d\'exposition'),
-      (kPropDrive, 'Entraînement'),
       (kPropDestination, 'Destination'),
     ];
     final List<Widget> chips = <Widget>[];
@@ -548,13 +633,19 @@ class _FocusFramesPainter extends CustomPainter {
       imageRect.left + area[2] / 639 * imageRect.width,
       imageRect.top + area[3] / 479 * imageRect.height,
     );
-    canvas.drawRect(
-      limit.deflate(1),
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5
-        ..color = const Color(0x99FFFFFF),
-    );
+    final Rect box = limit.deflate(2);
+    final Paint edge = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = const Color(0xE6FFFFFF);
+    final Path ring = Path()..addRect(box);
+    for (final ui.PathMetric m in ring.computeMetrics()) {
+      double d = 0;
+      while (d < m.length) {
+        canvas.drawPath(m.extractPath(d, d + 10), edge);
+        d += 18;
+      }
+    }
     for (final CameraFocusFrame f in frames) {
       final double cx = imageRect.left + f.x * imageRect.width;
       final double cy = imageRect.top + f.y * imageRect.height;

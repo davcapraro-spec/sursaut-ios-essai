@@ -167,16 +167,101 @@ String formatDestination(int cur) {
   }
 }
 
-/// Entraînement (0x5013) : 0x1 (vue par vue) relevé au banc ; les autres codes lus dans la référence.
+/// Entraînement (0x5013, 32 bits) : table de la référence Sony ; « vue par vue » (0x1) relevé au banc. Les autres : à confirmer.
 String formatDrive(int cur) {
   final int v = cur & 0xFFFFFFFF;
-  if (v == 0x00000001) return 'Vue par vue';
-  if (v == 0x00010002 || (v >= 0x00018010 && v <= 0x00018017)) return 'Rafale';
-  if (v == 0x00020003) return 'Intervallomètre';
-  if (v == 0x00038003) return 'Retardateur 5 s';
-  if (v == 0x00038004) return 'Retardateur 10 s';
-  if (v == 0x00038005) return 'Retardateur 2 s';
-  return formatRaw(cur);
+  switch (v) {
+    case 0x00000001:
+      return 'Vue par vue';
+    case 0x00010002:
+      return 'Rafale Hi';
+    case 0x00018010:
+      return 'Rafale Hi+';
+    case 0x00018011:
+      return 'Rafale Hi (vue directe)';
+    case 0x00018012:
+      return 'Rafale Lo';
+    case 0x00018013:
+      return 'Rafale';
+    case 0x00018014:
+      return 'Rafale, priorité vitesse';
+    case 0x00018015:
+      return 'Rafale Mid';
+    case 0x00018016:
+      return 'Rafale Mid (vue directe)';
+    case 0x00018017:
+      return 'Rafale Lo (vue directe)';
+    case 0x00020003:
+      return 'Intervallomètre';
+    case 0x00038003:
+      return 'Retardateur 5 s';
+    case 0x00038004:
+      return 'Retardateur 10 s';
+    case 0x00038005:
+      return 'Retardateur 2 s';
+    case 0x00068018:
+      return 'Bracket balance des blancs −';
+    case 0x00068028:
+      return 'Bracket balance des blancs +';
+    case 0x00078019:
+      return 'Bracket DRO −';
+    case 0x00078029:
+      return 'Bracket DRO +';
+    case 0x0007801A:
+      return 'Bracket filtre passe-bas';
+    case 0x0007800A:
+      return 'Télécommande';
+    case 0x0007800B:
+      return 'Miroir relevé';
+    case 0x00078006:
+      return 'Autoportrait, 1 personne';
+    case 0x00078007:
+      return 'Autoportrait, 2 personnes';
+    case 0x00088008:
+      return 'Retardateur continu, 3 vues';
+    case 0x00088009:
+      return 'Retardateur continu, 5 vues';
+  }
+  final String? br = _formatBracket(v);
+  return br ?? formatRaw(cur);
+}
+
+/// Bracketing d'exposition : 0x0004xxxx = en rafale, 0x0005xxxx = vue par vue. Le haut de la partie basse donne
+/// le nombre de vues (0xC2 = 2 vues, 0x83 / 0x85 / 0x87 / 0x89 = 3 / 5 / 7 / 9), l'octet bas l'écart (table de la référence).
+String? _formatBracket(int v) {
+  final int group = v >> 16;
+  if (group != 4 && group != 5) return null;
+  final int hi = (v >> 8) & 0xFF;
+  int lo = v & 0xFF;
+  String sign = '';
+  int n;
+  if (hi == 0xC2) {
+    n = 2;
+    if ((lo & 0x08) != 0) {
+      sign = ' −';
+      lo &= ~0x08;
+    } else {
+      sign = ' +';
+    }
+  } else if (hi == 0x83) {
+    n = 3;
+  } else if (hi == 0x85) {
+    n = 5;
+  } else if (hi == 0x87) {
+    n = 7;
+  } else if (hi == 0x89) {
+    n = 9;
+  } else {
+    return null;
+  }
+  if (group == 5) lo += 1;
+  const Map<int, String> steps = <int, String>{
+    0x37: '0,3', 0x57: '0,5', 0x77: '0,7', 0x11: '1', 0x41: '1,3', 0x61: '1,5',
+    0x81: '1,7', 0x21: '2', 0x51: '2,3', 0x71: '2,5', 0x91: '2,7', 0x31: '3',
+  };
+  final String? st = steps[lo];
+  if (st == null) return null;
+  return '${group == 4 ? 'Bracket rafale' : 'Bracket simple'} $st EV, $n vues$sign';
 }
 
 /// Batterie : octet signé en pourcentage (VÉRIFIÉ sur l'A7 IV : l'écran de l'iPad affiche le même pourcentage que le boîtier).
@@ -231,6 +316,18 @@ List<int> sortedChoices(int code, List<int> choices) {
         return i < 0 ? 100 + x : i;
       }
       c.sort((int a, int b) => r(a).compareTo(r(b)));
+    case kPropDrive:
+      // Vue par vue, rafales, retardateurs, intervallomètre, puis bracketings et le reste.
+      const List<int> group = <int>[0, 1, 3, 2, 4, 5, 6, 7, 8];
+      int g(int x) {
+        final int i = group.indexOf((x >> 16) & 0xFFFF);
+        return i < 0 ? 100 : i;
+      }
+      int t(int x) => x == 0x00038005 ? 0 : (x == 0x00038003 ? 1 : (x == 0x00038004 ? 2 : x));
+      c.sort((int a, int b) {
+        final int k = g(a).compareTo(g(b));
+        return k != 0 ? k : t(a).compareTo(t(b));
+      });
     case kPropShutter:
       double d(int x) {
         final int den = x & 0xFFFF;

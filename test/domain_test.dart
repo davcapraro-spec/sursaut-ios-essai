@@ -1164,6 +1164,15 @@ void main() {
       expect(formatDestination(0x11), 'iPad + carte');
       expect(formatDrive(0x1), 'Vue par vue');
       expect(formatDrive(0x38004), 'Retardateur 10 s');
+      expect(formatDrive(0x48337), 'Bracket rafale 0,3 EV, 3 vues');
+      expect(formatDrive(0x48911), 'Bracket rafale 1 EV, 9 vues');
+      expect(formatDrive(0x4C237), 'Bracket rafale 0,3 EV, 2 vues +');
+      expect(formatDrive(0x4C23F), 'Bracket rafale 0,3 EV, 2 vues −');
+      expect(formatDrive(0x58336), 'Bracket simple 0,3 EV, 3 vues');
+      expect(formatDrive(0x5C230), 'Bracket simple 3 EV, 2 vues +');
+      expect(formatDrive(0x18013), 'Rafale');
+      expect(formatDrive(0x88009), 'Retardateur continu, 5 vues');
+      expect(sortedChoices(kPropDrive, <int>[0x38004, 0x18013, 0x1, 0x38005, 0x48337]), <int>[0x1, 0x18013, 0x38005, 0x38004, 0x48337]);
       final List<int> comp = sortedChoices(kPropExposureComp, <int>[0x3E8, 0, 0xFC18]);
       expect(comp, <int>[0xFC18, 0, 0x3E8]);
     });
