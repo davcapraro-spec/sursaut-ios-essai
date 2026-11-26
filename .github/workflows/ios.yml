@@ -63,7 +63,7 @@ jobs:
           tail -20 ios/Podfile
 
       # ONNX Runtime (LaMa) : CocoaPods télécharge « onnxruntime-c » et « onnxruntime-objc » depuis download.onnxruntime.ai.
-      # Le 26/11/2026 ce serveur présentait un mauvais certificat au CI (« no alternative certificate subject name matches »), deux fois de suite.
+      # Le 26/11/2026 ce serveur présentait un mauvais certificat au CI (« no alternative certificate subject name matches »), trois fois de suite, même avec d'autres résolveurs DNS.
       # On télécharge donc nous-mêmes les deux archives : d'abord normalement, puis (si le certificat est refusé) en passant par un autre
       # résolveur DNS (DNS sur HTTPS), ce qui peut mener à un autre serveur. La vérification du certificat n'est JAMAIS désactivée ;
       # l'empreinte (SHA-1 du podspec officiel, lu sur le CDN de CocoaPods) est contrôlée. Le Podfile pointe ensuite sur les copies locales.
@@ -80,6 +80,12 @@ jobs:
             for doh in https://cloudflare-dns.com/dns-query https://dns.google/dns-query https://dns.quad9.net/dns-query; do
               "$CURL" -fsSL --retry 1 -m 600 --doh-url "$doh" -o "$2" "$1" && return 0
             done
+            # Dernier recours : l'adresse de stockage Microsoft d'origine de ces archives (hypothèse : même fichier ; l'empreinte du podspec le confirmera).
+            alt="${1/download.onnxruntime.ai/onnxruntimepackages.z14.web.core.windows.net}"
+            if [ "$alt" != "$1" ]; then
+              echo "Essai de l'adresse de stockage : $alt"
+              "$CURL" -fsSL --retry 1 -m 600 -o "$2" "$alt" && return 0
+            fi
             return 1
           }
           for pod in onnxruntime-c onnxruntime-objc; do
