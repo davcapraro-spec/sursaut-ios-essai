@@ -177,6 +177,18 @@ class VisionSam {
   final String? error;
 }
 
+/// Résultat d'un remplissage par LaMa : `rgba` (512 x 512 x 4) et les mesures (temps en millisecondes, mémoire de l'application en Mo).
+class VisionLama {
+  const VisionLama({this.rgba, this.loadMs = 0, this.runMs = 0, this.memBeforeMB = 0, this.memAfterMB = 0, this.error});
+
+  final Uint8List? rgba;
+  final double loadMs;
+  final double runMs;
+  final double memBeforeMB;
+  final double memAfterMB;
+  final String? error;
+}
+
 /// Détourage par Vision (Apple) : sujet principal ou personnes, sans fichier de modèle (iPadOS 17 ou plus).
 class VisionBridge {
   VisionBridge._();
@@ -252,6 +264,59 @@ class VisionBridge {
       return const VisionParts(error: 'Parties du corps indisponibles (pas un iPad).');
     } on PlatformException catch (e) {
       return VisionParts(error: e.message ?? e.code);
+    }
+  }
+
+  /// LaMa : le modèle est-il téléchargé ? (`present`, `bytes`)
+  static Future<bool> lamaPresent() async {
+    try {
+      final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>('lamaStatus');
+      return r != null && r['present'] == true;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// LaMa : télécharge le modèle (≈ 208 Mo) et vérifie son empreinte. Rend un message d'erreur, ou null si tout va bien.
+  static Future<String?> lamaDownload() async {
+    try {
+      final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>('lamaDownload');
+      if (r == null) return 'Pas de réponse du téléchargement.';
+      final Object? err = r['error'];
+      return err?.toString();
+    } on MissingPluginException {
+      return 'LaMa indisponible (pas un iPad).';
+    } on PlatformException catch (e) {
+      return e.message ?? e.code;
+    }
+  }
+
+  /// LaMa : remplit la zone du masque. [rgba] : 512 x 512 x 4 octets ; [mask] : 512 x 512 octets (255 = à remplir).
+  static Future<VisionLama> lamaFill(Uint8List rgba, Uint8List mask) async {
+    try {
+      final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>(
+        'lamaFill',
+        <String, Object?>{'rgba': rgba, 'mask': mask},
+      );
+      if (r == null) return const VisionLama(error: 'Pas de réponse de LaMa.');
+      final Object? err = r['error'];
+      if (err != null) return VisionLama(error: err.toString());
+      final Object? out = r['rgba'];
+      if (out is! Uint8List || out.length < 512 * 512 * 4) return const VisionLama(error: 'Réponse de LaMa illisible.');
+      double val(String k) => (r[k] is num) ? (r[k]! as num).toDouble() : 0;
+      return VisionLama(
+        rgba: out,
+        loadMs: val('loadMs'),
+        runMs: val('runMs'),
+        memBeforeMB: val('memBeforeMB'),
+        memAfterMB: val('memAfterMB'),
+      );
+    } on MissingPluginException {
+      return const VisionLama(error: 'LaMa indisponible (pas un iPad).');
+    } on PlatformException catch (e) {
+      return VisionLama(error: e.message ?? e.code);
     }
   }
 

@@ -13,6 +13,7 @@ import 'dart:typed_data';
 
 import 'package:sursaut_essai/domain/curves.dart';
 import 'package:sursaut_essai/domain/histogram.dart';
+import 'package:sursaut_essai/domain/lama_prep.dart';
 import 'package:sursaut_essai/domain/lens_profiles.dart';
 import 'package:sursaut_essai/domain/mask_tools.dart';
 import 'package:sursaut_essai/domain/masks.dart';
@@ -1082,5 +1083,43 @@ void main() {
     expect(out.any((List<double> q) => q[2] >= 0.5), isTrue);
     final List<List<double>> few = <List<double>>[<double>[0.2, 0.2, 1]];
     expect(samLimitPoints(few).length, 1);
+  });
+
+  group('LaMa : préparation de la fenêtre 512', () {
+    test('une photo unie donne une fenêtre unie, le dépassement est noir', () {
+      final Uint8List px = Uint8List(100 * 100 * 4);
+      for (int i = 0; i < 100 * 100; i++) {
+        px[i * 4] = 200;
+        px[i * 4 + 1] = 100;
+        px[i * 4 + 2] = 50;
+        px[i * 4 + 3] = 255;
+      }
+      final Uint8List w = lamaCrop(px, 100, 100, 0, 0, 100);
+      expect(w.length, kLamaSide * kLamaSide * 4);
+      final int mid = (256 * kLamaSide + 256) * 4;
+      expect(w[mid], 200);
+      expect(w[mid + 1], 100);
+      expect(w[mid + 2], 50);
+      expect(w[mid + 3], 255);
+      final Uint8List out = lamaCrop(px, 100, 100, -1000, -1000, 100);
+      expect(out[mid], 0);
+    });
+    test('l\'ellipse couvre à peu près pi x rx x ry pixels', () {
+      final Uint8List m = lamaEllipseMask(256, 256, 70, 100);
+      int n = 0;
+      for (final int v in m) {
+        if (v == 255) n++;
+      }
+      expect((n - math.pi * 70 * 100).abs() < 400, isTrue);
+      expect(m[256 * kLamaSide + 256], 255);
+      expect(m[0], 0);
+    });
+    test('la zone à remplir est grisée, le reste est intact', () {
+      final Uint8List img = Uint8List(kLamaSide * kLamaSide * 4)..fillRange(0, kLamaSide * kLamaSide * 4, 10);
+      final Uint8List m = lamaEllipseMask(256, 256, 20, 20);
+      final Uint8List g = lamaShowHole(img, m);
+      expect(g[(256 * kLamaSide + 256) * 4], 128);
+      expect(g[0], 10);
+    });
   });
 }

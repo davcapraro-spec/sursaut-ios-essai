@@ -12,7 +12,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:pencil_bridge/pencil_bridge.dart'
-    show VisionBridge, VisionFace, VisionFaces, VisionMaskResult, VisionParts, VisionSam;
+    show VisionBridge, VisionFace, VisionFaces, VisionLama, VisionMaskResult, VisionParts, VisionSam;
 import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
@@ -25,6 +25,7 @@ import '../../domain/face_parts.dart';
 import '../../domain/curves.dart';
 import '../../domain/develop_params.dart';
 import '../../domain/histogram.dart';
+import '../../domain/lama_prep.dart';
 import '../../domain/lens_profiles.dart';
 import '../../domain/mask_tools.dart';
 import '../../domain/masks.dart';
@@ -495,6 +496,94 @@ class _DevelopPageState extends State<DevelopPage> {
     _lensFocal = focal;
     _lensAperture = aperture;
     _lensCandidate = candidate;
+  }
+
+  bool _lamaBusy = false;
+
+  Future<ui.Image> _lamaImage(Uint8List rgba) {
+    final Completer<ui.Image> c = Completer<ui.Image>();
+    ui.decodeImageFromPixels(rgba, kLamaSide, kLamaSide, ui.PixelFormat.rgba8888, c.complete);
+    return c.future;
+  }
+
+  /// Essai de LaMa sur l'iPad : remplit une ellipse au centre de la photo (fenêtre 512 x 512) et montre avant / trou / après,
+  /// avec le temps et la mémoire. Le modèle (208 Mo) est téléchargé la première fois.
+  Future<void> _lamaTest() async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _w == 0 || _h == 0) {
+      _say('Ouvrez d\'abord une photo.');
+      return;
+    }
+    if (_lamaBusy) return;
+    setState(() => _lamaBusy = true);
+    try {
+      if (!await VisionBridge.lamaPresent()) {
+        _say('Téléchargement de LaMa (208 Mo)… patientez, ne quittez pas l\'application.');
+        final String? e = await VisionBridge.lamaDownload();
+        if (e != null) {
+          _say(e);
+          return;
+        }
+      }
+      _say('LaMa remplit une zone au centre de la photo…');
+      final int side = math.min(_w, _h);
+      final Uint8List crop = lamaCrop(rgba, _w, _h, (_w - side) ~/ 2, (_h - side) ~/ 2, side);
+      final Uint8List mask = lamaEllipseMask(256, 256, 70, 100);
+      final VisionLama r = await VisionBridge.lamaFill(crop, mask);
+      if (!mounted) return;
+      final Uint8List? filled = r.rgba;
+      if (r.error != null || filled == null) {
+        _say(r.error ?? 'LaMa n\'a rien rendu.');
+        return;
+      }
+      final List<ui.Image> imgs = await Future.wait(<Future<ui.Image>>[
+        _lamaImage(crop),
+        _lamaImage(lamaShowHole(crop, mask)),
+        _lamaImage(filled),
+      ]);
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (BuildContext context) => AlertDialog(
+          title: const Text('Essai LaMa'),
+          content: SizedBox(
+            width: 900,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    for (int i = 0; i < 3; i++)
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.all(4),
+                          child: Column(
+                            children: <Widget>[
+                              Text(<String>['Avant', 'Zone à remplir', 'Après'][i]),
+                              AspectRatio(aspectRatio: 1, child: RawImage(image: imgs[i], fit: BoxFit.contain)),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Chargement du modèle : ${r.loadMs.round()} ms · Calcul : ${r.runMs.round()} ms\n'
+                  'Mémoire de l\'application : ${r.memBeforeMB.round()} Mo avant, ${r.memAfterMB.round()} Mo après',
+                ),
+              ],
+            ),
+          ),
+          actions: <Widget>[TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Fermer'))],
+        ),
+      );
+      for (final ui.Image i in imgs) {
+        i.dispose();
+      }
+    } finally {
+      if (mounted) setState(() => _lamaBusy = false);
+    }
   }
 
   void _say(String text) {
@@ -3552,6 +3641,7 @@ class _DevelopPageState extends State<DevelopPage> {
       appBar: AppBar(
         title: const Text('Développement'),
         actions: <Widget>[
+          TextButton(onPressed: ready && !_lamaBusy ? _lamaTest : null, child: Text(_lamaBusy ? 'LaMa…' : 'Essai LaMa')),
           TextButton(
               onPressed: ready && !_cropMode ? _enterCrop : null, child: const Text('Recadrer')),
           IconButton(

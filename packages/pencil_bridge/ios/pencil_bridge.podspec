@@ -17,6 +17,8 @@ Pod::Spec.new do |s|
   # Parties du corps (cheveux, peau, vêtements) : TensorFlow Lite, API C (Google, Apache 2.0 ; bibliothèque statique) fait tourner le modèle MediaPipe
   # « selfie multiclasse » (Google, Apache 2.0, 16 Mo, mis dans Assets/). Essai : à terme, modèle téléchargé à la première utilisation.
   s.dependency 'TensorFlowLiteC', '2.17.0'
+  # Reconstruction d'une zone effacée (LaMa, Apache 2.0) : ONNX Runtime (Microsoft, MIT). Le modèle (208 Mo) est téléchargé à la première utilisation.
+  s.dependency 'onnxruntime-objc', '1.19.2'
   s.resources        = ['Assets/*.tflite', 'Assets/*.mlmodelc']
   s.platform         = :ios, '13.0'
   s.swift_version    = '5.0'

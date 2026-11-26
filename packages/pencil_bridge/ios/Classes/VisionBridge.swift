@@ -14,8 +14,35 @@ final class VisionBridge {
       name: "sursaut/vision/methods",
       binaryMessenger: registrar.messenger())
     channel.setMethodCallHandler { call, result in
-      guard call.method == "instanceMask" || call.method == "listPersons" || call.method == "faceParts" || call.method == "bodyParts" || call.method == "samEncode" || call.method == "samDecode" else {
+      guard call.method == "instanceMask" || call.method == "listPersons" || call.method == "faceParts" || call.method == "bodyParts" || call.method == "samEncode" || call.method == "samDecode" || call.method == "lamaStatus" || call.method == "lamaDownload" || call.method == "lamaFill" else {
         result(FlutterMethodNotImplemented)
+        return
+      }
+      if call.method == "lamaStatus" {
+        result(LamaBridge.status())
+        return
+      }
+      if call.method == "lamaDownload" {
+        DispatchQueue.global(qos: .userInitiated).async {
+          let out = LamaBridge.download()
+          DispatchQueue.main.async { result(out) }
+        }
+        return
+      }
+      if call.method == "lamaFill" {
+        guard let a = call.arguments as? [String: Any],
+          let img = a["rgba"] as? FlutterStandardTypedData,
+          let msk = a["mask"] as? FlutterStandardTypedData
+        else {
+          result(["error": "Image ou masque manquant pour LaMa."])
+          return
+        }
+        let imgData = img.data
+        let mskData = msk.data
+        DispatchQueue.global(qos: .userInitiated).async {
+          let out = LamaBridge.fill(rgba: imgData, mask: mskData)
+          DispatchQueue.main.async { result(out) }
+        }
         return
       }
       if call.method == "samDecode" {
