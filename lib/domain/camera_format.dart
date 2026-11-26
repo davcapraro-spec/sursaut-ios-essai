@@ -46,6 +46,26 @@ String formatShutterCode(int cur) {
   return '$top/$den';
 }
 
+/// Mode d'exposition : codes RELEVÉS sur l'A7 IV (molette tournée cran par cran, 26/11) :
+/// M = 0x1, P = 0x10002, A = 0x20003, S = 0x30004, Auto intelligent = 0x48000.
+/// Les mémoires de la molette (MR 1, 2, 3) n'ont pas encore été relevées : valeur brute affichée.
+String formatExposureMode(int cur) {
+  switch (cur & 0xFFFFFFFF) {
+    case 0x1:
+      return 'M';
+    case 0x10002:
+      return 'P';
+    case 0x20003:
+      return 'A';
+    case 0x30004:
+      return 'S';
+    case 0x48000:
+      return 'Auto';
+    default:
+      return formatRaw(cur);
+  }
+}
+
 /// Batterie : octet signé en pourcentage (hypothèse confirmée seulement par une lecture).
 int batteryPercent(int cur) {
   final int b = cur & 0xFF;

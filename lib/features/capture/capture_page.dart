@@ -223,6 +223,8 @@ class _CapturePageState extends State<CapturePage> {
         return formatAperture(v);
       case kPropShutter:
         return formatShutterCode(v);
+      case kPropExposureMode:
+        return formatExposureMode(v);
       default:
         return formatRaw(v);
     }

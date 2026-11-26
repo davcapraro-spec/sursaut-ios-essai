@@ -1139,6 +1139,15 @@ void main() {
       expect(formatShutterCode(0), '—');
     });
 
+    test('mode d\'exposition : codes relevés sur l\'A7 IV', () {
+      expect(formatExposureMode(0x1), 'M');
+      expect(formatExposureMode(0x10002), 'P');
+      expect(formatExposureMode(0x20003), 'A');
+      expect(formatExposureMode(0x30004), 'S');
+      expect(formatExposureMode(0x48000), 'Auto');
+      expect(formatExposureMode(0x50001), '0x50001');
+    });
+
     test('batterie et valeur brute', () {
       expect(batteryPercent(87), 87);
       expect(batteryPercent(0xFF), -1);
