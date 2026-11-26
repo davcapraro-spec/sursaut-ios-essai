@@ -84,6 +84,17 @@ class CameraBridge {
     });
   }
 
+  /// Chemin de la dernière image de vue directe enregistrée par l'essai du banc, ou null.
+  static Future<String?> liveFramePath() async {
+    try {
+      return await _methods.invokeMethod<String>('liveFrame');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   /// Les événements structurés du mode connecté : état de l'appareil, photo reçue, réglage confirmé.
   static Stream<CameraLiveEvent> get liveEvents {
     return _events

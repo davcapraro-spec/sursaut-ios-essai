@@ -89,6 +89,30 @@ class _CameraBenchPageState extends State<CameraBenchPage> {
     );
   }
 
+  Future<void> _showLiveFrame() async {
+    final String? path = await CameraBridge.liveFramePath();
+    if (path == null) {
+      _add('Aucune image de vue directe : lancez d\'abord « 17. Vue directe (essai) ».');
+      return;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext ctx) => Dialog.fullscreen(
+        child: Stack(
+          children: <Widget>[
+            Positioned.fill(child: Image.file(File(path), fit: BoxFit.contain, gaplessPlayback: true)),
+            Positioned(
+              top: 12,
+              right: 12,
+              child: FilledButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Fermer')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _copy() async {
     final String report = <String>[
       'BANC APPAREIL — Sursaut iPad',
@@ -143,6 +167,16 @@ class _CameraBenchPageState extends State<CameraBenchPage> {
                 _button('14. Changer l\'ISO (essai)', 'writeISO'),
                 _button('15. Changer l\'ouverture (essai)', 'writeAperture'),
                 _button('16. Changer la vitesse (essai)', 'writeShutter'),
+                _button('17. Vue directe (essai)', 'liveviewTest'),
+                FilledButton(
+                  style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),
+                  onPressed: _showLiveFrame,
+                  child: const Text('17b. Voir la dernière image directe'),
+                ),
+                _button('18a. Collimateur : coin haut gauche', 'afTopLeft'),
+                _button('18b. Collimateur : centre', 'afCenter'),
+                _button('18c. Collimateur : coin bas droit', 'afBottomRight'),
+                _button('18d. Toucher à distance : centre', 'touchCenter'),
                 _button('État', 'state'),
                 FilledButton(
                   style: FilledButton.styleFrom(minimumSize: const Size(48, 48)),

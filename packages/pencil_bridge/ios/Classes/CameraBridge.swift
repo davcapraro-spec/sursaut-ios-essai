@@ -56,6 +56,10 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       result(previewLast())
       return
     }
+    if call.method == "liveFrame" {
+      result(liveFramePath())
+      return
+    }
     if call.method == "liveSnapshot" {
       result(liveSnapshot())
       return
@@ -70,6 +74,11 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       return
     }
     switch call.method {
+    case "liveviewTest": liveviewTest()
+    case "afTopLeft": afPoint(0xD2DC, 0, 0, "coin haut gauche")
+    case "afCenter": afPoint(0xD2DC, 320, 240, "centre")
+    case "afBottomRight": afPoint(0xD2DC, 639, 479, "coin bas droit")
+    case "touchCenter": touchCenter()
     case "liveStart": start()
     case "liveOpen": openSession()
     case "liveHandshake": sonyConnect3()
@@ -820,7 +829,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     return Data([UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 24) & 0xFF)])
   }
 
-  private func sendPTP(opcode: UInt16, params: [UInt32], label: String, handler: ((Data) -> Void)?, outData: Data? = nil, done: ((Bool) -> Void)? = nil) {
+  private func sendPTP(opcode: UInt16, params: [UInt32], label: String, handler: ((Data) -> Void)?, outData: Data? = nil, silent: Bool = false, done: ((Bool) -> Void)? = nil) {
     guard let cam = camera else {
       log("Aucun appareil : faites d'abord « 1. Chercher ».")
       done?(false)
@@ -832,7 +841,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     command.append(le16(opcode))
     command.append(le32(0))
     for p in params { command.append(le32(p)) }
-    log("PTP → \(label)")
+    if !silent { log("PTP → \(label)") }
     cam.requestSendPTPCommand(command, outData: outData) { [weak self] inData, response, error in
       guard let self = self else { return }
       var code = "?"
@@ -840,7 +849,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       if r.count >= 8 { code = self.hex(Int(r[6]) | Int(r[7]) << 8) }
       if let error = error {
         self.log("PTP ← \(label) : ERREUR \((error as NSError).domain) \((error as NSError).code) · \(error.localizedDescription)")
-      } else {
+      } else if !silent || code != "0x2001" {
         self.log("PTP ← \(label) : réponse \(code) (0x2001 = OK) · données reçues \(inData.count) octets")
       }
       if !inData.isEmpty { handler?(inData) }
@@ -1120,6 +1129,189 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   private func liveStop() {
     liveReady = false
     camera?.requestCloseSession()
+  }
+
+
+  // MARK: - Vue directe et collimateur (banc, d'après la référence PTP 3 de Sony)
+
+  private var liveTestRunning = false
+  private var liveFrameSaved: String? = nil
+
+  private func liveFramePath() -> String? {
+    guard let p = liveFrameSaved, FileManager.default.fileExists(atPath: p) else { return nil }
+    return p
+  }
+
+  /// Essai de la vue directe : état 0xD221, activation éventuelle (0xD313), 40 images par GetObject 0xFFFFC002.
+  private func liveviewTest() {
+    guard camera != nil, protocol3 else {
+      log("VUE DIRECTE : faites d'abord 1, 2 puis 6b (poignée de main PTP 3).")
+      return
+    }
+    if liveTestRunning {
+      log("VUE DIRECTE : essai déjà en cours.")
+      return
+    }
+    liveTestRunning = true
+    log("VUE DIRECTE : lecture de l'état de la vue directe (0xD221)…")
+    readSettings(quiet: true, watch: [0xD221, 0xD284]) { [weak self] in self?.liveStep2(tried: false) }
+  }
+
+  private func liveStep2(tried: Bool) {
+    let st = lastValues[0xD221]
+    guard let state = st else {
+      log("VUE DIRECTE : propriété 0xD221 absente de la liste de l'appareil. Essai arrêté.")
+      liveTestRunning = false
+      return
+    }
+    log("VUE DIRECTE : état 0xD221 = \(state) (0 = désactivée, 1 = activée, 2 = non prise en charge).")
+    if state == 2 {
+      liveTestRunning = false
+      return
+    }
+    if state == 1 {
+      liveStep3()
+      return
+    }
+    if tried {
+      log("VUE DIRECTE : toujours désactivée après la commande d'activation 0xD313. Appareil en mode prise de vue (pas lecture, pas menu) ? Essai arrêté.")
+      liveTestRunning = false
+      return
+    }
+    log("VUE DIRECTE : désactivée. Essai de la commande d'activation 0xD313 (valeur 2).")
+    sendPTP(opcode: 0x9207, params: [0xD313], label: "SetControlDeviceB 0x9207 · activer la vue directe (0xD313 = 2)", handler: nil, outData: le16(2), done: { [weak self] ok in
+      guard let self = self else { return }
+      self.log("VUE DIRECTE : commande d'activation \(ok ? "acceptée" : "refusée (réponse différente de 0x2001)"). Relecture dans 1 s…")
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+        self?.readSettings(quiet: true, watch: [0xD221]) { [weak self] in self?.liveStep2(tried: true) }
+      }
+    })
+  }
+
+  private func liveStep3() {
+    sendPTP(opcode: 0x1008, params: [0xFFFFC002], label: "GetObjectInfo 0xFFFFC002 (vue directe)", handler: { [weak self] data in
+      guard let self = self else { return }
+      var r = PTPReader(self.stripContainer(data))
+      if let _ = r.u32(), let _ = r.u16(), let _ = r.u16(), let size = r.u32() {
+        self.log("  VUE DIRECTE : taille annoncée (maximum, pas la taille réelle) : \(size / 1000) ko")
+      }
+    }, done: { [weak self] ok in
+      guard let self = self else { return }
+      if !ok {
+        self.log("VUE DIRECTE : GetObjectInfo refusé. On tente quand même la lecture des images.")
+      }
+      self.liveLoop(index: 1, total: 40, started: Date(), good: 0, bad: 0, consecutiveBad: 0, sizes: [], dims: "?", lastJPEG: nil, firstFocal: nil)
+    })
+  }
+
+  private func u32le(_ b: [UInt8], _ o: Int) -> Int? {
+    guard o >= 0, o + 4 <= b.count else { return nil }
+    return Int(b[o]) | Int(b[o + 1]) << 8 | Int(b[o + 2]) << 16 | Int(b[o + 3]) << 24
+  }
+
+  private func u16le(_ b: [UInt8], _ o: Int) -> Int? {
+    guard o >= 0, o + 2 <= b.count else { return nil }
+    return Int(b[o]) | Int(b[o + 1]) << 8
+  }
+
+  /// Décrit les cadres de mise au point (structure « FocalFrameInfo » de la référence, version 1.00 et suivantes).
+  private func describeFocal(_ f: [UInt8]) -> String {
+    guard f.count > 60, let version = u16le(f, 0) else { return "cadres : données trop courtes (\(f.count) octets)" }
+    var pos = 8 + 40
+    guard let n = u16le(f, pos) else { return "cadres : illisibles" }
+    pos += 2 + 6 + n * 24
+    guard let xd = u32le(f, pos), let yd = u32le(f, pos + 4), let num = u16le(f, pos + 8) else {
+      return "version \(version) : zone des cadres de mise au point introuvable (\(f.count) octets)"
+    }
+    pos += 8 + 2 + 6
+    var out = "version \(version) · grille \(xd)×\(yd) · \(num) cadre(s) de mise au point"
+    var k = 0
+    while k < min(num, 4) {
+      guard let type = u16le(f, pos), let state = u16le(f, pos + 2), let x = u32le(f, pos + 8), let y = u32le(f, pos + 12), let h = u32le(f, pos + 16), let w = u32le(f, pos + 20) else { break }
+      out += " · [type \(type) état \(state) x \(x) y \(y) h \(h) l \(w)]"
+      pos += 24
+      k += 1
+    }
+    return out
+  }
+
+  private func liveLoop(index: Int, total: Int, started: Date, good: Int, bad: Int, consecutiveBad: Int, sizes: [Int], dims: String, lastJPEG: Data?, firstFocal: String?) {
+    if index > total || consecutiveBad >= 10 {
+      let secs = Date().timeIntervalSince(started)
+      let avg = sizes.isEmpty ? 0 : sizes.reduce(0, +) / sizes.count
+      let fps = secs > 0 ? Double(good) / secs : 0
+      log("VUE DIRECTE : TERMINÉ · \(good) image(s) reçue(s), \(bad) vide(s) ou refusée(s), en \(String(format: "%.1f", secs)) s = \(String(format: "%.1f", fps)) images/s · taille \(sizes.min() ?? 0)–\(sizes.max() ?? 0) octets (moyenne \(avg)) · dimensions \(dims)")
+      if let f = firstFocal { log("VUE DIRECTE : cadres : \(f)") }
+      if let d = lastJPEG, let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("banc_appareil", isDirectory: true) {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let out = dir.appendingPathComponent("apercu_live.jpg")
+        if (try? d.write(to: out)) != nil {
+          liveFrameSaved = out.path
+          log("VUE DIRECTE : dernière image enregistrée (bouton « 17b. Voir la dernière image directe »).")
+        }
+      }
+      if consecutiveBad >= 10 { log("VUE DIRECTE : arrêt après 10 échecs de suite.") }
+      liveTestRunning = false
+      return
+    }
+    var gotSize = 0
+    var gotDims = dims
+    var gotJPEG: Data? = lastJPEG
+    var gotFocal: String? = firstFocal
+    sendPTP(opcode: 0x1009, params: [0xFFFFC002], label: "GetObject 0xFFFFC002 (image \(index))", handler: { [weak self] data in
+      guard let self = self else { return }
+      let body = self.stripContainer(data)
+      let b = [UInt8](body)
+      guard let imgOff = self.u32le(b, 0), let imgSize = self.u32le(b, 4), let fOff = self.u32le(b, 8), let fSize = self.u32le(b, 12) else { return }
+      if index == 1 { self.log("  VUE DIRECTE image 1 : \(b.count) octets reçus · décalage image \(imgOff), taille image \(imgSize), décalage cadres \(fOff), taille cadres \(fSize)") }
+      guard imgSize > 0, imgOff + imgSize <= b.count else { return }
+      gotSize = imgSize
+      gotJPEG = body.subdata(in: imgOff..<(imgOff + imgSize))
+      body.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        let p = raw.bindMemory(to: UInt8.self)
+        if imgOff + 2 < p.count, let e = self.jpegExtent(p, imgOff) { gotDims = "\(e.w) × \(e.h) px" }
+      }
+      if gotFocal == nil, fSize > 0, fOff + fSize <= b.count {
+        gotFocal = self.describeFocal(Array(b[fOff..<(fOff + fSize)]))
+      }
+    }, silent: true, done: { [weak self] ok in
+      guard let self = self else { return }
+      let success = ok && gotSize > 0
+      var s = sizes
+      if success { s.append(gotSize) }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+        self?.liveLoop(index: index + 1, total: total, started: started, good: good + (success ? 1 : 0), bad: bad + (success ? 0 : 1), consecutiveBad: success ? 0 : consecutiveBad + 1, sizes: s, dims: gotDims, lastJPEG: gotJPEG, firstFocal: gotFocal)
+      }
+    })
+  }
+
+  /// Envoie une position de collimateur (0xD2DC) : X (0–639) dans les 2 octets de poids fort, Y (0–479) dans les 2 de poids faible.
+  private func afPoint(_ code: UInt32, _ x: Int, _ y: Int, _ name: String) {
+    guard camera != nil, protocol3 else {
+      log("COLLIMATEUR : faites d'abord 1, 2 puis 6b.")
+      return
+    }
+    let value = UInt32((x << 16) | y)
+    log("COLLIMATEUR : \(name) (x \(x), y \(y)) par \(hex(Int(code))). Regardez le carré de mise au point sur l'appareil (zone « Point flexible »).")
+    sendPTP(opcode: 0x9207, params: [code], label: "SetControlDeviceB \(hex(Int(code))) · position \(x),\(y)", handler: nil, outData: le32(value), done: { [weak self] ok in
+      self?.log("COLLIMATEUR : \(ok ? "commande acceptée (0x2001)" : "commande refusée") : le carré a-t-il bougé sur l'appareil ?")
+    })
+  }
+
+  /// Toucher à distance (0xD2E4) : utilisable seulement si 0xD284 vaut 1.
+  private func touchCenter() {
+    guard camera != nil, protocol3 else {
+      log("TOUCHER : faites d'abord 1, 2 puis 6b.")
+      return
+    }
+    readSettings(quiet: true, watch: [0xD284]) { [weak self] in
+      guard let self = self else { return }
+      let st = self.lastValues[0xD284]
+      self.log("TOUCHER : état « toucher à distance possible » 0xD284 = \(st.map { String($0) } ?? "absent") (1 = possible).")
+      if st == 1 {
+        self.afPoint(0xD2E4, 320, 240, "toucher au centre")
+      }
+    }
   }
 
   // MARK: - 5. État
