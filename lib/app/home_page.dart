@@ -79,7 +79,12 @@ class HomePage extends StatelessWidget {
                         icon: Icons.usb,
                         title: 'Capturer',
                         subtitle: 'Piloter l\'appareil par câble USB-C : réglages, déclenchement, réception',
-                        onTap: () => _open(context, const CapturePage()),
+                        onTap: () => _open(
+                          context,
+                          CapturePage(
+                            onOpenPhoto: (BuildContext c, String path) => _open(c, DevelopPage(openPath: path)),
+                          ),
+                        ),
                       ),
                       _Tile(
                         icon: Icons.speed,

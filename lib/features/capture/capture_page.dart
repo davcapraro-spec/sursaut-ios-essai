@@ -6,7 +6,6 @@ import 'package:pencil_bridge/pencil_bridge.dart';
 
 import '../../common/theme.dart';
 import '../../domain/camera_format.dart';
-import '../develop/develop_page.dart';
 
 /// Capturer : piloter l'A7 IV branché en USB-C (réglages, déclenchement, réception de la photo).
 ///
@@ -14,7 +13,10 @@ import '../develop/develop_page.dart';
 /// vitesse, déclenchement, réception du RAW. Cet écran les assemble ; son comportement sur l'iPad
 /// n'est pas encore vérifié.
 class CapturePage extends StatefulWidget {
-  const CapturePage({super.key});
+  const CapturePage({super.key, required this.onOpenPhoto});
+
+  /// Ouvre une photo reçue dans le développement (fournie par l'accueil : une fonctionnalité n'en importe pas une autre).
+  final void Function(BuildContext context, String path) onOpenPhoto;
 
   @override
   State<CapturePage> createState() => _CapturePageState();
@@ -229,7 +231,7 @@ class _CapturePageState extends State<CapturePage> {
   void _openInDevelop() {
     final String? f = _st.lastFile;
     if (f == null) return;
-    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => DevelopPage(openPath: f)));
+    widget.onOpenPhoto(context, f);
   }
 
   @override
