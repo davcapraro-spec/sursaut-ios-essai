@@ -285,7 +285,16 @@ class _CapturePageState extends State<CapturePage> {
     if (!imageRect.contains(local)) return;
     final double fx = (local.dx - imageRect.left) / imageRect.width;
     final double fy = (local.dy - imageRect.top) / imageRect.height;
-    CameraBridge.liveAF((fx * 639).round().clamp(0, 639).toInt(), (fy * 479).round().clamp(0, 479).toInt());
+    final List<int> a = _focusArea();
+    // Un toucher hors de la zone où l'appareil accepte le point est ramené au bord de cette zone.
+    CameraBridge.liveAF((fx * 639).round().clamp(a[0], a[2]).toInt(), (fy * 479).round().clamp(a[1], a[3]).toInt());
+  }
+
+  /// Zone utile du point de mise au point : [xMin, yMin, xMax, yMax] sur la grille 640 × 480 (toute la grille si l'appareil ne la précise pas).
+  List<int> _focusArea() {
+    final List<int>? a = _st.area;
+    if (a == null || a.length < 4 || a[2] <= a[0] || a[3] <= a[1] || a[2] > 639 || a[3] > 479) return <int>[0, 0, 639, 479];
+    return a;
   }
 
   Widget _buildPreview() {
@@ -313,7 +322,7 @@ class _CapturePageState extends State<CapturePage> {
                     fit: StackFit.expand,
                     children: <Widget>[
                       Image.memory(f.jpeg, fit: BoxFit.contain, gaplessPlayback: true),
-                      CustomPaint(painter: _FocusFramesPainter(f.focus, imageRect)),
+                      CustomPaint(painter: _FocusFramesPainter(f.focus, imageRect, _focusArea())),
                     ],
                   ),
                 )
@@ -511,13 +520,30 @@ class _ReadOnlyBlock extends StatelessWidget {
 
 /// Dessine les cadres de mise au point renvoyés par l'appareil (position = centre du cadre : hypothèse à confirmer).
 class _FocusFramesPainter extends CustomPainter {
-  _FocusFramesPainter(this.frames, this.imageRect);
+  _FocusFramesPainter(this.frames, this.imageRect, this.area);
 
   final List<CameraFocusFrame> frames;
   final Rect imageRect;
 
+  /// Zone utile du point : [xMin, yMin, xMax, yMax] sur la grille 640 × 480.
+  final List<int> area;
+
   @override
   void paint(Canvas canvas, Size size) {
+    // Cadre fin : limite de la zone où le point de mise au point peut être placé.
+    final Rect limit = Rect.fromLTRB(
+      imageRect.left + area[0] / 639 * imageRect.width,
+      imageRect.top + area[1] / 479 * imageRect.height,
+      imageRect.left + area[2] / 639 * imageRect.width,
+      imageRect.top + area[3] / 479 * imageRect.height,
+    );
+    canvas.drawRect(
+      limit.deflate(1),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = const Color(0x99FFFFFF),
+    );
     for (final CameraFocusFrame f in frames) {
       final double cx = imageRect.left + f.x * imageRect.width;
       final double cy = imageRect.top + f.y * imageRect.height;
@@ -532,5 +558,5 @@ class _FocusFramesPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_FocusFramesPainter old) => old.frames != frames || old.imageRect != imageRect;
+  bool shouldRepaint(_FocusFramesPainter old) => old.frames != frames || old.imageRect != imageRect || old.area != area;
 }

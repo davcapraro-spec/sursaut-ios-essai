@@ -226,7 +226,11 @@ class CameraLiveState {
     this.received = 0,
     this.lastFile,
     this.props = const <int, CameraLiveProp>{},
+    this.area,
   });
+
+  /// Zone où l'appareil accepte un point de mise au point, en cases de la grille 640 × 480 : [xMin, yMin, xMax, yMax]. Null si inconnue.
+  final List<int>? area;
 
   final bool found;
   final bool session;
@@ -262,6 +266,7 @@ class CameraLiveState {
       received: (m['received'] as num?)?.toInt() ?? 0,
       lastFile: m['lastFile'] as String?,
       props: props,
+      area: m['area'] is List ? (m['area']! as List<Object?>).map((Object? e) => (e as num).toInt()).toList() : null,
     );
   }
 }

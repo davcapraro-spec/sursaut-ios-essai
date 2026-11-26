@@ -34,6 +34,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   private var liveRefreshing = false
   private var liveRefreshAgain = false
   private var liveBusy = false
+  private var lastRanges: [Int: (lo: Int, hi: Int)] = [:]
   private var pendingSet: (code: Int, value: Int, ok: Bool, since: Date)? = nil
 
   public static func register(with registrar: FlutterPluginRegistrar) {
@@ -585,6 +586,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       if form == 1 {
         if let lo = rd(size), let hi = rd(size), let st = rd(size) {
           choices = " · plage \(hex(Int(truncatingIfNeeded: lo)))…\(hex(Int(truncatingIfNeeded: hi))) pas \(hex(Int(truncatingIfNeeded: st)))"
+          lastRanges[Int(truncatingIfNeeded: code)] = (Int(truncatingIfNeeded: lo), Int(truncatingIfNeeded: hi))
         }
       } else if form == 2 {
         var lists: [[UInt64]] = []
@@ -1048,6 +1050,10 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       "received": receivedCount,
       "props": props,
     ]
+    if let r = lastRanges[0xD267] {
+      // Zone utile de la vue directe (0xD267) : X dans les 2 octets de poids fort, Y dans les 2 de poids faible.
+      out["area"] = [(r.lo >> 16) & 0xFFFF, r.lo & 0xFFFF, (r.hi >> 16) & 0xFFFF, r.hi & 0xFFFF]
+    }
     if let n = camera?.name { out["name"] = n }
     if let p = lastFilePath { out["lastFile"] = p }
     return out
