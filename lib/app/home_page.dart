@@ -76,7 +76,7 @@ class HomePage extends StatelessWidget {
                         onTap: () => _open(context, const DevelopPage()),
                       ),
                       _Tile(
-                        icon: Icons.usb,
+                        icon: Icons.photo_camera_outlined,
                         title: 'Capturer',
                         subtitle: 'Piloter l\'appareil par câble USB-C : réglages, déclenchement, réception',
                         onTap: () => _open(
@@ -86,13 +86,19 @@ class HomePage extends StatelessWidget {
                           ),
                         ),
                       ),
-                      _Tile(
-                        icon: Icons.speed,
-                        title: 'Diagnostics',
-                        subtitle: 'Test du moteur, Apple Pencil, appareil photo',
-                        onTap: () => _open(context, const DiagnosticsPage()),
-                      ),
                     ],
+                  ),
+                  const SizedBox(height: 24),
+                  OutlinedButton.icon(
+                    onPressed: () => _open(context, const DiagnosticsPage()),
+                    icon: const Icon(Icons.monitor_heart_outlined, size: 20),
+                    label: const Text('Diagnostics'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white60,
+                      side: const BorderSide(color: Color(0xFF3A3A40)),
+                      shape: const StadiumBorder(),
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    ),
                   ),
                 ],
               ),
@@ -131,7 +137,15 @@ class _Tile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Icon(icon, size: 36, color: Theme.of(context).colorScheme.primary),
+                Container(
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF3A2C14),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(icon, size: 32, color: Theme.of(context).colorScheme.primary),
+                ),
                 const Spacer(),
                 Text(title, style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 6),
