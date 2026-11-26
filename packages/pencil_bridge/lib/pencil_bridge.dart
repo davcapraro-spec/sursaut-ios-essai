@@ -115,6 +115,18 @@ class CameraBridge {
     }
   }
 
+  /// Place le point de mise au point : x de 0 à 639, y de 0 à 479 (grille de l'appareil).
+  static Future<String?> liveAF(int x, int y) async {
+    try {
+      await _methods.invokeMethod<void>('liveAF', <String, Object>{'x': x, 'y': y});
+      return null;
+    } on MissingPluginException {
+      return 'pont natif absent (pas un iPad)';
+    } on PlatformException catch (e) {
+      return e.message ?? e.code;
+    }
+  }
+
   /// Règle une propriété de l'appareil ; la confirmation arrive par [liveEvents] (`kind == 'set'`).
   static Future<String?> liveSet(int code, int value) async {
     try {
@@ -148,6 +160,49 @@ class CameraBridge {
     } on PlatformException catch (e) {
       return e.message ?? e.code;
     }
+  }
+}
+
+/// Un cadre de mise au point affiché sur l'image directe (fractions de l'image, de 0 à 1).
+class CameraFocusFrame {
+  const CameraFocusFrame({required this.x, required this.y, required this.w, required this.h, required this.type, required this.state});
+
+  final double x;
+  final double y;
+  final double w;
+  final double h;
+  final int type;
+
+  /// 1 = pas net, 2 = net, 3 = sélection, 4 = en mouvement (référence Sony).
+  final int state;
+}
+
+/// Une image de la vue directe : JPEG, dimensions, cadres de mise au point.
+class CameraLiveFrame {
+  const CameraLiveFrame({required this.jpeg, required this.width, required this.height, this.focus = const <CameraFocusFrame>[]});
+
+  final Uint8List jpeg;
+  final int width;
+  final int height;
+  final List<CameraFocusFrame> focus;
+
+  factory CameraLiveFrame.fromMap(Map<Object?, Object?> m) {
+    final List<CameraFocusFrame> focus = <CameraFocusFrame>[];
+    final Object? raw = m['focus'];
+    if (raw is List) {
+      for (final Object? f in raw) {
+        if (f is List && f.length >= 6) {
+          final List<double> v = f.map((Object? e) => (e as num).toDouble()).toList();
+          focus.add(CameraFocusFrame(x: v[0], y: v[1], w: v[2], h: v[3], type: v[4].toInt(), state: v[5].toInt()));
+        }
+      }
+    }
+    return CameraLiveFrame(
+      jpeg: m['jpeg']! as Uint8List,
+      width: (m['w'] as num?)?.toInt() ?? 0,
+      height: (m['h'] as num?)?.toInt() ?? 0,
+      focus: focus,
+    );
   }
 }
 
@@ -213,13 +268,20 @@ class CameraLiveState {
 
 /// Événement du mode connecté : `state` (nouvel état), `photo` (fichier reçu), `set` (réglage confirmé ou refusé).
 class CameraLiveEvent {
-  const CameraLiveEvent(this.kind, {this.state, this.data = const <String, Object?>{}});
+  const CameraLiveEvent(this.kind, {this.state, this.frame, this.data = const <String, Object?>{}});
 
   final String kind;
   final CameraLiveState? state;
+  final CameraLiveFrame? frame;
   final Map<String, Object?> data;
 
   factory CameraLiveEvent.fromMap(Map<Object?, Object?> m) {
+    if (m['frame'] is Map) {
+      return CameraLiveEvent('frame', frame: CameraLiveFrame.fromMap(m['frame']! as Map<Object?, Object?>));
+    }
+    if (m['stream'] is Map) {
+      return const CameraLiveEvent('stream');
+    }
     if (m['state'] is Map) {
       return CameraLiveEvent('state', state: CameraLiveState.fromMap(m['state']! as Map<Object?, Object?>));
     }

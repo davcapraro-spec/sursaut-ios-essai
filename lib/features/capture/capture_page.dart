@@ -29,6 +29,7 @@ class _CapturePageState extends State<CapturePage> {
   bool _connecting = false;
   bool _shooting = false;
   String? _previewPath;
+  CameraLiveFrame? _frame;
   String? _lastInfo;
   final Set<int> _pending = <int>{};
   Timer? _shootTimeout;
@@ -44,6 +45,7 @@ class _CapturePageState extends State<CapturePage> {
   void dispose() {
     _sub?.cancel();
     _shootTimeout?.cancel();
+    unawaited(CameraBridge.call('liveStreamStop'));
     super.dispose();
   }
 
@@ -55,6 +57,7 @@ class _CapturePageState extends State<CapturePage> {
       _st = s;
       if (s.ready) _status = 'Connecté à ${s.name ?? "l'appareil"}.';
     });
+    if (s.ready) unawaited(CameraBridge.call('liveStreamStart'));
   }
 
   void _onEvent(CameraLiveEvent e) {
@@ -62,6 +65,11 @@ class _CapturePageState extends State<CapturePage> {
     switch (e.kind) {
       case 'state':
         setState(() => _st = e.state ?? _st);
+      case 'frame':
+        setState(() => _frame = e.frame);
+      case 'stream':
+        setState(() => _frame = null);
+        _toast('L\'image directe s\'est arrêtée. L\'appareil est-il en mode prise de vue ?');
       case 'photo':
         unawaited(_onPhoto(e.data));
       case 'set':
@@ -163,6 +171,7 @@ class _CapturePageState extends State<CapturePage> {
             ? 'Connecté, mais les réglages ne sont pas arrivés. Touchez « Relire ».'
             : 'Connecté à ${fin.name ?? "l'appareil"}.';
       });
+      if (fin.ready) unawaited(CameraBridge.call('liveStreamStart'));
     } catch (e) {
       _fail('Connexion impossible : $e');
     }
@@ -177,9 +186,11 @@ class _CapturePageState extends State<CapturePage> {
   }
 
   Future<void> _disconnect() async {
+    await CameraBridge.call('liveStreamStop');
     await CameraBridge.call('liveStop');
     if (!mounted) return;
     setState(() {
+      _frame = null;
       _st = const CameraLiveState();
       _status = 'Déconnecté.';
     });
@@ -269,29 +280,78 @@ class _CapturePageState extends State<CapturePage> {
     );
   }
 
+  /// Touché sur l'image directe : place le point de mise au point (grille 640 × 480 de l'appareil).
+  void _tapImage(Offset local, Rect imageRect) {
+    if (!imageRect.contains(local)) return;
+    final double fx = (local.dx - imageRect.left) / imageRect.width;
+    final double fy = (local.dy - imageRect.top) / imageRect.height;
+    CameraBridge.liveAF((fx * 639).round().clamp(0, 639).toInt(), (fy * 479).round().clamp(0, 479).toInt());
+  }
+
   Widget _buildPreview() {
-    final String? path = _previewPath;
+    final CameraLiveFrame? f = _frame;
+    final String? photo = _previewPath;
     return DecoratedBox(
       decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(12)),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
-        child: Stack(
-          fit: StackFit.expand,
-          children: <Widget>[
-            if (path != null)
-              Image.file(File(path), fit: BoxFit.contain, gaplessPlayback: true)
-            else
-              const Center(
-                child: Text('La dernière photo reçue apparaîtra ici.', style: TextStyle(color: Colors.white54)),
-              ),
-            if (_lastInfo != null)
-              Positioned(
-                left: 12,
-                bottom: 10,
-                child: Text(_lastInfo!, style: const TextStyle(color: Colors.white70, fontSize: 13)),
-              ),
-          ],
-        ),
+        child: LayoutBuilder(builder: (BuildContext context, BoxConstraints c) {
+          final Size box = Size(c.maxWidth, c.maxHeight);
+          Rect imageRect = Offset.zero & box;
+          if (f != null && f.width > 0 && f.height > 0) {
+            final FittedSizes fs = applyBoxFit(BoxFit.contain, Size(f.width.toDouble(), f.height.toDouble()), box);
+            imageRect = Alignment.center.inscribe(fs.destination, Offset.zero & box);
+          }
+          return Stack(
+            fit: StackFit.expand,
+            children: <Widget>[
+              if (f != null)
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapUp: (TapUpDetails d) => _tapImage(d.localPosition, imageRect),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: <Widget>[
+                      Image.memory(f.jpeg, fit: BoxFit.contain, gaplessPlayback: true),
+                      CustomPaint(painter: _FocusFramesPainter(f.focus, imageRect)),
+                    ],
+                  ),
+                )
+              else if (photo != null)
+                Image.file(File(photo), fit: BoxFit.contain, gaplessPlayback: true)
+              else
+                const Center(
+                  child: Text('L\'image directe et la dernière photo apparaîtront ici.', style: TextStyle(color: Colors.white54)),
+                ),
+              if (f != null)
+                const Positioned(
+                  left: 12,
+                  top: 10,
+                  child: Text('Touchez l\'image pour placer le point de mise au point', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                ),
+              if (f != null && photo != null)
+                Positioned(
+                  right: 10,
+                  bottom: 10,
+                  child: Container(
+                    width: 150,
+                    height: 100,
+                    decoration: BoxDecoration(border: Border.all(color: kAccent, width: 2), borderRadius: BorderRadius.circular(6)),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: Image.file(File(photo), fit: BoxFit.cover, gaplessPlayback: true),
+                    ),
+                  ),
+                ),
+              if (_lastInfo != null)
+                Positioned(
+                  left: 12,
+                  bottom: 10,
+                  child: Text(_lastInfo!, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                ),
+            ],
+          );
+        }),
       ),
     );
   }
@@ -338,7 +398,13 @@ class _CapturePageState extends State<CapturePage> {
           _SettingRow(label: 'ISO', code: kPropIso, st: s, pending: _pending, fmt: _fmt, onStep: _step),
           const SizedBox(height: 8),
           _ReadOnlyBlock(st: s, fmt: _fmt),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: () => CameraBridge.call('liveFocus'),
+            icon: const Icon(Icons.center_focus_strong),
+            label: const Text('Mise au point'),
+          ),
+          const SizedBox(height: 12),
           SizedBox(
             height: 84,
             child: FilledButton.icon(
@@ -441,4 +507,30 @@ class _ReadOnlyBlock extends StatelessWidget {
       Wrap(spacing: 6, runSpacing: 0, children: chips),
     ]);
   }
+}
+
+/// Dessine les cadres de mise au point renvoyés par l'appareil (position = centre du cadre : hypothèse à confirmer).
+class _FocusFramesPainter extends CustomPainter {
+  _FocusFramesPainter(this.frames, this.imageRect);
+
+  final List<CameraFocusFrame> frames;
+  final Rect imageRect;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final CameraFocusFrame f in frames) {
+      final double cx = imageRect.left + f.x * imageRect.width;
+      final double cy = imageRect.top + f.y * imageRect.height;
+      final double w = f.w * imageRect.width;
+      final double h = f.h * imageRect.height;
+      final Paint p = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..color = f.state == 2 ? const Color(0xFF4CD964) : kAccent;
+      canvas.drawRect(Rect.fromCenter(center: Offset(cx, cy), width: w, height: h), p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_FocusFramesPainter old) => old.frames != frames || old.imageRect != imageRect;
 }

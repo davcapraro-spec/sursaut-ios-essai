@@ -56,6 +56,15 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       result(previewLast())
       return
     }
+    if call.method == "liveAF" {
+      guard let a = call.arguments as? [String: Any], let x = a["x"] as? Int, let y = a["y"] as? Int else {
+        result(FlutterError(code: "args", message: "liveAF : x et y attendus", details: nil))
+        return
+      }
+      afPoint(0xD2DC, max(0, min(639, x)), max(0, min(479, y)), "touché sur l'image", quiet: true)
+      result(nil)
+      return
+    }
     if call.method == "liveFrame" {
       result(liveFramePath())
       return
@@ -74,6 +83,9 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
       return
     }
     switch call.method {
+    case "liveStreamStart": liveStreamStart()
+    case "liveStreamStop": liveStreamStop()
+    case "liveFocus": liveFocus()
     case "liveviewTest": liveviewTest()
     case "afTopLeft": afPoint(0xD2DC, 0, 0, "coin haut gauche")
     case "afCenter": afPoint(0xD2DC, 320, 240, "centre")
@@ -413,6 +425,7 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
           message += " · enregistré : \(name)"
           self.receivedCount += 1
           self.lastFilePath = dir.appendingPathComponent(name).path
+          self.streamPaused = false
           self.emitPhoto(name, body.count, seconds)
         } catch {
           message += " · écriture impossible : \(error.localizedDescription)"
@@ -1121,6 +1134,8 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
     guard camera != nil, liveReady else { return }
     if liveBusy { return }
     liveBusy = true
+    streamPaused = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + 25.0) { [weak self] in self?.streamPaused = false }
     sonyShoot(then: { [weak self] in
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.liveBusy = false }
     })
@@ -1286,15 +1301,15 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
   }
 
   /// Envoie une position de collimateur (0xD2DC) : X (0–639) dans les 2 octets de poids fort, Y (0–479) dans les 2 de poids faible.
-  private func afPoint(_ code: UInt32, _ x: Int, _ y: Int, _ name: String) {
+  private func afPoint(_ code: UInt32, _ x: Int, _ y: Int, _ name: String, quiet: Bool = false) {
     guard camera != nil, protocol3 else {
       log("COLLIMATEUR : faites d'abord 1, 2 puis 6b.")
       return
     }
     let value = UInt32((x << 16) | y)
-    log("COLLIMATEUR : \(name) (x \(x), y \(y)) par \(hex(Int(code))). Regardez le carré de mise au point sur l'appareil (zone « Point flexible »).")
-    sendPTP(opcode: 0x9207, params: [code], label: "SetControlDeviceB \(hex(Int(code))) · position \(x),\(y)", handler: nil, outData: le32(value), done: { [weak self] ok in
-      self?.log("COLLIMATEUR : \(ok ? "commande acceptée (0x2001)" : "commande refusée") : le carré a-t-il bougé sur l'appareil ?")
+    if !quiet { log("COLLIMATEUR : \(name) (x \(x), y \(y)) par \(hex(Int(code))). Regardez le carré de mise au point sur l'appareil (zone « Point flexible »).") }
+    sendPTP(opcode: 0x9207, params: [code], label: "SetControlDeviceB \(hex(Int(code))) · position \(x),\(y)", handler: nil, outData: le32(value), silent: quiet, done: { [weak self] ok in
+      if !quiet || !ok { self?.log("COLLIMATEUR : \(ok ? "commande acceptée (0x2001)" : "commande refusée") : le carré a-t-il bougé sur l'appareil ?") }
     })
   }
 
@@ -1312,6 +1327,113 @@ public class CameraBridge: NSObject, FlutterStreamHandler, ICDeviceBrowserDelega
         self.afPoint(0xD2E4, 320, 240, "toucher au centre")
       }
     }
+  }
+
+
+  // MARK: - Flux de vue directe pour l'écran « Capturer »
+
+  private var streaming = false
+  private var streamPaused = false
+  private var streamBad = 0
+  private var streamIndex = 0
+
+  private func liveStreamStart() {
+    guard camera != nil, protocol3 else { return }
+    if streaming { return }
+    streaming = true
+    streamPaused = false
+    streamBad = 0
+    streamIndex = 0
+    streamNext()
+  }
+
+  private func liveStreamStop() {
+    streaming = false
+  }
+
+  /// Cadres de mise au point : [x, y, largeur, hauteur, type, état], x et y en fractions de l'image (0 à 1).
+  private func parseFocalFrames(_ f: [UInt8]) -> [[Double]] {
+    guard f.count > 60 else { return [] }
+    var pos = 8 + 40
+    guard let n = u16le(f, pos) else { return [] }
+    pos += 2 + 6 + n * 24
+    guard let xd = u32le(f, pos), let yd = u32le(f, pos + 4), let num = u16le(f, pos + 8), xd > 0, yd > 0 else { return [] }
+    pos += 8 + 2 + 6
+    var out: [[Double]] = []
+    var k = 0
+    while k < min(num, 8) {
+      guard let type = u16le(f, pos), let state = u16le(f, pos + 2), let x = u32le(f, pos + 8), let y = u32le(f, pos + 12), let h = u32le(f, pos + 16), let w = u32le(f, pos + 20) else { break }
+      out.append([Double(x) / Double(xd), Double(y) / Double(yd), Double(w) / Double(xd), Double(h) / Double(yd), Double(type), Double(state)])
+      pos += 24
+      k += 1
+    }
+    return out
+  }
+
+  private func streamNext() {
+    guard streaming else { return }
+    guard camera != nil else {
+      streaming = false
+      return
+    }
+    if streamPaused {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.streamNext() }
+      return
+    }
+    var payload: [String: Any]? = nil
+    sendPTP(opcode: 0x1009, params: [0xFFFFC002], label: "vue directe", handler: { [weak self] data in
+      guard let self = self else { return }
+      let body = self.stripContainer(data)
+      let b = [UInt8](body)
+      guard let imgOff = self.u32le(b, 0), let imgSize = self.u32le(b, 4), let fOff = self.u32le(b, 8), let fSize = self.u32le(b, 12),
+            imgSize > 0, imgOff + imgSize <= b.count else { return }
+      var w = 0
+      var h = 0
+      body.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        let p = raw.bindMemory(to: UInt8.self)
+        if imgOff + 2 < p.count, let e = self.jpegExtent(p, imgOff) {
+          w = e.w
+          h = e.h
+        }
+      }
+      var focus: [[Double]] = []
+      if fSize > 0, fOff + fSize <= b.count { focus = self.parseFocalFrames(Array(b[fOff..<(fOff + fSize)])) }
+      payload = [
+        "jpeg": FlutterStandardTypedData(bytes: body.subdata(in: imgOff..<(imgOff + imgSize))),
+        "w": w,
+        "h": h,
+        "focus": focus,
+      ]
+    }, silent: true, done: { [weak self] ok in
+      guard let self = self else { return }
+      if ok, let p = payload {
+        self.streamBad = 0
+        self.streamIndex += 1
+        DispatchQueue.main.async { [weak self] in self?.sink?(["frame": p]) }
+      } else {
+        self.streamBad += 1
+      }
+      if self.streamBad >= 25 {
+        self.streaming = false
+        self.log("VUE DIRECTE : flux arrêté (25 échecs de suite). L'appareil est-il en mode prise de vue ?")
+        DispatchQueue.main.async { [weak self] in self?.sink?(["stream": ["state": "stopped"]]) }
+        return
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + (ok ? 0.03 : 0.25)) { [weak self] in self?.streamNext() }
+    })
+  }
+
+  /// Mise au point seule (demi-course du déclencheur) sans déclencher la photo.
+  private func liveFocus() {
+    guard camera != nil, liveReady else { return }
+    let steps: [(UInt32, UInt16, String)] = [
+      (0xD2C1, 2, "mise au point : appui"),
+      (0xD2C1, 1, "mise au point : relâchée"),
+    ]
+    streamPaused = true
+    runControl(steps, 0, { [weak self] in
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.streamPaused = false }
+    })
   }
 
   // MARK: - 5. État
