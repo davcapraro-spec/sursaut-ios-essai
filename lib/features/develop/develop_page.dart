@@ -158,6 +158,7 @@ class _DevelopPageState extends State<DevelopPage> {
   Set<int> _selFaces = <int>{}; // personnes cochées (indices dans `_faces`)
   Set<String> _selParts = <String>{}; // parties cochées : person | skin | eyes | … | hair | clothes | bodyskin
   bool _maskCardOpen = true; // carte « Masque » sur la photo : dépliée ou réduite à une pastille
+  final Set<String> _folded = <String>{}; // catégories de réglages repliées (Basique, Masques) : « b:… » / « m:… »
   bool? _maskShapeOpen; // section « Forme du masque » : ouverte ou fermée à la main (null = automatique)
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
   String _newOp = 'add'; // comment la prochaine composante se combine : add | subtract | intersect
@@ -959,15 +960,56 @@ class _DevelopPageState extends State<DevelopPage> {
     );
   }
 
+  /// Catégorie repliable : titre avec chevron (toucher = ouvrir / fermer), « Réinitialiser » visible quand elle est ouverte.
+  List<Widget> _section(String id, String title, VoidCallback? onReset, List<Widget> children) {
+    final bool open = !_folded.contains(id);
+    return <Widget>[
+      InkWell(
+        onTap: () => setState(() => open ? _folded.add(id) : _folded.remove(id)),
+        child: Padding(
+          padding: const EdgeInsets.only(top: 10, bottom: 2),
+          child: Row(
+            children: <Widget>[
+              Icon(open ? Icons.expand_more : Icons.chevron_right, size: 22, color: Colors.white60),
+              const SizedBox(width: 2),
+              Expanded(
+                child: Text(title,
+                    style: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5, color: Colors.white60)),
+              ),
+              if (open) TextButton(onPressed: onReset, child: const Text('Réinitialiser')),
+              if (!open) const SizedBox(height: 48),
+            ],
+          ),
+        ),
+      ),
+      if (open) ...children,
+    ];
+  }
+
+  /// « Tout replier / Tout déplier » pour une liste de catégories.
+  Widget _foldAllBar(List<String> ids) {
+    final bool allFolded = ids.every(_folded.contains);
+    return Align(
+      alignment: Alignment.centerRight,
+      child: TextButton.icon(
+        onPressed: () => setState(() => allFolded ? _folded.removeAll(ids) : _folded.addAll(ids)),
+        icon: Icon(allFolded ? Icons.unfold_more : Icons.unfold_less, size: 18),
+        label: Text(allFolded ? 'Tout déplier' : 'Tout replier'),
+      ),
+    );
+  }
+
   List<Widget> _basicPanel(bool ready) {
     final Map<String, DevelopParam> byKey = <String, DevelopParam>{
       for (final DevelopParam p in kDevelopParams) p.key: p,
     };
     return <Widget>[
-      for (final (String title, List<String> keys) in _basicGroups) ...<Widget>[
-        _groupTitle(title, ready ? () => _resetKeys(keys) : null),
-        for (final String k in keys) _paramRow(byKey[k]!, ready),
-      ],
+      _foldAllBar(<String>[for (final (String t, List<String> _) in _basicGroups) 'b:$t']),
+      for (final (String title, List<String> keys) in _basicGroups)
+        ..._section('b:$title', title, ready ? () => _resetKeys(keys) : null, <Widget>[
+          for (final String k in keys) _paramRow(byKey[k]!, ready),
+        ]),
     ];
   }
 
@@ -2473,12 +2515,13 @@ class _DevelopPageState extends State<DevelopPage> {
             padding: EdgeInsets.only(bottom: 6),
             child: Text('Tant que tous les réglages ci-dessous sont à zéro, le masque ne change rien à la photo.', style: hint),
           ),
-        for (final (String gt, List<LocalParam> params) in kLocalGroups) ...<Widget>[
-          _groupTitle(gt, () => _maskResetKeys(params.map((LocalParam p) => p.key))),
-          for (final LocalParam p in params)
-            _maskSlider(p.label, adjOf(sel, p.key), p.min, p.max, p.decimals, (double v) => _maskAdj(p.key, v),
-                onEnd: _commit),
-        ],
+        _foldAllBar(<String>[for (final (String gt, List<LocalParam> _) in kLocalGroups) 'm:$gt']),
+        for (final (String gt, List<LocalParam> params) in kLocalGroups)
+          ..._section('m:$gt', gt, () => _maskResetKeys(params.map((LocalParam p) => p.key)), <Widget>[
+            for (final LocalParam p in params)
+              _maskSlider(p.label, adjOf(sel, p.key), p.min, p.max, p.decimals, (double v) => _maskAdj(p.key, v),
+                  onEnd: _commit),
+          ]),
         const Divider(height: 24),
         Builder(builder: (BuildContext context) {
           final bool shapeOpen = (_maskShapeOpen ?? !comps.every((Map<String, dynamic> c) => '${c['kind']}' == kBitmap));
