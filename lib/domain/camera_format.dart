@@ -66,7 +66,7 @@ String formatExposureMode(int cur) {
   }
 }
 
-/// Batterie : octet signé en pourcentage (hypothèse confirmée seulement par une lecture).
+/// Batterie : octet signé en pourcentage (VÉRIFIÉ sur l'A7 IV : l'écran de l'iPad affiche le même pourcentage que le boîtier).
 int batteryPercent(int cur) {
   final int b = cur & 0xFF;
   return b > 127 ? b - 256 : b;

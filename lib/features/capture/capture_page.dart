@@ -382,7 +382,7 @@ class _CapturePageState extends State<CapturePage> {
                   Icon(ready ? Icons.usb : Icons.usb_off, color: ready ? kAccent : Colors.white38),
                   const SizedBox(width: 8),
                   Expanded(child: Text(s.name ?? 'Aucun appareil', style: Theme.of(context).textTheme.titleMedium)),
-                  if (bat != null) Text('batterie ${batteryPercent(bat.cur)} % (à confirmer)', style: const TextStyle(fontSize: 12, color: Colors.white60)),
+                  if (bat != null) Text('batterie ${batteryPercent(bat.cur)} %', style: const TextStyle(fontSize: 12, color: Colors.white60)),
                 ]),
                 const SizedBox(height: 8),
                 Text(_status),
