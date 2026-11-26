@@ -364,9 +364,10 @@ class _CapturePageState extends State<CapturePage> {
                   child: Text('L\'image directe et la dernière photo apparaîtront ici.', style: TextStyle(color: Colors.white54)),
                 ),
               if (f != null)
-                const Positioned(
+                Positioned(
                   left: 12,
                   top: 10,
+                  right: 12,
                   child: Text(_areaCaption(), style: const TextStyle(color: Colors.white70, fontSize: 13)),
                 ),
               if (f != null && photo != null)
