@@ -220,7 +220,7 @@ class _CapturePageState extends State<CapturePage> {
       case kPropAperture:
         return formatAperture(v);
       case kPropShutter:
-        return formatShutter(v);
+        return formatShutterCode(v);
       default:
         return formatRaw(v);
     }
@@ -382,8 +382,8 @@ class _SettingRow extends StatelessWidget {
     final bool busy = pending.contains(code);
     final List<int> sorted = p == null ? <int>[] : sortedChoices(code, p.choices);
     final bool can = p != null && p.writable && p.enabled && !busy;
-    final bool less = can && neighborChoice(sorted, p!.cur, -1) != null;
-    final bool more = can && neighborChoice(sorted, p!.cur, 1) != null;
+    final bool less = can && neighborChoice(sorted, p.cur, -1) != null;
+    final bool more = can && neighborChoice(sorted, p.cur, 1) != null;
     return Card(
       color: kPanel,
       child: Padding(

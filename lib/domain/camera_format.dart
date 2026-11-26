@@ -33,7 +33,7 @@ String formatAperture(int cur) {
 
 /// Vitesse : numérateur dans les 16 bits de poids fort, dénominateur dans les 16 bits de poids faible
 /// (0x10064 = 1/100 s, 0x1007D = 1/125 s). Au-delà de 0,3 s : affichage en secondes.
-String formatShutter(int cur) {
+String formatShutterCode(int cur) {
   final int top = (cur >> 16) & 0xFFFF;
   final int den = cur & 0xFFFF;
   if (den == 0 || top == 0) return '—';

@@ -1132,11 +1132,11 @@ void main() {
       expect(formatAperture(0x276), 'ƒ/6,3');
       expect(formatAperture(0x230), 'ƒ/5,6');
       expect(formatAperture(400), 'ƒ/4');
-      expect(formatShutter(0x10064), '1/100');
-      expect(formatShutter(0x1007D), '1/125');
-      expect(formatShutter((5 << 16) | 10), '0,5"');
-      expect(formatShutter((30 << 16) | 1), '30"');
-      expect(formatShutter(0), '—');
+      expect(formatShutterCode(0x10064), '1/100');
+      expect(formatShutterCode(0x1007D), '1/125');
+      expect(formatShutterCode((5 << 16) | 10), '0,5"');
+      expect(formatShutterCode((30 << 16) | 1), '30"');
+      expect(formatShutterCode(0), '—');
     });
 
     test('batterie et valeur brute', () {
