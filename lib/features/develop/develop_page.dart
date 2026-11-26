@@ -158,7 +158,7 @@ class _DevelopPageState extends State<DevelopPage> {
   Set<int> _selFaces = <int>{}; // personnes cochées (indices dans `_faces`)
   Set<String> _selParts = <String>{}; // parties cochées : person | skin | eyes | … | hair | clothes | bodyskin
   bool _maskCardOpen = true; // carte « Masque » sur la photo : dépliée ou réduite à une pastille
-  final Set<String> _folded = <String>{}; // catégories de réglages repliées (Basique, Masques) : « b:… » / « m:… »
+  final Set<String> _opened = <String>{}; // catégories de réglages dépliées (repliées par défaut) : « b:… » Basique, « m:… » Masques, « d:… » Détail
   bool? _maskShapeOpen; // section « Forme du masque » : ouverte ou fermée à la main (null = automatique)
   bool _maskZone = false; // « Voir la zone du masque » : la photo montre la zone en rouge, sans les réglages
   String _newOp = 'add'; // comment la prochaine composante se combine : add | subtract | intersect
@@ -962,10 +962,10 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Catégorie repliable : titre avec chevron (toucher = ouvrir / fermer), « Réinitialiser » visible quand elle est ouverte.
   List<Widget> _section(String id, String title, VoidCallback? onReset, List<Widget> children) {
-    final bool open = !_folded.contains(id);
+    final bool open = _opened.contains(id);
     return <Widget>[
       InkWell(
-        onTap: () => setState(() => open ? _folded.add(id) : _folded.remove(id)),
+        onTap: () => setState(() => open ? _opened.remove(id) : _opened.add(id)),
         child: Padding(
           padding: const EdgeInsets.only(top: 10, bottom: 2),
           child: Row(
@@ -989,11 +989,11 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// « Tout replier / Tout déplier » pour une liste de catégories.
   Widget _foldAllBar(List<String> ids) {
-    final bool allFolded = ids.every(_folded.contains);
+    final bool allFolded = ids.every((String i) => !_opened.contains(i));
     return Align(
       alignment: Alignment.centerRight,
       child: TextButton.icon(
-        onPressed: () => setState(() => allFolded ? _folded.removeAll(ids) : _folded.addAll(ids)),
+        onPressed: () => setState(() => allFolded ? _opened.addAll(ids) : _opened.removeAll(ids)),
         icon: Icon(allFolded ? Icons.unfold_more : Icons.unfold_less, size: 18),
         label: Text(allFolded ? 'Tout déplier' : 'Tout replier'),
       ),
@@ -1188,11 +1188,12 @@ class _DevelopPageState extends State<DevelopPage> {
       for (final DevelopParam p in kDetailParams) p.key: p,
     };
     return <Widget>[
-      for (final (String title, List<String> keys) in _detailGroups) ...<Widget>[
-        _groupTitle(title, ready ? () => _resetKeys(keys) : null),
-        if (title == 'RÉDUCTION DU BRUIT') ..._denoiseMacro(ready),
-        for (final String k in keys) _paramRow(byKey[k]!, ready),
-      ],
+      _foldAllBar(<String>[for (final (String t, List<String> _) in _detailGroups) 'd:$t']),
+      for (final (String title, List<String> keys) in _detailGroups)
+        ..._section('d:$title', title, ready ? () => _resetKeys(keys) : null, <Widget>[
+          if (title == 'RÉDUCTION DU BRUIT') ..._denoiseMacro(ready),
+          for (final String k in keys) _paramRow(byKey[k]!, ready),
+        ]),
     ];
   }
 
