@@ -78,7 +78,7 @@ class HomePage extends StatelessWidget {
                       _Tile(
                         icon: Icons.photo_camera_outlined,
                         title: 'Capturer',
-                        subtitle: 'Piloter l\'appareil par câble USB-C : réglages, déclenchement, réception',
+                        subtitle: 'Piloter l\'appareil par câble USB-C, déclencher, recevoir',
                         onTap: () => _open(
                           context,
                           CapturePage(
@@ -127,7 +127,7 @@ class _Tile extends StatelessWidget {
   Widget build(BuildContext context) {
     return SizedBox(
       width: 290,
-      height: 240,
+      height: 270,
       child: Card(
         clipBehavior: Clip.antiAlias,
         child: InkWell(
