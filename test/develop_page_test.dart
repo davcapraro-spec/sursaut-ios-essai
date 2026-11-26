@@ -25,6 +25,14 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: DevelopPage()));
     await tester.pump();
     expect(find.text('TONALITÉ'), findsOneWidget);
+    // Catégories repliées par défaut : les curseurs n'apparaissent qu'après un toucher sur le titre.
+    expect(find.text('Exposition'), findsNothing);
+    await tester.tap(find.text('TONALITÉ'));
+    await tester.pump();
+    expect(find.text('Exposition'), findsOneWidget);
+    await tester.tap(find.text('TONALITÉ'));
+    await tester.pump();
+    expect(find.text('Exposition'), findsNothing);
     await tester.tap(find.text('Courbe'));
     await tester.pump();
     expect(find.text('Réinitialiser la courbe RVB'), findsOneWidget);
@@ -36,6 +44,10 @@ void main() {
     await tester.pump();
     expect(find.text('RÉDUCTION DU BRUIT'), findsOneWidget);
     expect(find.text('VIGNETAGE'), findsOneWidget);
+    expect(find.text('Quantité'), findsNothing);
+    await tester.tap(find.text('RÉDUCTION DU BRUIT'));
+    await tester.pump();
+    expect(find.text('Quantité'), findsOneWidget);
     await tester.tap(find.text('Supprimer'));
     await tester.pump();
     expect(find.text('RETOUCHE DE TACHES'), findsOneWidget);
