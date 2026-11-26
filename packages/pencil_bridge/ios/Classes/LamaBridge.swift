@@ -1,6 +1,8 @@
 import CryptoKit
 import Flutter
 import Foundation
+
+#if canImport(onnxruntime_objc)
 import onnxruntime_objc
 
 /// Reconstruction d'une zone effacée par LaMa (big-lama exporté en ONNX par Carve, Apache 2.0), exécuté avec ONNX Runtime (Microsoft, MIT).
@@ -195,3 +197,16 @@ final class LamaBridge {
     }
   }
 }
+
+#else
+
+/// ONNX Runtime n'est pas inclus dans cette version (son serveur de téléchargement est en panne depuis le 26/11/2026, voir
+/// `claude/sursaut-ios-supprimer-ia-faisabilite-lama-2026-11-26.md`) : mêmes méthodes, qui répondent par un message clair.
+final class LamaBridge {
+  private static let message = "LaMa n'est pas inclus dans cette version (ONNX Runtime indisponible pour le moment)."
+  static func status() -> [String: Any] { return ["present": false, "bytes": 0] }
+  static func download() -> [String: Any] { return ["error": message] }
+  static func fill(rgba: Data, mask: Data) -> [String: Any] { return ["error": message] }
+}
+
+#endif
