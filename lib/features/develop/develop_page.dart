@@ -1136,7 +1136,10 @@ class _DevelopPageState extends State<DevelopPage> {
 
   void _say(String text) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    // Un seul bandeau à la fois : sans cela, chaque message se met en file d'attente et continue de s'afficher après coup.
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(text)));
   }
 
   final GlobalKey _exportKey = GlobalKey();
@@ -2381,6 +2384,7 @@ class _DevelopPageState extends State<DevelopPage> {
   /// Quitte la sélection au toucher (à appeler dans un setState) : le calcul SAM en cours est abandonné et les points oubliés.
   void _samLeave() {
     _samEpoch++;
+    if (mounted) ScaffoldMessenger.of(context).clearSnackBars();
     _samOn = false;
     _samMask = -1;
     _samPts = <List<double>>[];
@@ -2841,6 +2845,7 @@ class _DevelopPageState extends State<DevelopPage> {
   void _maskDelete() {
     final int i = _maskSel;
     if (_maskSelected == null) return;
+    if (mounted) ScaffoldMessenger.of(context).clearSnackBars();
     setState(() {
       _samLeave();
       _masks = <MaskMap>[for (int k = 0; k < _masks.length; k++) if (k != i) _masks[k]];
