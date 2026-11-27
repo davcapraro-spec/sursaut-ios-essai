@@ -3,11 +3,6 @@ name: ios-essai
 # Lancement à la main seulement (onglet Actions > ios-essai > Run workflow).
 on:
   workflow_dispatch:
-    inputs:
-      avec_onnx:
-        description: "Inclure ONNX Runtime (reconstruction « Supprimer » par IA). Décocher pour compiler sans lui."
-        type: boolean
-        default: true
 
 jobs:
   build:
@@ -66,21 +61,6 @@ jobs:
           printf '%s\n' '' 'pre_install do |installer|' '  Pod::Installer::Xcode::TargetValidator.send(:define_method, :verify_no_static_framework_transitive_dependencies) {}' 'end' >> ios/Podfile
           cat tools/podfile_tflite.rb >> ios/Podfile
           tail -20 ios/Podfile
-
-      # ONNX Runtime (Microsoft, MIT) pour LaMa (« Supprimer » par IA). Son serveur de téléchargement a eu un certificat invalide le 26/11/2026 :
-      # cette étape NE BLOQUE PAS le flux. Si le téléchargement vérifié (empreinte SHA-1) réussit, SURSAUT_ORT=1 et le plugin ajoute la
-      # dépendance ; sinon l'application est compilée sans LaMa (le code Swift est alors remplacé par une version qui répond « non inclus »).
-      - name: ONNX Runtime (téléchargement vérifié ; ne bloque pas)
-        id: ort
-        if: ${{ inputs.avec_onnx }}
-        continue-on-error: true
-        run: |
-          bash tools/ort_pods.sh
-          echo "SURSAUT_ORT=1" >> "$GITHUB_ENV"
-
-      - name: ONNX Runtime (résumé)
-        run: |
-          if [ "${SURSAUT_ORT:-0}" = "1" ]; then echo "ONNX Runtime : INCLUS (LaMa disponible)."; else echo "ONNX Runtime : NON inclus (LaMa indisponible dans cette compilation)."; fi
 
       # SAM 2.1 (sélection au toucher) : les trois modèles Core ML d'Apple (Apache 2.0, 94 Mo, apple/coreml-sam2.1-small sur Hugging Face)
       # sont téléchargés, compilés (.mlpackage -> .mlmodelc) et mis dans le plugin avant « pod install ».

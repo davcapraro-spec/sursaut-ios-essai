@@ -526,7 +526,7 @@ class _DevelopPageState extends State<DevelopPage> {
   }
 
   /// Essai de LaMa sur l'iPad : remplit une ellipse au centre de la photo (fenêtre 512 x 512) et montre avant / trou / après,
-  /// avec le temps et la mémoire. Le modèle (208 Mo) est téléchargé la première fois.
+  /// avec le temps et la mémoire. Le modèle (40 Mo) est téléchargé la première fois.
   Future<void> _lamaTest() async {
     final Uint8List? rgba = _srcRgba;
     if (rgba == null || _w == 0 || _h == 0) {
@@ -537,7 +537,7 @@ class _DevelopPageState extends State<DevelopPage> {
     setState(() => _lamaBusy = true);
     try {
       if (!await VisionBridge.lamaPresent()) {
-        _say('Téléchargement de LaMa (208 Mo)… patientez, ne quittez pas l\'application.');
+        _say('Téléchargement de LaMa (40 Mo)… patientez, ne quittez pas l\'application.');
         final String? e = await VisionBridge.lamaDownload();
         if (e != null) {
           _say(e);

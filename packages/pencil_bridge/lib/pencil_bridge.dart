@@ -471,7 +471,7 @@ class VisionBridge {
     }
   }
 
-  /// LaMa : télécharge le modèle (≈ 208 Mo) et vérifie son empreinte. Rend un message d'erreur, ou null si tout va bien.
+  /// LaMa : télécharge le modèle Core ML (≈ 40 Mo) et vérifie son empreinte. Rend un message d'erreur, ou null si tout va bien.
   static Future<String?> lamaDownload() async {
     try {
       final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>('lamaDownload');
