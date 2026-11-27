@@ -152,6 +152,7 @@ class _DevelopPageState extends State<DevelopPage> {
   bool _samAdd = true; // le prochain point est « dans l'objet » (sinon « en dehors »)
   List<List<double>> _samPts = <List<double>>[]; // points [x, y, 1 ou 0] (fractions de la photo)
   int _samMask = -1; // numéro du masque en cours de construction
+  int _samEpoch = 0; // change quand la sélection au toucher est quittée : un calcul SAM en cours est alors abandonné
   List<double>? _samCrop; // zone [x0, y0, x1, y1] (fractions) que SAM relit en gros plan (« Affiner les bords »), sinon null
   Uint8List? _samPlaneLast; // dernier plan de la sélection (pour trouver la zone à relire)
   int _samPlaneW = 0, _samPlaneH = 0;
@@ -271,6 +272,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _eyesMsg = '';
       _syncEyesStrength();
       _spotSel = -1;
+      _samLeave();
       _maskSel = -1;
       _compSel = 0;
       _maskDraw = null;
@@ -350,6 +352,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _masks = _history.currentMasks;
       _syncEyesStrength();
       _spotSel = -1;
+      _samLeave();
       _maskSel = -1;
       _compSel = 0;
       _maskDraw = null;
@@ -1837,6 +1840,16 @@ class _DevelopPageState extends State<DevelopPage> {
     }
   }
 
+  /// Quitte la sélection au toucher (à appeler dans un setState) : le calcul SAM en cours est abandonné et les points oubliés.
+  void _samLeave() {
+    _samEpoch++;
+    _samOn = false;
+    _samMask = -1;
+    _samPts = <List<double>>[];
+    _samCrop = null;
+    _samPlaneLast = null;
+  }
+
   /// SAM 2.1 : analyse la photo (une fois), puis chaque toucher sur la photo ajoute un point.
   Future<void> _samStart() async {
     final Uint8List? rgba = _srcRgba;
@@ -1933,11 +1946,12 @@ class _DevelopPageState extends State<DevelopPage> {
   Future<void> _samRun() async {
     final Uint8List? rgba = _srcRgba;
     if (rgba == null || _samPts.isEmpty || _w == 0 || _h == 0) return;
+    final int epoch = _samEpoch;
     setState(() => _aiBusy = true);
     try {
       final List<double>? crop = _samCrop;
       final VisionSam r = await VisionBridge.samDecode(_samPointsInView(crop));
-      if (!mounted) return;
+      if (!mounted || epoch != _samEpoch) return; // on a quitté la sélection au toucher pendant le calcul
       final Float32List? logits = r.logits;
       final String? error = r.error;
       if (error != null || logits == null) {
@@ -2271,6 +2285,7 @@ class _DevelopPageState extends State<DevelopPage> {
     final int i = _maskSel;
     if (_maskSelected == null) return;
     setState(() {
+      _samLeave();
       _masks = <MaskMap>[for (int k = 0; k < _masks.length; k++) if (k != i) _masks[k]];
       _maskSel = -1;
       _compSel = 0;
@@ -2285,6 +2300,7 @@ class _DevelopPageState extends State<DevelopPage> {
     if (m == null) return;
     final int at = _maskSel + 1;
     setState(() {
+      _samLeave();
       _masks = <MaskMap>[..._masks.sublist(0, at), duplicateMask(m), ..._masks.sublist(at)];
       _maskSel = at;
       _compSel = 0;
@@ -2425,6 +2441,7 @@ class _DevelopPageState extends State<DevelopPage> {
               },
             ),
             onTap: () => setState(() {
+              if (_samOn && i != _samMask) _samLeave();
               _maskSel = i;
               _compSel = 0;
               _maskDraw = null;
@@ -2933,6 +2950,7 @@ class _DevelopPageState extends State<DevelopPage> {
           if (!isEyeMask(m)) m,
       ];
       _eyesMsg = 'Corrections retirées.';
+      _samLeave();
       _maskSel = -1; // les indices des masques ont pu changer
       _before = false;
     });
