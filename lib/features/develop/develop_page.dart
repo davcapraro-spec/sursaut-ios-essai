@@ -362,6 +362,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _rmPending = null;
       _rmShowBefore = false;
       _rmPlane = null;
+      _rmHas = false;
       _samPts = <List<double>>[];
       _curves = _history.currentCurves;
       _spots = _history.currentSpots;
@@ -550,6 +551,10 @@ class _DevelopPageState extends State<DevelopPage> {
   int _rmPw = 0, _rmPh = 0;
   ui.Image? _rmArea; // la zone en rouge transparent, sur la photo
   int _rmMargin = 0; // marge ajoutée autour de la zone (0 à 4 crans)
+  String _rmTool = 'brush'; // 'brush' : on peint la zone au doigt ou à l'Apple Pencil ; 'tap' : un toucher choisit l'objet (SAM 2.1)
+  bool _rmErase = false; // le pinceau gomme
+  bool _rmHas = false; // la zone contient quelque chose
+  double _rmBrushR = 0.02; // rayon du pinceau, fraction du grand côté
   String _rmInfo = '';
 
   /// Photo montrée : l'original avec les rustines gardées (et le résultat en attente, sauf en « Avant »).
@@ -600,23 +605,103 @@ class _DevelopPageState extends State<DevelopPage> {
     old?.dispose();
   }
 
-  /// Entre dans le mode « Objet (IA) » : SAM analyse la photo, puis chaque toucher choisit l'objet.
+  /// Entre dans le mode « Objet (IA) » : on peint la zone à retirer (comme « Suppression générative » de Lightroom).
   Future<void> _rmEnter() async {
-    if (_srcRgba == null || _aiBusy) return;
+    if (_srcRgba == null) return;
     setState(() {
       _removeAi = true;
+      _rmTool = 'brush';
+      _rmErase = false;
       _rmPending = null;
       _rmShowBefore = false;
       _rmPlane = null;
+      _rmHas = false;
       _rmInfo = '';
     });
-    await _samStart();
+  }
+
+  /// Plan de la zone (1024 px sur le grand côté), créé au premier trait.
+  void _rmAlloc() {
+    if (_rmPlane != null) return;
+    final bool wide = _w >= _h;
+    _rmPw = wide ? 1024 : math.max(64, (1024 * _w / _h).round());
+    _rmPh = wide ? math.max(64, (1024 * _h / _w).round()) : 1024;
+    _rmPlane = Uint8List(_rmPw * _rmPh);
+  }
+
+  /// Un trait du pinceau (points en fractions de la photo) : peint ou gomme la zone, avec un disque tous les demi-rayons.
+  Future<void> _rmStroke(List<List<double>> pts) async {
+    if (pts.isEmpty || _rmBusy) return;
+    if (_rmPending != null) {
+      setState(() {
+        _rmPending = null;
+        _rmShowBefore = false;
+      });
+      unawaited(_reopenPhoto());
+    }
+    _rmAlloc();
+    final Uint8List plane = _rmPlane!;
+    final double rad = math.max(1.5, _rmBrushR * math.max(_rmPw, _rmPh));
+    final int v = _rmErase ? 0 : 255;
+    void stamp(double fx, double fy) {
+      final double cx = fx * _rmPw, cy = fy * _rmPh;
+      final int x0 = math.max(0, (cx - rad).floor()), x1 = math.min(_rmPw - 1, (cx + rad).ceil());
+      final int y0 = math.max(0, (cy - rad).floor()), y1 = math.min(_rmPh - 1, (cy + rad).ceil());
+      for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+          final double dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+          if (dx * dx + dy * dy <= rad * rad) plane[y * _rmPw + x] = v;
+        }
+      }
+    }
+    List<double> prev = pts.first;
+    stamp(prev[0], prev[1]);
+    for (int i = 1; i < pts.length; i++) {
+      final List<double> q = pts[i];
+      final double dx = (q[0] - prev[0]) * _rmPw, dy = (q[1] - prev[1]) * _rmPh;
+      final int n = math.max(1, (math.sqrt(dx * dx + dy * dy) / (rad * 0.5)).ceil());
+      for (int k = 1; k <= n; k++) {
+        stamp(prev[0] + (q[0] - prev[0]) * k / n, prev[1] + (q[1] - prev[1]) * k / n);
+      }
+      prev = q;
+    }
+    int covered = 0;
+    for (final int b in plane) {
+      if (b > 127) covered++;
+    }
+    setState(() {
+      _rmHas = covered > 0;
+      _rmInfo = covered > 0 ? 'Zone : ${(covered * 100 / plane.length).toStringAsFixed(1)} % de l\'image.' : '';
+    });
+    await _rmMakeArea();
+  }
+
+  /// Choix du mode : pinceau, ou toucher (SAM 2.1 analyse la photo la première fois).
+  Future<void> _rmSetTool(String t) async {
+    if (t == _rmTool) return;
+    setState(() {
+      _rmTool = t;
+      _rmErase = false;
+      _rmPlane = null;
+      _rmHas = false;
+      _rmInfo = '';
+      _rmPending = null;
+      _rmShowBefore = false;
+      _samPts = <List<double>>[];
+      _samPlaneLast = null;
+    });
+    unawaited(_rmMakeArea());
+    unawaited(_reopenPhoto());
+    if (t == 'tap' && !_samOn) await _samStart();
   }
 
   /// Quitte le mode (à appeler dans un setState) : sélection, zone et résultat en attente sont abandonnés.
   void _rmExit() {
     _removeAi = false;
     _rmPlane = null;
+    _rmHas = false;
+    _rmTool = 'brush';
+    _rmErase = false;
     _rmPending = null;
     _rmShowBefore = false;
     _rmInfo = '';
@@ -635,8 +720,8 @@ class _DevelopPageState extends State<DevelopPage> {
   Future<void> _rmRun() async {
     final Uint8List? rgba = _srcRgba;
     final Uint8List? plane = _rmPlane;
-    if (rgba == null || plane == null || _rmBusy || _w == 0 || _h == 0) {
-      if (plane == null) _say('Touchez d\'abord l\'objet à retirer.');
+    if (rgba == null || plane == null || !_rmHas || _rmBusy || _w == 0 || _h == 0) {
+      if (plane == null || !_rmHas) _say('Peignez d\'abord ce qu\'il faut retirer.');
       return;
     }
     setState(() => _rmBusy = true);
@@ -651,12 +736,12 @@ class _DevelopPageState extends State<DevelopPage> {
       }
       final AiWindow? win = aiWindow(plane, _rmPw, _rmPh, _w, _h);
       if (win == null) {
-        _say('Touchez d\'abord l\'objet à retirer.');
+        _say('Peignez d\'abord ce qu\'il faut retirer.');
         return;
       }
       _say('LaMa reconstruit le fond…');
       final Uint8List crop = lamaCrop(rgba, _w, _h, win.x0, win.y0, win.side);
-      final Uint8List mask = growMask(aiWindowMask(plane, _rmPw, _rmPh, _w, _h, win), 4 + 4 * _rmMargin);
+      final Uint8List mask = growMask(aiWindowMask(plane, _rmPw, _rmPh, _w, _h, win), 4);
       final VisionLama r = await VisionBridge.lamaFill(crop, mask);
       if (!mounted) return;
       final Uint8List? filled = r.rgba;
@@ -692,6 +777,7 @@ class _DevelopPageState extends State<DevelopPage> {
       _patches = <AiPatch>[..._patches, p];
       _rmPending = null;
       _rmPlane = null;
+      _rmHas = false;
       _rmShowBefore = false;
       _rmInfo = 'Résultat gardé. Touchez un autre objet, ou changez d\'onglet.';
       _rmMargin = 0;
@@ -718,6 +804,7 @@ class _DevelopPageState extends State<DevelopPage> {
     setState(() {
       _rmPending = null;
       _rmPlane = null;
+      _rmHas = false;
       _rmShowBefore = false;
       _rmInfo = '';
       _rmMargin = 0;
@@ -736,10 +823,11 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Supprimer, mode « Objet (IA) » : le panneau de gauche.
   List<Widget> _removeAiPanel(bool ready) {
-    final bool hasZone = _rmPlane != null;
+    final bool hasZone = _rmHas && _rmPlane != null;
     final bool hasResult = _rmPending != null;
+    final bool brush = _rmTool == 'brush';
     return <Widget>[
-      _groupTitle('SUPPRIMER UN OBJET (IA)', null),
+      _groupTitle('SUPPRIMER (IA)', null),
       SegmentedButton<bool>(
         showSelectedIcon: false,
         segments: const <ButtonSegment<bool>>[
@@ -752,14 +840,26 @@ class _DevelopPageState extends State<DevelopPage> {
         },
       ),
       const SizedBox(height: 8),
+      SegmentedButton<String>(
+        showSelectedIcon: false,
+        segments: const <ButtonSegment<String>>[
+          ButtonSegment<String>(value: 'brush', label: Text('Pinceau'), icon: Icon(Icons.brush_outlined)),
+          ButtonSegment<String>(value: 'tap', label: Text('Objet au toucher'), icon: Icon(Icons.touch_app_outlined)),
+        ],
+        selected: <String>{_rmTool},
+        onSelectionChanged: (Set<String> v) => unawaited(_rmSetTool(v.first)),
+      ),
+      const SizedBox(height: 8),
       Text(
-        !_samOn
-            ? 'SAM 2.1 analyse la photo…'
-            : hasResult
-                ? 'Comparez Avant / Après, puis gardez le résultat ou recommencez.'
-                : hasZone
-                    ? 'Zone choisie (en rouge). Touchez encore pour l\'ajuster, puis lancez la suppression.'
-                    : 'Touchez l\'objet à retirer.',
+        hasResult
+            ? 'Comparez Avant / Après, puis gardez le résultat ou recommencez.'
+            : brush
+                ? (hasZone ? 'Zone peinte en rouge. Complétez-la ou lancez la suppression.' : 'Peignez ce qu\'il faut retirer (doigt ou Apple Pencil).')
+                : !_samOn
+                    ? 'SAM 2.1 analyse la photo…'
+                    : hasZone
+                        ? 'Zone choisie (en rouge). Touchez encore pour l\'ajuster, puis lancez la suppression.'
+                        : 'Touchez l\'objet à retirer.',
         style: const TextStyle(fontSize: 12, color: Colors.white70),
       ),
       if (_rmInfo.isNotEmpty) ...<Widget>[
@@ -767,33 +867,27 @@ class _DevelopPageState extends State<DevelopPage> {
         Text(_rmInfo, style: const TextStyle(fontSize: 11, color: Colors.white54)),
       ],
       const SizedBox(height: 8),
-      Wrap(
-        spacing: 8,
-        runSpacing: 4,
-        children: <Widget>[
-          ChoiceChip(label: const Text('+ Dans l\'objet'), selected: _samAdd, onSelected: (_) => setState(() => _samAdd = true)),
-          ChoiceChip(label: const Text('− En dehors'), selected: !_samAdd, onSelected: (_) => setState(() => _samAdd = false)),
-          ActionChip(label: const Text('Annuler le dernier point'), onPressed: _aiBusy || _samPts.length < 2 ? null : _samUndo),
-        ],
-      ),
-      const SizedBox(height: 4),
-      Row(
-        children: <Widget>[
-          const Expanded(child: Text('Marge autour de la zone', style: TextStyle(fontSize: 12))),
-          IconButton(
-            tooltip: 'Réduire la marge',
-            icon: const Icon(Icons.remove_circle_outline),
-            onPressed: hasResult || _rmMargin <= 0 ? null : () => setState(() => _rmMargin--),
-          ),
-          Text('$_rmMargin'),
-          IconButton(
-            tooltip: 'Agrandir la marge',
-            icon: const Icon(Icons.add_circle_outline),
-            onPressed: hasResult || _rmMargin >= 4 ? null : () => setState(() => _rmMargin++),
-          ),
-        ],
-      ),
-      const SizedBox(height: 4),
+      if (brush) ...<Widget>[
+        Wrap(
+          spacing: 8,
+          children: <Widget>[
+            ChoiceChip(label: const Text('Peindre'), selected: !_rmErase, onSelected: (_) => setState(() => _rmErase = false)),
+            ChoiceChip(label: const Text('Gommer'), selected: _rmErase, onSelected: (_) => setState(() => _rmErase = true)),
+          ],
+        ),
+        _slideRow('Taille', _rmBrushR / 0.0005, 2, 200, (_rmBrushR / 0.0005).round().toString(),
+            (double v) => setState(() => _rmBrushR = v * 0.0005), () {}, ready),
+      ] else
+        Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          children: <Widget>[
+            ChoiceChip(label: const Text('+ Dans l\'objet'), selected: _samAdd, onSelected: (_) => setState(() => _samAdd = true)),
+            ChoiceChip(label: const Text('− En dehors'), selected: !_samAdd, onSelected: (_) => setState(() => _samAdd = false)),
+            ActionChip(label: const Text('Annuler le dernier point'), onPressed: _aiBusy || _samPts.length < 2 ? null : _samUndo),
+          ],
+        ),
+      const SizedBox(height: 8),
       if (hasResult)
         SegmentedButton<bool>(
           showSelectedIcon: false,
@@ -811,7 +905,7 @@ class _DevelopPageState extends State<DevelopPage> {
           icon: _rmBusy
               ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
               : const Icon(Icons.auto_fix_high),
-          label: Text(_rmBusy ? 'Reconstruction…' : 'Supprimer l\'objet'),
+          label: Text(_rmBusy ? 'Reconstruction…' : 'Supprimer'),
         )
       else ...<Widget>[
         FilledButton.icon(onPressed: _rmKeep, icon: const Icon(Icons.check), label: const Text('Garder ce résultat')),
@@ -819,11 +913,11 @@ class _DevelopPageState extends State<DevelopPage> {
         OutlinedButton(onPressed: _rmRedo, child: const Text('Recommencer')),
       ],
       const SizedBox(height: 6),
-      OutlinedButton(onPressed: hasZone || hasResult ? () => unawaited(_rmCancel()) : null, child: const Text('Annuler')),
+      OutlinedButton(onPressed: hasZone || hasResult ? () => unawaited(_rmCancel()) : null, child: const Text('Effacer la zone')),
       if (_patches.isNotEmpty) ...<Widget>[
         const SizedBox(height: 10),
         Text(
-          '${_patches.length} objet${_patches.length > 1 ? 's' : ''} supprimé${_patches.length > 1 ? 's' : ''} (annulable avec le bouton d\'annulation).',
+          '${_patches.length} suppression${_patches.length > 1 ? 's' : ''} gardée${_patches.length > 1 ? 's' : ''} (annulable avec le bouton d\'annulation).',
           style: const TextStyle(fontSize: 11, color: Colors.white54),
         ),
       ],
@@ -2304,6 +2398,7 @@ class _DevelopPageState extends State<DevelopPage> {
         // « Supprimer (IA) » : la zone sert à la reconstruction, aucun masque n'est créé.
         setState(() {
           _rmPlane = plane;
+          _rmHas = true;
           _rmPw = pw;
           _rmPh = ph;
           _rmInfo = 'Zone : ${(covered * 100 / plane.length).toStringAsFixed(1)} % de l\'image.';
@@ -3784,11 +3879,11 @@ class _DevelopPageState extends State<DevelopPage> {
           invert: false,
           drawKind: null,
           showArea: false,
-          pickMode: _samOn,
+          pickMode: _rmTool == 'tap' && _samOn,
           onPick: _samTapped,
-          paintKind: null,
-          brushR: 0,
-          onStroke: (List<List<double>> _) {},
+          paintKind: _rmTool == 'brush' ? (_rmErase ? 'erase' : 'paint') : null,
+          brushR: _rmBrushR,
+          onStroke: (List<List<double>> pts) => unawaited(_rmStroke(pts)),
           onDraw: (String a, double b, double c, double d, double e) {},
           onEdit: (Map<String, dynamic> _) {},
           onEditEnd: () {},
