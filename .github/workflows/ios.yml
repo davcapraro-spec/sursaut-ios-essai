@@ -6,7 +6,8 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15-intel
+    # Xcode 27 (runner arm64 de GitHub, étiquette « xcode-27 ») : nécessaire pour la segmentation au toucher de Vision (iPadOS 27).
+    runs-on: xcode-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
