@@ -140,7 +140,8 @@ class _Tile extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(20),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: <Widget>[
                 Container(
                   width: 56,
@@ -151,10 +152,10 @@ class _Tile extends StatelessWidget {
                   ),
                   child: Icon(icon, size: 32, color: Theme.of(context).colorScheme.primary),
                 ),
-                const Spacer(),
-                Text(title, style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 22),
+                Text(title, textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 6),
-                Text(subtitle),
+                Text(subtitle, textAlign: TextAlign.center),
               ],
             ),
           ),
