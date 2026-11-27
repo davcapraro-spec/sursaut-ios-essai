@@ -325,7 +325,7 @@ class _CapturePageState extends State<CapturePage> {
     final List<int> a = _focusArea();
     final bool real = raw != null && raw.length >= 4 && a[0] == raw[0] && a[1] == raw[1] && a[2] == raw[2] && a[3] == raw[3];
     final String zone = 'x ${a[0]}–${a[2]}, y ${a[1]}–${a[3]}';
-    return 'Touchez l\'image pour placer le point · cadre en pointillés = zone permise ($zone, ${real ? 'lue sur l\'appareil' : 'toute l\'image, non précisée par l\'appareil'})';
+    return 'Touchez l\'image pour placer le point · cadre bleu en pointillés = zone permise ($zone, ${real ? 'lue sur l\'appareil' : 'toute l\'image, non précisée par l\'appareil'})';
   }
 
   Widget _buildPreview() {
@@ -634,11 +634,11 @@ class _FocusFramesPainter extends CustomPainter {
       imageRect.left + area[2] / 639 * imageRect.width,
       imageRect.top + area[3] / 479 * imageRect.height,
     );
-    final Rect box = limit.deflate(2);
+    final Rect box = limit.deflate(3);
     final Paint edge = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2
-      ..color = const Color(0xE6FFFFFF);
+      ..color = const Color(0xFF6FB1FF);
     final Path ring = Path()..addRect(box);
     for (final ui.PathMetric m in ring.computeMetrics()) {
       double d = 0;
