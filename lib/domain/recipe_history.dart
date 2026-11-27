@@ -1,3 +1,4 @@
+import 'ai_patch.dart';
 import 'curves.dart';
 import 'masks.dart';
 import 'spots.dart';
@@ -11,8 +12,9 @@ class RecipeHistory {
       {Map<String, CurvePoints> curves = const <String, CurvePoints>{},
       List<Spot> spots = const <Spot>[],
       List<MaskMap> masks = const <MaskMap>[],
+      List<AiPatch> patches = const <AiPatch>[],
       this.limit = 200})
-      : _states = <_State>[_State(Map<String, double>.of(initial), _copyCurves(curves), copySpots(spots), copyMasks(masks))];
+      : _states = <_State>[_State(Map<String, double>.of(initial), _copyCurves(curves), copySpots(spots), copyMasks(masks), copyAiPatches(patches))];
 
   final int limit;
   final List<_State> _states;
@@ -22,6 +24,7 @@ class RecipeHistory {
   Map<String, CurvePoints> get currentCurves => _copyCurves(_states[_pos].curves);
   List<Spot> get currentSpots => copySpots(_states[_pos].spots);
   List<MaskMap> get currentMasks => copyMasks(_states[_pos].masks);
+  List<AiPatch> get currentPatches => copyAiPatches(_states[_pos].patches);
   bool get canUndo => _pos > 0;
   bool get canRedo => _pos < _states.length - 1;
 
@@ -29,11 +32,12 @@ class RecipeHistory {
   void commit(Map<String, double> values,
       {Map<String, CurvePoints> curves = const <String, CurvePoints>{},
       List<Spot> spots = const <Spot>[],
-      List<MaskMap> masks = const <MaskMap>[]}) {
+      List<MaskMap> masks = const <MaskMap>[],
+      List<AiPatch> patches = const <AiPatch>[]}) {
     final _State s = _states[_pos];
-    if (_same(s.values, values) && curvesEqual(s.curves, curves) && spotsEqual(s.spots, spots) && masksEqual(s.masks, masks)) return;
+    if (_same(s.values, values) && curvesEqual(s.curves, curves) && spotsEqual(s.spots, spots) && masksEqual(s.masks, masks) && aiPatchesEqual(s.patches, patches)) return;
     _states.removeRange(_pos + 1, _states.length);
-    _states.add(_State(Map<String, double>.of(values), _copyCurves(curves), copySpots(spots), copyMasks(masks)));
+    _states.add(_State(Map<String, double>.of(values), _copyCurves(curves), copySpots(spots), copyMasks(masks), copyAiPatches(patches)));
     if (_states.length > limit) {
       _states.removeAt(0);
     }
@@ -67,9 +71,10 @@ class RecipeHistory {
 }
 
 class _State {
-  _State(this.values, this.curves, this.spots, this.masks);
+  _State(this.values, this.curves, this.spots, this.masks, this.patches);
   final Map<String, double> values;
   final Map<String, CurvePoints> curves;
   final List<Spot> spots;
   final List<MaskMap> masks;
+  final List<AiPatch> patches;
 }

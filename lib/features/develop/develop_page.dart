@@ -17,6 +17,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
 import '../../domain/ai_masks.dart';
+import '../../domain/ai_patch.dart';
 import '../../common/app_version.dart';
 import '../../domain/crop_math.dart';
 import '../../domain/body_parts.dart';
@@ -263,12 +264,15 @@ class _DevelopPageState extends State<DevelopPage> {
     final SidecarData read = await _readSidecar(_key);
     final (Map<String, CurvePoints> loadedCurves, Map<String, dynamic> rest0) = splitCurves(read.extra);
     final (List<Spot> loadedSpots, Map<String, dynamic> rest1) = splitSpots(rest0);
-    final (List<MaskMap> loadedMasks, Map<String, dynamic> rest) = splitMasks(rest1);
+    final (List<MaskMap> loadedMasks, Map<String, dynamic> rest2) = splitMasks(rest1);
+    final (List<AiPatch> loadedPatches, Map<String, dynamic> rest) = splitAiPatches(rest2);
     final SidecarData loaded = SidecarData(read.values, rest);
     setState(() {
       _curves = loadedCurves;
       _spots = loadedSpots;
       _masks = loadedMasks;
+      _patches = loadedPatches;
+      _rmExit();
       _eyesMsg = '';
       _syncEyesStrength();
       _spotSel = -1;
@@ -290,12 +294,16 @@ class _DevelopPageState extends State<DevelopPage> {
       }
       _cropMode = false;
       _aspect = null;
-      _history = RecipeHistory(_values, curves: _curves, spots: _spots, masks: _masks);
-      _saveInfo = loaded.values.isNotEmpty || loaded.extra.isNotEmpty || loadedCurves.isNotEmpty || loadedSpots.isNotEmpty || loadedMasks.isNotEmpty
+      _history = RecipeHistory(_values, curves: _curves, spots: _spots, masks: _masks, patches: _patches);
+      _saveInfo = loaded.values.isNotEmpty || loaded.extra.isNotEmpty || loadedCurves.isNotEmpty || loadedSpots.isNotEmpty || loadedMasks.isNotEmpty || loadedPatches.isNotEmpty
           ? 'Réglages retrouvés'
           : '';
     });
-    await _refresh();
+    if (_patches.isNotEmpty) {
+      await _reopenPhoto();
+    } else {
+      await _refresh();
+    }
   }
 
   Iterable<String> get _keys => _values.keys;
@@ -329,6 +337,7 @@ class _DevelopPageState extends State<DevelopPage> {
         ...curvesToJson(_curves),
         if (_spots.isNotEmpty) 'spots': _spots,
         if (_masks.isNotEmpty) 'masks': _masks,
+        if (_patches.isNotEmpty) kAiPatchKey: _patches,
       });
       await f.writeAsString(out.encode(_values, _keys, defaults: kParamDefaults));
       if (mounted) setState(() => _saveInfo = 'Réglages enregistrés');
@@ -339,14 +348,21 @@ class _DevelopPageState extends State<DevelopPage> {
 
   /// Valide l'état actuel : une étape d'annulation + sauvegarde du fichier.
   void _commit() {
-    _history.commit(_values, curves: _curves, spots: _spots, masks: _masks);
+    _history.commit(_values, curves: _curves, spots: _spots, masks: _masks, patches: _patches);
     _writeSidecar();
     setState(() {});
   }
 
   void _applyHistory(Map<String, double>? v) {
     if (v == null) return;
+    final List<AiPatch> before = _patches;
+    final bool hadPending = _rmPending != null;
     setState(() {
+      _patches = _history.currentPatches;
+      _rmPending = null;
+      _rmShowBefore = false;
+      _rmPlane = null;
+      _samPts = <List<double>>[];
       _curves = _history.currentCurves;
       _spots = _history.currentSpots;
       _masks = _history.currentMasks;
@@ -364,8 +380,13 @@ class _DevelopPageState extends State<DevelopPage> {
       }
       _before = false;
     });
+    unawaited(_rmMakeArea());
     _writeSidecar();
-    _refresh();
+    if (hadPending || !aiPatchesEqual(before, _patches)) {
+      unawaited(_reopenPhoto());
+    } else {
+      _refresh();
+    }
   }
 
   /// « Depuis Photos » : le sélecteur de Photos, avec le fichier d'origine (compressionQuality 0 : ni
@@ -484,7 +505,7 @@ class _DevelopPageState extends State<DevelopPage> {
     final RenderResult full = await raw.develop(half: false, maxSide: 2752, look: 2);
     if (!mounted || token != _rawToken) return;
     _photo?.close();
-    _photo = PhotoEngine.open(full.rgba, full.width, full.height);
+    _photo = PhotoEngine.open(_withPatches(full.rgba, full.width, full.height), full.width, full.height);
     setState(() {
       _srcRgba = full.rgba;
       _w = full.width;
@@ -518,6 +539,296 @@ class _DevelopPageState extends State<DevelopPage> {
   }
 
   bool _lamaBusy = false;
+
+  // -- Supprimer (IA) : l'objet touché est remplacé par un fond reconstruit par LaMa (rustine posée sur la photo avant les réglages) ------
+  List<AiPatch> _patches = <AiPatch>[]; // rustines gardées (enregistrées avec la photo, annulables)
+  bool _removeAi = false; // onglet Supprimer : mode « Objet (IA) »
+  bool _rmBusy = false;
+  AiPatch? _rmPending; // résultat calculé, pas encore gardé
+  bool _rmShowBefore = false;
+  Uint8List? _rmPlane; // zone touchée (plan 255 = zone)
+  int _rmPw = 0, _rmPh = 0;
+  ui.Image? _rmArea; // la zone en rouge transparent, sur la photo
+  int _rmMargin = 0; // marge ajoutée autour de la zone (0 à 4 crans)
+  String _rmInfo = '';
+
+  /// Photo montrée : l'original avec les rustines gardées (et le résultat en attente, sauf en « Avant »).
+  Future<void> _reopenPhoto() async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _info.version == null) return;
+    final List<AiPatch> list = <AiPatch>[..._patches, if (_rmPending != null && !_rmShowBefore) _rmPending!];
+    final Uint8List shown = applyAiPatches(rgba, _w, _h, list);
+    while (_busy) {
+      await Future<void>.delayed(const Duration(milliseconds: 30)); // un rendu utilise encore l'ancien moteur
+    }
+    if (!mounted) return;
+    _photo?.close();
+    _photo = null;
+    try {
+      _photo = PhotoEngine.open(shown, _w, _h);
+    } catch (e) {
+      _error = e.toString();
+    }
+    await _refresh();
+  }
+
+  Future<void> _rmMakeArea() async {
+    final Uint8List? plane = _rmPlane;
+    final ui.Image? old = _rmArea;
+    if (plane == null) {
+      _rmArea = null;
+      old?.dispose();
+      return;
+    }
+    final Uint8List px = Uint8List(_rmPw * _rmPh * 4);
+    for (int i = 0; i < _rmPw * _rmPh; i++) {
+      if (plane[i] > 127) {
+        px[i * 4] = 255;
+        px[i * 4 + 1] = 40;
+        px[i * 4 + 2] = 40;
+        px[i * 4 + 3] = 120;
+      }
+    }
+    final Completer<ui.Image> c = Completer<ui.Image>();
+    ui.decodeImageFromPixels(px, _rmPw, _rmPh, ui.PixelFormat.rgba8888, c.complete);
+    final ui.Image img = await c.future;
+    if (!mounted) {
+      img.dispose();
+      return;
+    }
+    setState(() => _rmArea = img);
+    old?.dispose();
+  }
+
+  /// Entre dans le mode « Objet (IA) » : SAM analyse la photo, puis chaque toucher choisit l'objet.
+  Future<void> _rmEnter() async {
+    if (_srcRgba == null || _aiBusy) return;
+    setState(() {
+      _removeAi = true;
+      _rmPending = null;
+      _rmShowBefore = false;
+      _rmPlane = null;
+      _rmInfo = '';
+    });
+    await _samStart();
+  }
+
+  /// Quitte le mode (à appeler dans un setState) : sélection, zone et résultat en attente sont abandonnés.
+  void _rmExit() {
+    _removeAi = false;
+    _rmPlane = null;
+    _rmPending = null;
+    _rmShowBefore = false;
+    _rmInfo = '';
+    _rmMargin = 0;
+    _rmArea?.dispose();
+    _rmArea = null;
+    _samLeave();
+  }
+
+  Future<void> _rmLeave() async {
+    final bool hadPending = _rmPending != null;
+    setState(_rmExit);
+    if (hadPending) await _reopenPhoto();
+  }
+
+  Future<void> _rmRun() async {
+    final Uint8List? rgba = _srcRgba;
+    final Uint8List? plane = _rmPlane;
+    if (rgba == null || plane == null || _rmBusy || _w == 0 || _h == 0) {
+      if (plane == null) _say('Touchez d\'abord l\'objet à retirer.');
+      return;
+    }
+    setState(() => _rmBusy = true);
+    try {
+      if (!await VisionBridge.lamaPresent()) {
+        _say('Téléchargement de LaMa (40 Mo)… patientez, ne quittez pas l\'application.');
+        final String? e = await VisionBridge.lamaDownload();
+        if (e != null) {
+          _say(e);
+          return;
+        }
+      }
+      final AiWindow? win = aiWindow(plane, _rmPw, _rmPh, _w, _h);
+      if (win == null) {
+        _say('Touchez d\'abord l\'objet à retirer.');
+        return;
+      }
+      _say('LaMa reconstruit le fond…');
+      final Uint8List crop = lamaCrop(rgba, _w, _h, win.x0, win.y0, win.side);
+      final Uint8List mask = growMask(aiWindowMask(plane, _rmPw, _rmPh, _w, _h, win), 4 + 4 * _rmMargin);
+      final VisionLama r = await VisionBridge.lamaFill(crop, mask);
+      if (!mounted) return;
+      final Uint8List? filled = r.rgba;
+      if (r.error != null || filled == null) {
+        _say(r.error ?? 'LaMa n\'a rien rendu.');
+        return;
+      }
+      final AiPatch patch = makeAiPatch(
+        filled: matchGrain(crop, mask, filled),
+        alpha: featherAlpha(mask, 3),
+        win: win,
+        w: _w,
+        h: _h,
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+      );
+      setState(() {
+        _rmPending = patch;
+        _rmShowBefore = false;
+        _rmInfo = 'Reconstruction faite en ${(r.runMs / 1000).toStringAsFixed(1)} s'
+            '${win.tooBig ? ' · zone grande : le résultat peut être moins net' : ''}.';
+      });
+      await _reopenPhoto();
+    } finally {
+      if (mounted) setState(() => _rmBusy = false);
+    }
+  }
+
+  /// « Garder ce résultat » : la rustine entre dans la recette (une étape d'annulation) et on peut choisir un autre objet.
+  void _rmKeep() {
+    final AiPatch? p = _rmPending;
+    if (p == null) return;
+    setState(() {
+      _patches = <AiPatch>[..._patches, p];
+      _rmPending = null;
+      _rmPlane = null;
+      _rmShowBefore = false;
+      _rmInfo = 'Résultat gardé. Touchez un autre objet, ou changez d\'onglet.';
+      _rmMargin = 0;
+      _samPts = <List<double>>[];
+      _samPlaneLast = null;
+    });
+    unawaited(_rmMakeArea());
+    _commit();
+  }
+
+  /// « Recommencer » : le résultat est écarté, la zone reste (on peut changer la marge ou les points puis relancer).
+  Future<void> _rmRedo() async {
+    setState(() {
+      _rmPending = null;
+      _rmShowBefore = false;
+      _rmInfo = '';
+    });
+    await _reopenPhoto();
+  }
+
+  /// « Annuler » : résultat et zone écartés.
+  Future<void> _rmCancel() async {
+    final bool hadPending = _rmPending != null;
+    setState(() {
+      _rmPending = null;
+      _rmPlane = null;
+      _rmShowBefore = false;
+      _rmInfo = '';
+      _rmMargin = 0;
+      _samPts = <List<double>>[];
+      _samPlaneLast = null;
+    });
+    unawaited(_rmMakeArea());
+    if (hadPending) await _reopenPhoto();
+  }
+
+  Future<void> _rmToggleBefore(bool before) async {
+    if (_rmPending == null) return;
+    setState(() => _rmShowBefore = before);
+    await _reopenPhoto();
+  }
+
+  /// Supprimer, mode « Objet (IA) » : le panneau de gauche.
+  List<Widget> _removeAiPanel(bool ready) {
+    final bool hasZone = _rmPlane != null;
+    final bool hasResult = _rmPending != null;
+    return <Widget>[
+      _groupTitle('SUPPRIMER UN OBJET (IA)', null),
+      SegmentedButton<bool>(
+        showSelectedIcon: false,
+        segments: const <ButtonSegment<bool>>[
+          ButtonSegment<bool>(value: false, label: Text('Taches')),
+          ButtonSegment<bool>(value: true, label: Text('Objet (IA)')),
+        ],
+        selected: const <bool>{true},
+        onSelectionChanged: (Set<bool> v) {
+          if (!v.first) unawaited(_rmLeave());
+        },
+      ),
+      const SizedBox(height: 8),
+      Text(
+        !_samOn
+            ? 'SAM 2.1 analyse la photo…'
+            : hasResult
+                ? 'Comparez Avant / Après, puis gardez le résultat ou recommencez.'
+                : hasZone
+                    ? 'Zone choisie (en rouge). Touchez encore pour l\'ajuster, puis lancez la suppression.'
+                    : 'Touchez l\'objet à retirer.',
+        style: const TextStyle(fontSize: 12, color: Colors.white70),
+      ),
+      if (_rmInfo.isNotEmpty) ...<Widget>[
+        const SizedBox(height: 4),
+        Text(_rmInfo, style: const TextStyle(fontSize: 11, color: Colors.white54)),
+      ],
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: <Widget>[
+          ChoiceChip(label: const Text('+ Dans l\'objet'), selected: _samAdd, onSelected: (_) => setState(() => _samAdd = true)),
+          ChoiceChip(label: const Text('− En dehors'), selected: !_samAdd, onSelected: (_) => setState(() => _samAdd = false)),
+          ActionChip(label: const Text('Annuler le dernier point'), onPressed: _aiBusy || _samPts.length < 2 ? null : _samUndo),
+        ],
+      ),
+      const SizedBox(height: 4),
+      Row(
+        children: <Widget>[
+          const Expanded(child: Text('Marge autour de la zone', style: TextStyle(fontSize: 12))),
+          IconButton(
+            tooltip: 'Réduire la marge',
+            icon: const Icon(Icons.remove_circle_outline),
+            onPressed: hasResult || _rmMargin <= 0 ? null : () => setState(() => _rmMargin--),
+          ),
+          Text('$_rmMargin'),
+          IconButton(
+            tooltip: 'Agrandir la marge',
+            icon: const Icon(Icons.add_circle_outline),
+            onPressed: hasResult || _rmMargin >= 4 ? null : () => setState(() => _rmMargin++),
+          ),
+        ],
+      ),
+      const SizedBox(height: 4),
+      if (hasResult)
+        SegmentedButton<bool>(
+          showSelectedIcon: false,
+          segments: const <ButtonSegment<bool>>[
+            ButtonSegment<bool>(value: true, label: Text('Avant')),
+            ButtonSegment<bool>(value: false, label: Text('Après')),
+          ],
+          selected: <bool>{_rmShowBefore},
+          onSelectionChanged: (Set<bool> v) => unawaited(_rmToggleBefore(v.first)),
+        ),
+      const SizedBox(height: 8),
+      if (!hasResult)
+        FilledButton.icon(
+          onPressed: ready && hasZone && !_rmBusy && !_aiBusy ? _rmRun : null,
+          icon: _rmBusy
+              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.auto_fix_high),
+          label: Text(_rmBusy ? 'Reconstruction…' : 'Supprimer l\'objet'),
+        )
+      else ...<Widget>[
+        FilledButton.icon(onPressed: _rmKeep, icon: const Icon(Icons.check), label: const Text('Garder ce résultat')),
+        const SizedBox(height: 6),
+        OutlinedButton(onPressed: _rmRedo, child: const Text('Recommencer')),
+      ],
+      const SizedBox(height: 6),
+      OutlinedButton(onPressed: hasZone || hasResult ? () => unawaited(_rmCancel()) : null, child: const Text('Annuler')),
+      if (_patches.isNotEmpty) ...<Widget>[
+        const SizedBox(height: 10),
+        Text(
+          '${_patches.length} objet${_patches.length > 1 ? 's' : ''} supprimé${_patches.length > 1 ? 's' : ''} (annulable avec le bouton d\'annulation).',
+          style: const TextStyle(fontSize: 11, color: Colors.white54),
+        ),
+      ],
+    ];
+  }
 
   Future<ui.Image> _lamaImage(Uint8List rgba) {
     final Completer<ui.Image> c = Completer<ui.Image>();
@@ -634,7 +945,7 @@ class _DevelopPageState extends State<DevelopPage> {
         setState(() => _loading = 'Développement pleine taille…');
         final RenderResult big = await raw.develop(half: false, maxSide: 0, look: 2);
         devMs = sw.elapsedMilliseconds;
-        final PhotoEngine bigEngine = PhotoEngine.open(big.rgba, big.width, big.height);
+        final PhotoEngine bigEngine = PhotoEngine.open(_withPatches(big.rgba, big.width, big.height), big.width, big.height);
         try {
           r = await bigEngine.render(jsonEncode(_forEngine(recipe)));
         } finally {
@@ -687,6 +998,9 @@ class _DevelopPageState extends State<DevelopPage> {
     await _useRgba(
         data.buffer.asUint8List(), frame.image.width, frame.image.height, name);
   }
+
+  /// La photo avec les rustines gardées de « Supprimer (IA) » (positions en proportions : valable à toute taille).
+  Uint8List _withPatches(Uint8List rgba, int w, int h) => applyAiPatches(rgba, w, h, _patches);
 
   /// Recette complète : clés inconnues du fichier, courbes, réglages.
   Map<String, dynamic> _recipeMap() => <String, dynamic>{
@@ -1205,7 +1519,9 @@ class _DevelopPageState extends State<DevelopPage> {
 
   void _setTool(String t) {
     final bool redo = _uncropped(t) != _uncropped(_tool) || (_maskZone && t != 'masks');
+    final bool hadPending = _rmPending != null && t != 'spots';
     setState(() {
+      if (t != 'spots' && _removeAi) _rmExit();
       _tool = t;
       if (t == 'masks' || t == 'spots') _split = false;
       if (t != 'masks') {
@@ -1216,7 +1532,11 @@ class _DevelopPageState extends State<DevelopPage> {
         _maskZone = false;
       }
     });
-    if (redo) _refresh();
+    if (hadPending) {
+      unawaited(_reopenPhoto());
+    } else if (redo) {
+      _refresh();
+    }
   }
 
   // -- Masques : dégradés linéaire et radial ---------------------------------------------------
@@ -1884,7 +2204,14 @@ class _DevelopPageState extends State<DevelopPage> {
   }
 
   Future<void> _samTapped(double fx, double fy) async {
-    if (_aiBusy || !_samOn) return;
+    if (_aiBusy || !_samOn || _rmBusy) return;
+    if (_removeAi && _rmPending != null) {
+      setState(() {
+        _rmPending = null;
+        _rmShowBefore = false;
+      });
+      await _reopenPhoto();
+    }
     final List<double>? c = _samCrop;
     if (c != null && (fx < c[0] || fx > c[2] || fy < c[1] || fy > c[3])) {
       // le toucher est hors de la zone relue en gros plan : retour à la vue d'ensemble
@@ -1971,6 +2298,17 @@ class _DevelopPageState extends State<DevelopPage> {
       }
       if (covered == 0) {
         _say('Rien n\'est sélectionné ici : touchez l\'objet.');
+        return;
+      }
+      if (_removeAi) {
+        // « Supprimer (IA) » : la zone sert à la reconstruction, aucun masque n'est créé.
+        setState(() {
+          _rmPlane = plane;
+          _rmPw = pw;
+          _rmPh = ph;
+          _rmInfo = 'Zone : ${(covered * 100 / plane.length).toStringAsFixed(1)} % de l\'image.';
+        });
+        unawaited(_rmMakeArea());
         return;
       }
       final String key = maskKey(plane);
@@ -2978,6 +3316,7 @@ class _DevelopPageState extends State<DevelopPage> {
   }
 
   List<Widget> _spotsPanel(bool ready) {
+    if (_removeAi) return _removeAiPanel(ready);
     final Spot? sel = _spotSel >= 0 && _spotSel < _spots.length ? _spots[_spotSel] : null;
     final String mode = sel != null ? '${sel['mode']}' : _spotMode;
     final double size = sel != null ? (sel['r'] as num).toDouble() / 0.0005 : _spotSize;
@@ -2986,6 +3325,18 @@ class _DevelopPageState extends State<DevelopPage> {
     final int autoCount = _spots.where((Spot s) => s['auto'] == true).length;
     final int kept = _dust == null ? 0 : keptDust(_dust!, _spots, _dustSens.round(), _w, _h).length;
     return <Widget>[
+      SegmentedButton<bool>(
+        showSelectedIcon: false,
+        segments: const <ButtonSegment<bool>>[
+          ButtonSegment<bool>(value: false, label: Text('Taches')),
+          ButtonSegment<bool>(value: true, label: Text('Objet (IA)')),
+        ],
+        selected: const <bool>{false},
+        onSelectionChanged: (Set<bool> v) {
+          if (v.first && ready) unawaited(_rmEnter());
+        },
+      ),
+      const SizedBox(height: 8),
       _groupTitle('RETOUCHE DE TACHES', ready && _spots.isNotEmpty ? _spotsClear : null),
       Text(
         _spots.isEmpty
@@ -3420,6 +3771,27 @@ class _DevelopPageState extends State<DevelopPage> {
           onDraw: _maskDrawn,
           onEdit: _maskEdit,
           onEditEnd: _maskEditEnd,
+        ),
+      );
+    }
+    if (_tool == 'spots' && _removeAi) {
+      return Padding(
+        padding: const EdgeInsets.all(12),
+        child: MaskOverlay(
+          image: _shown!,
+          area: _rmPending == null ? _rmArea : null,
+          comp: null,
+          invert: false,
+          drawKind: null,
+          showArea: false,
+          pickMode: _samOn,
+          onPick: _samTapped,
+          paintKind: null,
+          brushR: 0,
+          onStroke: (List<List<double>> _) {},
+          onDraw: (String a, double b, double c, double d, double e) {},
+          onEdit: (Map<String, dynamic> _) {},
+          onEditEnd: () {},
         ),
       );
     }
