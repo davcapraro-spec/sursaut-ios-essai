@@ -344,6 +344,15 @@ class _CapturePageState extends State<CapturePage> {
 
   /// Après un toucher près d'un bord : le cadre revenu de l'appareil donne la limite réelle de la zone.
   void _learnFromFrame(CameraLiveFrame? f) {
+    if (f != null && f.focus.isNotEmpty && _st.area == null) {
+      // Un cadre vu hors de la zone supposée prouve que le point peut s'y placer : la zone s'élargit.
+      final CameraFocusFrame o = f.focus.first;
+      final List<int> cur = _focusArea();
+      final List<int> w = widenArea(cur, cx: o.x, cy: o.y);
+      if (w[0] != cur[0] || w[1] != cur[1] || w[2] != cur[2] || w[3] != cur[3]) {
+        setState(() => _zone = FocusZone(xMin: w[0], yMin: w[1], xMax: w[2], yMax: w[3]));
+      }
+    }
     final Offset? t = _tapTarget;
     final DateTime? at = _tapAt;
     if (f == null || t == null || at == null || f.focus.isEmpty) return;

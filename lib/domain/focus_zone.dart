@@ -24,7 +24,7 @@ class FocusZone {
 const double kEdgeBand = 0.2;
 
 /// Écart minimal (part de l'image) entre le point demandé et le cadre revenu pour conclure que l'appareil a limité le déplacement.
-const double kClampGap = 0.02;
+const double kClampGap = 0.01;
 
 /// Compare le point demandé ([tx], [ty], parts de l'image 0..1) au centre du cadre revenu de l'appareil ([cx], [cy]) :
 /// si le toucher était près d'un bord et que le cadre s'est arrêté plus à l'intérieur (sans dépasser la moitié de l'image),
@@ -36,4 +36,13 @@ FocusZone learnFocusZone(FocusZone zone, {required double tx, required double ty
   if (ty < kEdgeBand && cy > ty + kClampGap && cy < 0.5) z = z.copyWith(yMin: (cy * 479).round());
   if (ty > 1 - kEdgeBand && cy < ty - kClampGap && cy > 0.5) z = z.copyWith(yMax: (cy * 479).round());
   return z;
+}
+
+/// Élargit la zone si le centre du cadre revenu de l'appareil ([cx], [cy], parts 0..1) sort de la zone supposée [area]
+/// ([xMin, yMin, xMax, yMax] sur la grille 640 x 480) : un cadre vu à un endroit prouve que le point peut s'y placer.
+/// Rend la zone mise à jour ([area] inchangée si rien ne sort).
+List<int> widenArea(List<int> area, {required double cx, required double cy}) {
+  final int px = (cx * 639).round();
+  final int py = (cy * 479).round();
+  return <int>[px < area[0] ? px : area[0], py < area[1] ? py : area[1], px > area[2] ? px : area[2], py > area[3] ? py : area[3]];
 }

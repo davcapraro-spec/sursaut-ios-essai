@@ -43,4 +43,13 @@ void main() {
     expect(b.xMin, a.xMin);
     expect(b.xMax, (0.85 * 639).round());
   });
+
+  test('un cadre vu hors de la zone supposée l\'élargit', () {
+    final List<int> a = widenArea(<int>[40, 30, 600, 450], cx: 0.03, cy: 0.99);
+    expect(a, <int>[(0.03 * 639).round(), 30, 600, (0.99 * 479).round()]);
+  });
+
+  test('un cadre dans la zone : rien ne change', () {
+    expect(widenArea(<int>[40, 30, 600, 450], cx: 0.5, cy: 0.5), <int>[40, 30, 600, 450]);
+  });
 }
