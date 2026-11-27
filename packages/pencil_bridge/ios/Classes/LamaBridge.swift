@@ -264,8 +264,9 @@ final class LamaBridge {
     return MLFeatureValue(multiArray: arr)
   }
 
-  /// Lit la sortie (tableau [1, 3, 512, 512] ou image) en RVBA 8 bits ; nil si elle contient des valeurs invalides.
-  private static func readOutput(_ out: MLFeatureProvider) -> Data? {
+  /// Lit la sortie (tableau [1, 3, 512, 512] ou image) en RVBA 8 bits ; nil si elle est invalide (valeurs hors limites, ou zone remplie
+  /// très différente de son pourtour : cas d'une demi-précision qui déborde sur le Neural Engine).
+  private static func readOutput(_ out: MLFeatureProvider, rgba: Data, mask: Data) -> Data? {
     let n = side * side
     var result = Data(count: n * 4)
     var bad = 0
@@ -313,7 +314,35 @@ final class LamaBridge {
     } else {
       return nil
     }
-    return bad > n / 100 ? nil : result
+    // Contrôle limité à la zone remplie (la sortie entière peut être correcte alors que le trou est noir ou plein de points).
+    var inside = 0
+    var sumIn = 0.0
+    var ring = 0
+    var sumRing = 0.0
+    var maskCount = 0
+    rgba.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
+      mask.withUnsafeBytes { (m: UnsafeRawBufferPointer) in
+        result.withUnsafeBytes { (res: UnsafeRawBufferPointer) in
+          let s = src.bindMemory(to: UInt8.self), mk = m.bindMemory(to: UInt8.self), r = res.bindMemory(to: UInt8.self)
+          for i in 0..<n {
+            if mk[i] > 127 {
+              maskCount += 1
+              inside += 1
+              sumIn += 0.299 * Double(r[i * 4]) + 0.587 * Double(r[i * 4 + 1]) + 0.114 * Double(r[i * 4 + 2])
+            } else if i % 7 == 0 {
+              ring += 1
+              sumRing += 0.299 * Double(s[i * 4]) + 0.587 * Double(s[i * 4 + 1]) + 0.114 * Double(s[i * 4 + 2])
+            }
+          }
+        }
+      }
+    }
+    if bad > max(30, maskCount / 50) { return nil }
+    if inside > 50 && ring > 50 {
+      let meanIn = sumIn / Double(inside), meanRing = sumRing / Double(ring)
+      if abs(meanIn - meanRing) > 90 { return nil }
+    }
+    return result
   }
 
   private static func run(rgba: Data, mask: Data, units: MLComputeUnits) throws -> (Data?, Double) {
@@ -324,7 +353,7 @@ final class LamaBridge {
     ])
     let started = Date()
     let out = try m.prediction(from: inputs)
-    return (readOutput(out), Date().timeIntervalSince(started) * 1000)
+    return (readOutput(out, rgba: rgba, mask: mask), Date().timeIntervalSince(started) * 1000)
   }
 
   /// Remplit la zone du masque. `rgba` : 512 x 512 x 4 octets ; `mask` : 512 x 512 octets (255 = à remplir).
