@@ -275,12 +275,26 @@ final class LamaBridge {
     guard let value = out.featureValue(for: name) else { return nil }
     if let arr = value.multiArrayValue {
       guard arr.count >= n * 3 else { return nil }
+      // Lecture avec les pas (strides) du tableau : le Neural Engine ou la carte graphique peuvent aligner les lignes.
       var floats = [Float](repeating: 0, count: n * 3)
-      if arr.dataType == .float32 {
-        let src = arr.dataPointer.bindMemory(to: Float.self, capacity: n * 3)
-        for i in 0..<(n * 3) { floats[i] = src[i] }
-      } else {
-        for i in 0..<(n * 3) { floats[i] = arr[i].floatValue }
+      let st = arr.strides.map { $0.intValue }
+      guard st.count >= 3 else { return nil }
+      let sC = st[st.count - 3], sY = st[st.count - 2], sX = st[st.count - 1]
+      let f32 = arr.dataPointer.bindMemory(to: Float.self, capacity: arr.count)
+      let f16 = arr.dataPointer.bindMemory(to: UInt16.self, capacity: arr.count)
+      for c in 0..<3 {
+        for y in 0..<side {
+          for x in 0..<side {
+            let idx = c * sC + y * sY + x * sX
+            let v: Float
+            switch arr.dataType {
+            case .float32: v = f32[idx]
+            case .float16: v = Float(Float16(bitPattern: f16[idx]))
+            default: v = arr[idx].floatValue
+            }
+            floats[c * n + y * side + x] = v
+          }
+        }
       }
       result.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) in
         let d = dst.bindMemory(to: UInt8.self)
@@ -319,6 +333,7 @@ final class LamaBridge {
     var sumIn = 0.0
     var ring = 0
     var sumRing = 0.0
+    var sumDiff = 0.0
     var maskCount = 0
     rgba.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
       mask.withUnsafeBytes { (m: UnsafeRawBufferPointer) in
@@ -332,12 +347,15 @@ final class LamaBridge {
             } else if i % 7 == 0 {
               ring += 1
               sumRing += 0.299 * Double(s[i * 4]) + 0.587 * Double(s[i * 4 + 1]) + 0.114 * Double(s[i * 4 + 2])
+              sumDiff += abs(Double(r[i * 4]) - Double(s[i * 4])) + abs(Double(r[i * 4 + 1]) - Double(s[i * 4 + 1])) + abs(Double(r[i * 4 + 2]) - Double(s[i * 4 + 2]))
             }
           }
         }
       }
     }
     if bad > max(30, maskCount / 50) { return nil }
+    // Hors de la zone, la sortie doit ressembler à la photo (écart moyen faible) : sinon toute la sortie est fausse.
+    if ring > 50 && sumDiff / Double(ring * 3) > 40 { return nil }
     if inside > 50 && ring > 50 {
       let meanIn = sumIn / Double(inside), meanRing = sumRing / Double(ring)
       if abs(meanIn - meanRing) > 90 { return nil }
@@ -358,8 +376,8 @@ final class LamaBridge {
 
   /// Remplit la zone du masque. `rgba` : 512 x 512 x 4 octets ; `mask` : 512 x 512 octets (255 = à remplir).
   /// Réponse : `rgba` (512 x 512 x 4), `loadMs` (chargement, 0 si déjà chargé), `runMs`, `memBeforeMB`, `memAfterMB`, `units`, ou `error`.
-  /// Essai d'abord avec tous les processeurs (Neural Engine compris) ; si le résultat est invalide (valeurs hors limites en demi-précision),
-  /// nouvel essai sur processeur et carte graphique seulement.
+  /// Essai sur processeur et carte graphique (le Neural Engine a donné 4 minutes de chargement et une image fausse sur l'iPad de David,
+  /// 27/11/2026) ; si le résultat est invalide, nouvel essai sur le processeur seul.
   static func fill(rgba: Data, mask: Data) -> [String: Any] {
     lock.lock()
     defer { lock.unlock() }
@@ -367,12 +385,13 @@ final class LamaBridge {
     guard rgba.count >= n * 4, mask.count >= n else { return fail("Image ou masque de la mauvaise taille (512 x 512 attendu).") }
     let memBefore = footprintMB()
     let hadModel = model != nil
-    var usedUnits = "tous les processeurs"
+    var usedUnits = "processeur et carte graphique"
     do {
-      var (data, ms) = try run(rgba: rgba, mask: mask, units: .all)
+      var (data, ms) = try run(rgba: rgba, mask: mask, units: .cpuAndGPU)
       if data == nil {
-        usedUnits = "processeur et carte graphique"
-        (data, ms) = try run(rgba: rgba, mask: mask, units: .cpuAndGPU)
+        usedUnits = "processeur seul"
+        model = nil
+        (data, ms) = try run(rgba: rgba, mask: mask, units: .cpuOnly)
       }
       guard let result = data else { return fail("LaMa a rendu une image invalide.") }
       return [
