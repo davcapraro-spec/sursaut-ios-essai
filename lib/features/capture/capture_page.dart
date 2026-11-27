@@ -325,8 +325,21 @@ class _CapturePageState extends State<CapturePage> {
   /// Ordre : zone lue sur l'appareil, sinon limites apprises en touchant près des bords, sinon toute la grille.
   List<int> _focusArea() {
     final List<int>? a = _st.area;
-    if (a == null || a.length < 4 || a[2] <= a[0] || a[3] <= a[1] || a[2] > 639 || a[3] > 479) return _zone.asArea();
+    if (a == null || a.length < 4 || a[2] <= a[0] || a[3] <= a[1] || a[2] > 639 || a[3] > 479) {
+      final List<int> base = _halfFrameArea();
+      return <int>[_zone.xMin ?? base[0], _zone.yMin ?? base[1], _zone.xMax ?? base[2], _zone.yMax ?? base[3]];
+    }
     return a;
+  }
+
+  /// Règle de la documentation Sony : le centre du cadre se place sur l'image moins une demi-taille de cadre de chaque côté
+  /// (mesure sur le PC de David le 15/11 : ≈ 5 % à gauche et à droite, ≈ 6 % en haut et en bas). Toute la grille si aucun cadre n'est connu.
+  List<int> _halfFrameArea() {
+    final List<CameraFocusFrame>? fr = _frame?.focus;
+    if (fr == null || fr.isEmpty) return <int>[0, 0, 639, 479];
+    final CameraFocusFrame c = fr.first;
+    if (c.w <= 0 || c.h <= 0 || c.w >= 0.9 || c.h >= 0.9) return <int>[0, 0, 639, 479];
+    return <int>[(c.w / 2 * 639).round(), (c.h / 2 * 479).round(), 639 - (c.w / 2 * 639).round(), 479 - (c.h / 2 * 479).round()];
   }
 
   /// Après un toucher près d'un bord : le cadre revenu de l'appareil donne la limite réelle de la zone.
@@ -355,7 +368,9 @@ class _CapturePageState extends State<CapturePage> {
         ? 'lue sur l\'appareil'
         : _zone.known
             ? 'mesurée : touchez près des autres bords pour la compléter'
-            : 'non précisée par l\'appareil : touchez près des bords pour la mesurer';
+            : (_frame?.focus.isNotEmpty ?? false)
+                ? 'déduite de la taille du cadre (règle Sony) ; touchez près des bords pour la mesurer'
+                : 'non précisée par l\'appareil';
     return 'Touchez l\'image pour placer le point · cadre bleu en pointillés = zone permise ($zone, $source)';
   }
 
