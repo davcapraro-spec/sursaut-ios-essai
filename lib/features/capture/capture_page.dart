@@ -7,6 +7,7 @@ import 'package:pencil_bridge/pencil_bridge.dart';
 
 import '../../common/theme.dart';
 import '../../domain/camera_format.dart';
+import '../../domain/focus_zone.dart';
 
 /// Capturer : piloter l'A7 IV branché en USB-C (réglages, déclenchement, réception de la photo).
 ///
@@ -31,6 +32,9 @@ class _CapturePageState extends State<CapturePage> {
   bool _shooting = false;
   String? _previewPath;
   CameraLiveFrame? _frame;
+  FocusZone _zone = const FocusZone(); // zone du point apprise en touchant près des bords (si l'appareil ne la donne pas)
+  Offset? _tapTarget; // dernier point demandé (parts de l'image)
+  DateTime? _tapAt;
   String? _lastInfo;
   final Set<int> _pending = <int>{};
   Timer? _shootTimeout;
@@ -68,6 +72,7 @@ class _CapturePageState extends State<CapturePage> {
         setState(() => _st = e.state ?? _st);
       case 'frame':
         setState(() => _frame = e.frame);
+        _learnFromFrame(e.frame);
       case 'stream':
         setState(() => _frame = null);
         _toast('L\'image directe s\'est arrêtée. L\'appareil est-il en mode prise de vue ?');
@@ -192,6 +197,8 @@ class _CapturePageState extends State<CapturePage> {
     if (!mounted) return;
     setState(() {
       _frame = null;
+      _zone = const FocusZone();
+      _tapTarget = null;
       _st = const CameraLiveState();
       _status = 'Déconnecté.';
     });
@@ -308,15 +315,34 @@ class _CapturePageState extends State<CapturePage> {
     final double fx = (local.dx - imageRect.left) / imageRect.width;
     final double fy = (local.dy - imageRect.top) / imageRect.height;
     final List<int> a = _focusArea();
+    _tapTarget = Offset(fx, fy);
+    _tapAt = DateTime.now();
     // Un toucher hors de la zone où l'appareil accepte le point est ramené au bord de cette zone.
     CameraBridge.liveAF((fx * 639).round().clamp(a[0], a[2]).toInt(), (fy * 479).round().clamp(a[1], a[3]).toInt());
   }
 
-  /// Zone utile du point de mise au point : [xMin, yMin, xMax, yMax] sur la grille 640 × 480 (toute la grille si l'appareil ne la précise pas).
+  /// Zone utile du point de mise au point : [xMin, yMin, xMax, yMax] sur la grille 640 x 480.
+  /// Ordre : zone lue sur l'appareil, sinon limites apprises en touchant près des bords, sinon toute la grille.
   List<int> _focusArea() {
     final List<int>? a = _st.area;
-    if (a == null || a.length < 4 || a[2] <= a[0] || a[3] <= a[1] || a[2] > 639 || a[3] > 479) return <int>[0, 0, 639, 479];
+    if (a == null || a.length < 4 || a[2] <= a[0] || a[3] <= a[1] || a[2] > 639 || a[3] > 479) return _zone.asArea();
     return a;
+  }
+
+  /// Après un toucher près d'un bord : le cadre revenu de l'appareil donne la limite réelle de la zone.
+  void _learnFromFrame(CameraLiveFrame? f) {
+    final Offset? t = _tapTarget;
+    final DateTime? at = _tapAt;
+    if (f == null || t == null || at == null || f.focus.isEmpty) return;
+    final int ms = DateTime.now().difference(at).inMilliseconds;
+    if (ms < 700) return; // l'appareil n'a pas encore fini de déplacer le cadre
+    _tapTarget = null;
+    if (ms > 4000) return; // trop tard : le cadre a pu bouger pour une autre raison (suivi, nouveau réglage)
+    final CameraFocusFrame c = f.focus.first;
+    final FocusZone z = learnFocusZone(_zone, tx: t.dx, ty: t.dy, cx: c.x, cy: c.y);
+    if (z.xMin != _zone.xMin || z.yMin != _zone.yMin || z.xMax != _zone.xMax || z.yMax != _zone.yMax) {
+      setState(() => _zone = z);
+    }
   }
 
   /// Texte d'aide au-dessus de l'image, avec la zone du point (pour savoir d'où vient le cadre en pointillés).
@@ -325,7 +351,12 @@ class _CapturePageState extends State<CapturePage> {
     final List<int> a = _focusArea();
     final bool real = raw != null && raw.length >= 4 && a[0] == raw[0] && a[1] == raw[1] && a[2] == raw[2] && a[3] == raw[3];
     final String zone = 'x ${a[0]}–${a[2]}, y ${a[1]}–${a[3]}';
-    return 'Touchez l\'image pour placer le point · cadre bleu en pointillés = zone permise ($zone, ${real ? 'lue sur l\'appareil' : 'toute l\'image, non précisée par l\'appareil'})';
+    final String source = real
+        ? 'lue sur l\'appareil'
+        : _zone.known
+            ? 'mesurée : touchez près des autres bords pour la compléter'
+            : 'non précisée par l\'appareil : touchez près des bords pour la mesurer';
+    return 'Touchez l\'image pour placer le point · cadre bleu en pointillés = zone permise ($zone, $source)';
   }
 
   Widget _buildPreview() {
