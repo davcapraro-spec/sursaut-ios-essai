@@ -18,8 +18,9 @@ Pod::Spec.new do |s|
   # « selfie multiclasse » (Google, Apache 2.0, 16 Mo, mis dans Assets/). Essai : à terme, modèle téléchargé à la première utilisation.
   s.dependency 'TensorFlowLiteC', '2.17.0'
   # Reconstruction d'une zone effacée (LaMa, Apache 2.0) : ONNX Runtime (Microsoft, MIT). Le modèle (208 Mo) est téléchargé à la première utilisation.
-  # DÉSACTIVÉ le 26/11/2026 : download.onnxruntime.ai présente un mauvais certificat (le CI échoue). Réactiver avec l'étape de tools/ort_pods.sh.
-  # s.dependency 'onnxruntime-objc', '1.19.2'
+  # download.onnxruntime.ai a présenté un mauvais certificat le 26/11/2026 : la dépendance n'est ajoutée que si l'étape du CI
+  # « ONNX Runtime (téléchargement vérifié) » a réussi (elle positionne SURSAUT_ORT=1 et pointe le Podfile vers les archives vérifiées).
+  s.dependency 'onnxruntime-objc', '1.19.2' if ENV['SURSAUT_ORT'] == '1'
   s.resources        = ['Assets/*.tflite', 'Assets/*.mlmodelc']
   s.platform         = :ios, '13.0'
   s.swift_version    = '5.0'
