@@ -14,8 +14,22 @@ final class VisionBridge {
       name: "sursaut/vision/methods",
       binaryMessenger: registrar.messenger())
     channel.setMethodCallHandler { call, result in
-      guard call.method == "instanceMask" || call.method == "listPersons" || call.method == "faceParts" || call.method == "bodyParts" || call.method == "samEncode" || call.method == "samDecode" || call.method == "lamaStatus" || call.method == "lamaDownload" || call.method == "lamaFill" else {
+      guard call.method == "instanceMask" || call.method == "listPersons" || call.method == "faceParts" || call.method == "bodyParts" || call.method == "samEncode" || call.method == "samDecode" || call.method == "lamaStatus" || call.method == "lamaDownload" || call.method == "lamaFill" || call.method == "iterSeg" else {
         result(FlutterMethodNotImplemented)
+        return
+      }
+      if call.method == "iterSeg" {
+        guard let a = call.arguments as? [String: Any],
+          let typed = a["rgba"] as? FlutterStandardTypedData,
+          let w = a["width"] as? Int, let h = a["height"] as? Int,
+          let pts = a["points"] as? [[Double]]
+        else {
+          result(["error": "Arguments manquants pour la segmentation de Vision."])
+          return
+        }
+        IterativeSegBridge.segment(rgba: typed.data, width: w, height: h, points: pts) { out in
+          DispatchQueue.main.async { result(out) }
+        }
         return
       }
       if call.method == "lamaStatus" {

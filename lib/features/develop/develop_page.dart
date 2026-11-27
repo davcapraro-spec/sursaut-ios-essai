@@ -12,7 +12,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:pencil_bridge/pencil_bridge.dart'
-    show VisionBridge, VisionFace, VisionFaces, VisionLama, VisionMaskResult, VisionParts, VisionSam;
+    show VisionBridge, VisionFace, VisionFaces, VisionIter, VisionLama, VisionMaskResult, VisionParts, VisionSam;
 import 'package:share_plus/share_plus.dart';
 
 import '../../engine/engine.dart';
@@ -928,6 +928,128 @@ class _DevelopPageState extends State<DevelopPage> {
     final Completer<ui.Image> c = Completer<ui.Image>();
     ui.decodeImageFromPixels(rgba, kLamaSide, kLamaSide, ui.PixelFormat.rgba8888, c.complete);
     return c.future;
+  }
+
+  Future<ui.Image> _rgbaImage(Uint8List rgba, int w, int h) {
+    final Completer<ui.Image> c = Completer<ui.Image>();
+    ui.decodeImageFromPixels(rgba, w, h, ui.PixelFormat.rgba8888, c.complete);
+    return c.future;
+  }
+
+  /// Essai de la segmentation au toucher de Vision (iPadOS 27) : on touche la photo, le masque de l'objet s'affiche en rouge.
+  /// Un 2e toucher repart de zéro ; l'option « Ajouter / Retirer » ajoute un point à l'objet ou le retire. Sert à comparer avec SAM 2.1.
+  Future<void> _visionTest() async {
+    final Uint8List? rgba = _srcRgba;
+    if (rgba == null || _w == 0 || _h == 0) {
+      _say('Ouvrez d\'abord une photo.');
+      return;
+    }
+    final int w = _w, h = _h;
+    final ui.Image photo = await _rgbaImage(rgba, w, h);
+    if (!mounted) {
+      photo.dispose();
+      return;
+    }
+    ui.Image? overlay;
+    final List<List<double>> pts = <List<double>>[];
+    String info = 'Touchez un objet de la photo.';
+    bool busy = false;
+    int mode = 0; // 0 = nouveau toucher, 1 = ajouter au masque, 2 = retirer du masque
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) => StatefulBuilder(
+        builder: (BuildContext context, StateSetter setLocal) {
+          Future<void> tap(Offset p, Size box) async {
+            if (busy) return;
+            final double fx = (p.dx / box.width).clamp(0.0, 1.0), fy = (p.dy / box.height).clamp(0.0, 1.0);
+            if (mode == 0 || pts.isEmpty) {
+              pts
+                ..clear()
+                ..add(<double>[fx, fy]);
+            } else {
+              pts.add(<double>[fx, fy, mode == 1 ? 1.0 : 0.0]);
+            }
+            setLocal(() {
+              busy = true;
+              info = 'Vision calcule…';
+            });
+            final VisionIter r = await VisionBridge.iterSeg(rgba, w, h, pts);
+            ui.Image? next;
+            if (r.mask != null) {
+              final Uint8List m = r.mask!;
+              final Uint8List px = Uint8List(w * h * 4);
+              int count = 0;
+              for (int i = 0; i < w * h; i++) {
+                if (m[i] > 127) {
+                  px[i * 4] = 255;
+                  px[i * 4 + 3] = 120;
+                  count++;
+                }
+              }
+              next = await _rgbaImage(px, w, h);
+              info = 'Vision : ${r.ms.round()} ms · ${(count * 100 / (w * h)).toStringAsFixed(1)} % de la photo';
+            } else {
+              info = r.error ?? 'Vision n\'a rien rendu.';
+            }
+            if (!context.mounted) {
+              next?.dispose();
+              return;
+            }
+            setLocal(() {
+              overlay?.dispose();
+              overlay = next ?? overlay;
+              busy = false;
+            });
+          }
+
+          return AlertDialog(
+            title: const Text('Essai Vision (segmentation au toucher)'),
+            content: SizedBox(
+              width: 800,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text(info),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      children: <Widget>[
+                        ChoiceChip(label: const Text('Nouveau toucher'), selected: mode == 0, onSelected: (_) => setLocal(() => mode = 0)),
+                        ChoiceChip(label: const Text('+ Ajouter'), selected: mode == 1, onSelected: (_) => setLocal(() => mode = 1)),
+                        ChoiceChip(label: const Text('− Retirer'), selected: mode == 2, onSelected: (_) => setLocal(() => mode = 2)),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    LayoutBuilder(builder: (BuildContext context, BoxConstraints c) {
+                      final double bw = math.min(c.maxWidth, 560.0 * w / h);
+                      final Size box = Size(bw, bw * h / w);
+                      return SizedBox(
+                        width: box.width,
+                        height: box.height,
+                        child: GestureDetector(
+                          onTapUp: (TapUpDetails d) => tap(d.localPosition, box),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: <Widget>[
+                              RawImage(image: photo, fit: BoxFit.fill),
+                              if (overlay != null) RawImage(image: overlay, fit: BoxFit.fill),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            ),
+            actions: <Widget>[TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Fermer'))],
+          );
+        },
+      ),
+    );
+    photo.dispose();
+    overlay?.dispose();
   }
 
   /// Essai de LaMa sur l'iPad : remplit une ellipse au centre de la photo (fenêtre 512 x 512) et montre avant / trou / après,
@@ -4188,6 +4310,7 @@ class _DevelopPageState extends State<DevelopPage> {
         title: const Text('Développement'),
         actions: <Widget>[
           TextButton(onPressed: ready && !_lamaBusy ? _lamaTest : null, child: Text(_lamaBusy ? 'LaMa…' : 'Essai LaMa')),
+          TextButton(onPressed: ready ? _visionTest : null, child: const Text('Essai Vision')),
           TextButton(
               onPressed: ready && !_cropMode ? _enterCrop : null, child: const Text('Recadrer')),
           IconButton(

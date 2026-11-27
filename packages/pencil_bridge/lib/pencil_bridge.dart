@@ -369,6 +369,15 @@ class VisionSam {
   final String? error;
 }
 
+/// Résultat de la segmentation au toucher de Vision (iPadOS 27) : `mask` (un octet par pixel de la photo, 255 = dans l'objet), `ms`.
+class VisionIter {
+  const VisionIter({this.mask, this.ms = 0, this.error});
+
+  final Uint8List? mask;
+  final double ms;
+  final String? error;
+}
+
 /// Résultat d'un remplissage par LaMa : `rgba` (512 x 512 x 4) et les mesures (temps en millisecondes, mémoire de l'application en Mo).
 class VisionLama {
   const VisionLama({this.rgba, this.loadMs = 0, this.runMs = 0, this.memBeforeMB = 0, this.memAfterMB = 0, this.error});
@@ -482,6 +491,27 @@ class VisionBridge {
       return 'LaMa indisponible (pas un iPad).';
     } on PlatformException catch (e) {
       return e.message ?? e.code;
+    }
+  }
+
+  /// Vision (iPadOS 27) : masque de l'objet pour des points [x, y] puis [x, y, 1 ou 0] (fractions de la photo, origine en haut à gauche ;
+  /// le premier est le toucher de départ, les suivants incluent (1) ou excluent (0)).
+  static Future<VisionIter> iterSeg(Uint8List rgba, int width, int height, List<List<double>> points) async {
+    try {
+      final Map<Object?, Object?>? r = await _methods.invokeMapMethod<Object?, Object?>(
+        'iterSeg',
+        <String, Object?>{'rgba': rgba, 'width': width, 'height': height, 'points': points},
+      );
+      if (r == null) return const VisionIter(error: 'Pas de réponse de Vision.');
+      final Object? err = r['error'];
+      if (err != null) return VisionIter(error: err.toString());
+      final Object? m = r['mask'];
+      if (m is! Uint8List || m.length < width * height) return const VisionIter(error: 'Réponse de Vision illisible.');
+      return VisionIter(mask: m, ms: (r['ms'] is num) ? (r['ms']! as num).toDouble() : 0);
+    } on MissingPluginException {
+      return const VisionIter(error: 'Vision indisponible (pas un iPad).');
+    } on PlatformException catch (e) {
+      return VisionIter(error: e.message ?? e.code);
     }
   }
 
