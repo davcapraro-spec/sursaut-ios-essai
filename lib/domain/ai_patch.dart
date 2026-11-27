@@ -1,7 +1,8 @@
 import 'dart:convert';
-import 'dart:io' show zlib;
 import 'dart:math' as math;
 import 'dart:typed_data';
+
+import 'package:image/image.dart' as img;
 
 import 'lama_prep.dart';
 
@@ -9,7 +10,7 @@ import 'lama_prep.dart';
 ///
 /// Une rustine est enregistrée en proportions de l'image (elle s'applique donc à la taille d'aperçu comme à la pleine résolution) :
 /// `id`, `x0` et `y0` (coin haut gauche, parts de la largeur et de la hauteur), `s` (côté, part de la largeur), `z` (image RVBA 512 x 512,
-/// l'alpha étant le fondu du bord de la zone, compressée en zlib puis en base64).
+/// l'alpha étant le fondu du bord de la zone, en PNG puis en base64).
 typedef AiPatch = Map<String, dynamic>;
 
 /// Fenêtre carrée autour de la zone, en pixels de la photo. [tooBig] : la zone dépasse ce que LaMa peut traiter d'un coup.
@@ -186,15 +187,27 @@ AiPatch makeAiPatch({required Uint8List filled, required Uint8List alpha, requir
     'x0': win.x0 / w,
     'y0': win.y0 / h,
     's': win.side / w,
-    'z': base64Encode(zlib.encode(rgba)),
+    'z': base64Encode(img.encodePng(img.Image.fromBytes(width: kLamaSide, height: kLamaSide, bytes: rgba.buffer, numChannels: 4))),
   };
 }
 
 /// Image RVBA 512 x 512 de la rustine (null si elle est illisible).
 Uint8List? patchPixels(AiPatch p) {
   try {
-    final Uint8List px = Uint8List.fromList(zlib.decode(base64Decode('${p['z']}')));
-    return px.length == kLamaSide * kLamaSide * 4 ? px : null;
+    final img.Image? im = img.decodePng(base64Decode('${p['z']}'));
+    if (im == null || im.width != kLamaSide || im.height != kLamaSide) return null;
+    final Uint8List px = Uint8List(kLamaSide * kLamaSide * 4);
+    int i = 0;
+    for (int y = 0; y < kLamaSide; y++) {
+      for (int x = 0; x < kLamaSide; x++) {
+        final img.Pixel q = im.getPixel(x, y);
+        px[i++] = q.r.toInt();
+        px[i++] = q.g.toInt();
+        px[i++] = q.b.toInt();
+        px[i++] = im.numChannels >= 4 ? q.a.toInt() : 255;
+      }
+    }
+    return px;
   } catch (_) {
     return null;
   }
