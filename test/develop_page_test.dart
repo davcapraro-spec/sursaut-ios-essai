@@ -26,13 +26,13 @@ void main() {
     await tester.pump();
     expect(find.text('TONALITÉ'), findsOneWidget);
     // Catégories repliées par défaut : les curseurs n'apparaissent qu'après un toucher sur le titre.
-    expect(find.text('Exposition'), findsNothing);
+    expect(find.text('Exposition (IL)'), findsNothing);
     await tester.tap(find.text('TONALITÉ'));
     await tester.pump();
-    expect(find.text('Exposition'), findsOneWidget);
+    expect(find.text('Exposition (IL)'), findsOneWidget);
     await tester.tap(find.text('TONALITÉ'));
     await tester.pump();
-    expect(find.text('Exposition'), findsNothing);
+    expect(find.text('Exposition (IL)'), findsNothing);
     await tester.tap(find.text('Courbe'));
     await tester.pump();
     expect(find.text('Réinitialiser la courbe RVB'), findsOneWidget);
