@@ -39,6 +39,14 @@ final class IterativeSegBridge {
         let pt = NormalizedPoint(x: p[0], y: 1 - p[1])
         if p[2] > 0.5 { try request.addIncludedPoint(pt) } else { try request.addExcludedPoint(pt) }
       }
+      // Le modèle de Vision est téléchargé par Apple à la première utilisation (DownloadableAssetsRequest) : on le télécharge si besoin.
+      var downloaded = false
+      let status = await request.assetStatus
+      if case .ready = status {
+      } else {
+        try await request.downloadAssets()
+        downloaded = true
+      }
       let handler = ImageRequestHandler(image)
       guard let observation = try await handler.perform(request) else {
         return ["error": "Vision n'a trouvé aucun objet à cet endroit."]
@@ -60,6 +68,7 @@ final class IterativeSegBridge {
       return [
         "mask": FlutterStandardTypedData(bytes: out),
         "ms": Date().timeIntervalSince(started) * 1000,
+        "downloaded": downloaded,
         "maskWidth": maskImage.width,
         "maskHeight": maskImage.height,
       ]

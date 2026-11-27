@@ -971,7 +971,7 @@ class _DevelopPageState extends State<DevelopPage> {
             }
             setLocal(() {
               busy = true;
-              info = 'Vision calcule…';
+              info = 'Vision calcule… (le premier toucher peut télécharger le modèle d\'Apple : patientez)';
             });
             final VisionIter r = await VisionBridge.iterSeg(rgba, w, h, pts);
             ui.Image? next;
