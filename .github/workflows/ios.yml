@@ -76,6 +76,41 @@ jobs:
           done
           ls -la packages/pencil_bridge/ios/Assets
 
+      # LaMa (suppression par IA) : modèle Core ML (Apache 2.0, 40 Mo, Dadm-n/lama-dilated-coreml sur Hugging Face). Les deux gros fichiers sont
+      # téléchargés avec leur empreinte SHA-256 vérifiée, le petit fichier de description est écrit ici, puis le paquet est compilé et mis
+      # dans l'application (plus de téléchargement sur l'iPad).
+      - name: LaMa (modèle Core ML)
+        run: |
+          B=https://huggingface.co/Dadm-n/lama-dilated-coreml/resolve/main/Resources/LaMa.mlpackage
+          mkdir -p lama_src/LaMa.mlpackage/Data/com.apple.CoreML/weights
+          curl -L --fail --retry 3 -o lama_src/LaMa.mlpackage/Data/com.apple.CoreML/model.mlmodel "$B/Data/com.apple.CoreML/model.mlmodel"
+          curl -L --fail --retry 3 -o lama_src/LaMa.mlpackage/Data/com.apple.CoreML/weights/weight.bin "$B/Data/com.apple.CoreML/weights/weight.bin"
+          echo "f39493f520a05444c3112c491249d855626d0b296b404f0b1a3a49641f527bd3  lama_src/LaMa.mlpackage/Data/com.apple.CoreML/model.mlmodel" | shasum -a 256 -c -
+          echo "2b2226b91788047b75794bd990c6eac7200853389d636692799764f40fb93bbd  lama_src/LaMa.mlpackage/Data/com.apple.CoreML/weights/weight.bin" | shasum -a 256 -c -
+          cat > lama_src/LaMa.mlpackage/Manifest.json <<'JSON'
+          {
+            "fileFormatVersion": "1.0.0",
+            "itemInfoEntries": {
+              "78103851-967E-4083-B0A0-6C421CC29DD7": {
+                "author": "com.apple.CoreML",
+                "description": "CoreML Model Weights",
+                "name": "weights",
+                "path": "com.apple.CoreML/weights"
+              },
+              "8888288F-5BA8-4BAD-BCC7-E8A2378CBE5F": {
+                "author": "com.apple.CoreML",
+                "description": "CoreML Model Specification",
+                "name": "model.mlmodel",
+                "path": "com.apple.CoreML/model.mlmodel"
+              }
+            },
+            "rootModelIdentifier": "8888288F-5BA8-4BAD-BCC7-E8A2378CBE5F"
+          }
+          JSON
+          mkdir -p packages/pencil_bridge/ios/Assets
+          xcrun coremlcompiler compile lama_src/LaMa.mlpackage packages/pencil_bridge/ios/Assets
+          ls -la packages/pencil_bridge/ios/Assets
+
       # Logo de Sursaut : on remplace l'icône Flutter par assets/app_icon_1024.png (carré, sans transparence,
       # comme l'exige iOS) en fabriquant toutes les tailles listées par le modèle Flutter.
       - name: Icône de l'application

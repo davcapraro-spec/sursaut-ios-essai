@@ -55,8 +55,11 @@ final class LamaBridge {
     return dir
   }
 
-  /// Modèle compilé (dossier .mlmodelc) rangé après le téléchargement.
+  /// Modèle compilé (dossier .mlmodelc) : celui embarqué dans l'application (mis par le workflow), sinon celui téléchargé.
   private static func compiledURL() throws -> URL {
+    for b in [Bundle(for: LamaBridge.self), Bundle.main] {
+      if let url = b.url(forResource: "LaMa", withExtension: "mlmodelc") { return url }
+    }
     return try modelsDir().appendingPathComponent("LaMaCoreML.mlmodelc", isDirectory: true)
   }
 
