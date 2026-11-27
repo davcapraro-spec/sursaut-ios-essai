@@ -972,9 +972,15 @@ class _DevelopPageState extends State<DevelopPage> {
           title: const Text('Essai LaMa'),
           content: SizedBox(
             width: 900,
-            child: Column(
+            child: SingleChildScrollView(
+              child: Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
+                Text(
+                  'Chargement du modèle : ${r.loadMs.round()} ms · Calcul : ${r.runMs.round()} ms · '
+                  'Mémoire : ${r.memBeforeMB.round()} Mo avant, ${r.memAfterMB.round()} Mo après',
+                ),
+                const SizedBox(height: 8),
                 Row(
                   children: <Widget>[
                     for (int i = 0; i < 3; i++)
@@ -991,12 +997,8 @@ class _DevelopPageState extends State<DevelopPage> {
                       ),
                   ],
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'Chargement du modèle : ${r.loadMs.round()} ms · Calcul : ${r.runMs.round()} ms\n'
-                  'Mémoire de l\'application : ${r.memBeforeMB.round()} Mo avant, ${r.memAfterMB.round()} Mo après',
-                ),
               ],
+              ),
             ),
           ),
           actions: <Widget>[TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Fermer'))],
