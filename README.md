@@ -12,12 +12,14 @@ Version courante : voir `pubspec.yaml` (affichée aussi dans l'application).
 - Ouverture d'une photo, y compris les RAW (lecture par LibRaw, couleur RAW, développement RAW).
 - Réglages de développement, courbe, HSL, histogramme, recadrage, retouche de taches, masques.
 - Annuler / rétablir, historique des recettes, sauvegarde.
-- Masques par IA (personnes, visage, parties du corps) : en attente. « Supprimer » par IA (LaMa) : bloqué (voir plus bas).
+- Masques par IA : sélection au toucher (SAM 2.1), personnes, visage, parties du corps (MediaPipe) ; précision des personnes collées en attente.
+- **Supprimer (IA)** : on peint la zone au pinceau, LaMa (Core ML, embarqué dans l'app) la reconstruit ; annulable, gardé dans le fichier de retouche (`ai_patches`). **En cours d'essai sur l'iPad** : le résultat était faux en 0.35.5 (Neural Engine), corrigé en 0.35.7, à re-tester.
+- **Essai LaMa** et **Essai Vision** (segmentation au toucher d'Apple, iPadOS 27) : boutons de test en haut de Développement, à retirer une fois la suppression validée.
 
 **Capturer** (`lib/features/capture`), mode connecté Sony A7 IV en USB-C
 - Réglages lus sur l'appareil : mode d'exposition, ISO, ouverture, vitesse, compensation, balance des blancs, mise au point, entraînement, destination, batterie.
 - ISO, ouverture, vitesse et compensation modifiables avec − / +.
-- Vue directe de l'appareil, carré de mise au point déplaçable au toucher, cadre de la zone permise, bouton « Mise au point ».
+- Vue directe de l'appareil, carré de mise au point déplaçable au toucher, cadre bleu en pointillés de la zone permise (règle de la demi-taille de cadre, limites mesurées aux bords, élargie si l'appareil va plus loin), bouton « Mise au point ».
 - Déclenchement, réception de la photo, aperçu, ouverture dans Développement.
 
 **Diagnostics** (bouton discret de l'accueil) : bancs d'essai de l'appareil (vue directe, collimateur, réglages).
@@ -48,7 +50,7 @@ Pas de dossier `ios/` dans le dépôt : le workflow le fabrique avec `flutter cr
 
 1. Pousser les modifications sur `main`.
 2. Onglet **Actions** > **ios-essai** > **Run workflow**.
-3. Le workflow enchaîne : tests Rust, moteur Rust pour iOS, Flutter, TensorFlow Lite, modèles SAM 2.1, icône, autorisations, analyse, tests Flutter, compilation sans signature, fabrication de l'ipa.
+3. Le workflow tourne sur le runner **`xcode-27`** (arm64, Xcode 27 ; nécessaire à l'API de segmentation de Vision, iPadOS 27) et enchaîne : tests Rust, moteur Rust pour iOS, Flutter, TensorFlow Lite, modèles SAM 2.1 et LaMa (Core ML, téléchargés, vérifiés par empreinte et compilés), icône, autorisations, analyse, tests Flutter, compilation sans signature, fabrication de l'ipa.
 4. **Règle du projet : tout doit être vert**, y compris « Tests Flutter (ne bloque pas) », même si cette étape ne bloque pas techniquement.
 5. À la fin, télécharger l'artefact **SursautEssai-ipa** (un zip contenant `SursautEssai-non-signe.ipa`).
 6. Si le workflow échoue : ouvrir le journal de l'étape en rouge et copier les dernières lignes d'erreur.
@@ -79,7 +81,9 @@ Wi-Fi Direct : pas encore testé (prévu en décembre).
 
 ## Limites connues
 
-- **« Supprimer » par IA** (LaMa) : bloqué par le certificat du serveur de téléchargement d'ONNX Runtime. Le code est conservé derrière `#if canImport` (voir `tools/ort_pods.sh`).
+- **« Supprimer » par IA** (LaMa Core ML, 40 Mo, 512 x 512) : ONNX Runtime a été abandonné (certificat invalide du serveur de téléchargement, 26/11). Mesure du 27/11 en 0.35.5 : chargement 238 s, 4,9 Go de mémoire, image fausse ; calcul désormais sur processeur et carte graphique (0.35.7), à re-tester. `tools/ort_pods.sh` n'est plus utilisé.
+- **Vision (segmentation au toucher)** : essai seulement ; demande iPadOS 27 ; le téléchargement du modèle par Apple n'est pas géré ; SAM 2.1 reste en place.
+- **LibRaw** : version 0.21.3 embarquée ; la 0.22.x existe (les RAW « Small/Medium » de l'A7 IV pourraient ne pas être lus correctement ; non testé).
 - **Masques de personnes** : en attente.
 - **Compte gratuit** : 3 applications au plus, 10 identifiants d'application ; AltStore compte pour une application.
 - Pas de débogage en direct de l'iPad depuis Windows : on contrôle sur l'iPad lui-même.
